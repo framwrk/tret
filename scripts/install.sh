@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Installs the latest tidy release binary to ~/.local/bin/tidy, or under a
+# Installs the latest tidy release binary to ~/.tidy/bin/tidy, or under a
 # name you pick when a tidy command already exists.
 # Never asks for a password. Override the target directory with INSTALL_DIR.
 set -euo pipefail
 
 REPO="framwrk/Tidy"
 BINARY="tidy-macos-arm64"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-RECORDS="$HOME/Library/Application Support/Tidy"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.tidy/bin}"
+RECORDS="$HOME/.tidy"
 
 # macOS on Apple Silicon only, matching the compiled binary.
 [ "$(uname -s)" = "Darwin" ] || { echo "tidy supports macOS only." >&2; exit 1; }

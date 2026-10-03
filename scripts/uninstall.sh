@@ -3,8 +3,8 @@
 # Never asks for a password.
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-RECORDS="$HOME/Library/Application Support/Tidy"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.tidy/bin}"
+RECORDS="$HOME/.tidy"
 
 # The install may have picked another name when a tidy command already existed.
 NAME=""
