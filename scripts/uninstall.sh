@@ -4,8 +4,13 @@
 set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-DEST="$INSTALL_DIR/tidy"
 RECORDS="$HOME/Library/Application Support/Tidy"
+
+# The install may have picked another name when a tidy command already existed.
+NAME=""
+if [ -f "$RECORDS/binary-name" ]; then NAME="$(cat "$RECORDS/binary-name")"; fi
+NAME="${NAME:-tidy}"
+DEST="$INSTALL_DIR/$NAME"
 
 if [ -f "$DEST" ]; then
   rm "$DEST"
