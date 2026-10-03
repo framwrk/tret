@@ -16,8 +16,10 @@ DEST="$INSTALL_DIR/tidy"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Latest release assets, via the /releases/latest/download permalink.
-BASE="https://github.com/$REPO/releases/latest/download"
+# Resolve the newest release tag from the API: the /releases/latest redirect
+# skips pre-releases, and until 1.0 every tidy release is one.
+TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+BASE="https://github.com/$REPO/releases/download/$TAG"
 curl -fsSL "$BASE/$BINARY" -o "$TMP/$BINARY"
 curl -fsSL "$BASE/checksums.txt" -o "$TMP/checksums.txt"
 
