@@ -16,7 +16,7 @@ const start = Date.now();
 switch (command) {
   case "add":
   case "install":
-    install();
+    await install(args[1]);
     break;
 
   case "unadd":
