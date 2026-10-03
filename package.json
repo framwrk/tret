@@ -1,11 +1,11 @@
 {
-  "name": "tidy",
+  "name": "tret",
   "module": "index.ts",
   "type": "module",
   "private": true,
   "scripts": {
     "start": "bun index.ts",
-    "build": "bun build ./index.ts --compile --target=bun-darwin-arm64 --outfile dist/tidy-macos-arm64",
+    "build": "bun build ./index.ts --compile --target=bun-darwin-arm64 --outfile dist/tret-macos-arm64",
     "test": "bun test",
     "dev": "bun index.ts",
     "lint": "eslint .",

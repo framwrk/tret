@@ -50,5 +50,5 @@ function help(): void {
   console.log("Commands");
   console.log("\tinstall      Run an installer and record everything it adds");
   console.log("\tuninstall    Remove a tool by reversing what its install added");
-  console.log("\tlist         Show past installs Tidy is tracking");
+  console.log("\tlist         Show past installs Tret is tracking");
 }

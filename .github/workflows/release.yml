@@ -15,13 +15,13 @@ jobs:
       - run: bun install
       - run: bun run build
       - name: Checksum
-        run: cd dist && shasum -a 256 tidy-macos-arm64 > checksums.txt
+        run: cd dist && shasum -a 256 tret-macos-arm64 > checksums.txt
       # v0.x tags publish as pre-release; drop the flag once 1.0 ships.
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: >
           gh release create "${{ github.ref_name }}"
-          dist/tidy-macos-arm64 dist/checksums.txt
+          dist/tret-macos-arm64 dist/checksums.txt
           --title "${{ github.ref_name }}" --generate-notes
           ${{ startsWith(github.ref_name, 'v0.') && '--prerelease' || '' }}

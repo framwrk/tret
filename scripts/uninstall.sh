@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
-# Removes the tidy binary. Pass --purge to also delete tidy's records.
+# Removes the tret binary. Pass --purge to also delete tret's records.
 # Never asks for a password.
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.tidy/bin}"
-RECORDS="$HOME/.tidy"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.tret/bin}"
+RECORDS="$HOME/.tret"
 
-# The install may have picked another name when a tidy command already existed.
-NAME=""
-if [ -f "$RECORDS/binary-name" ]; then NAME="$(cat "$RECORDS/binary-name")"; fi
-NAME="${NAME:-tidy}"
-DEST="$INSTALL_DIR/$NAME"
+DEST="$INSTALL_DIR/tret"
 
 if [ -f "$DEST" ]; then
   rm "$DEST"
   echo "Removed $DEST"
 else
-  echo "No tidy binary at $DEST. If you installed to a custom directory, re-run with INSTALL_DIR set."
+  echo "No tret binary at $DEST. If you installed to a custom directory, re-run with INSTALL_DIR set."
 fi
 
 if [ "${1:-}" = "--purge" ]; then

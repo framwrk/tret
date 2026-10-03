@@ -5,7 +5,7 @@ import { snapshot } from "../lib/snapshot";
 export async function install(url?: string): Promise<void> {
   if (!url) {
     console.log("Error");
-    console.log("\tinstall requires a URL: tidy install <URL>");
+    console.log("\tinstall requires a URL: tret install <URL>");
     process.exit(1);
   }
 

@@ -3,8 +3,8 @@ import type { GlobScanOptions } from "bun";
 
 // Identity
 
-/** Name Tidy uses for itself in help output and prompts. */
-export const SCRIPT_NAME = "Tidy";
+/** Name Tret uses for itself in help output and prompts. */
+export const SCRIPT_NAME = "Tret";
 
 // Runtime mode
 
@@ -29,7 +29,7 @@ export const SCAN_OPTIONS: GlobScanOptions = { onlyFiles: false, followSymlinks:
 // Skipped entries are neither recorded nor descended, so mtime churn inside them can't register as an edit.
 
 /**
- * Top-level folder names under `$HOME` to skip. Applied to the home root only; edit this list to change what Tidy ignores.
+ * Top-level folder names under `$HOME` to skip. Applied to the home root only; edit this list to change what Tret ignores.
  */
 export const EXCLUDED_DIRS = [
   "Desktop",

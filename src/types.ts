@@ -1,4 +1,4 @@
-// Types shared across Tidy's commands and library code.
+// Types shared across Tret's commands and library code.
 
 // Units
 
@@ -10,5 +10,5 @@ export type MtimeMs = number;
 
 // Snapshots
 
-/** Every file and folder Tidy tracks, mapped to its last-modified time. */
+/** Every file and folder Tret tracks, mapped to its last-modified time. */
 export type Snapshot = Map<AbsolutePath, MtimeMs>;
