@@ -1,9 +1,17 @@
-import { SCRIPT_NAME } from "./src/constants";
+import { IS_DEV, SCRIPT_NAME } from "./src/constants";
 import { install } from "./src/commands/install";
 import { list } from "./src/commands/list";
+import { log } from "./src/lib/utilities";
 import { uninstall } from "./src/commands/uninstall";
 
-const command = process.argv[2];
+const args = process.argv.slice(2).filter((arg) => arg !== "--time");
+
+const command = args[0];
+
+// --time is a dev-only flag: timing a compiled binary is meaningless here, so built runs ignore it.
+const timed = IS_DEV && process.argv.includes("--time");
+
+const start = Date.now();
 
 switch (command) {
   case "add":
@@ -24,6 +32,12 @@ switch (command) {
 
   default:
     help();
+}
+
+if (timed) {
+  const time = Date.now() - start;
+
+  log(`\n${time}ms taken`);
 }
 
 function help(): void {

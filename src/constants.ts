@@ -6,6 +6,14 @@ import type { GlobScanOptions } from "bun";
 /** Name Tidy uses for itself in help output and prompts. */
 export const SCRIPT_NAME = "Tidy";
 
+// Runtime mode
+
+/**
+ * True when running from source (`bun index.ts`), false when running as a compiled binary (`bun build --compile`).
+ * A compiled executable runs its entry from Bun's virtual filesystem (`/$bunfs/...`); a dev run uses a real on-disk path.
+ */
+export const IS_DEV = !import.meta.path.startsWith("/$bunfs/");
+
 // Snapshot walk
 
 /**
