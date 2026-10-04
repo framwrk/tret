@@ -22,6 +22,11 @@ export function removeRecord(name: string): void {
   writeAtomic(join(home(), RECORDS_PATH), { version: RECORDS_VERSION, records });
 }
 
+/** Finds the record for an install URL, or undefined when Tret never installed that URL. */
+export function findRecordByUrl(url: string): ToolRecord | undefined {
+  return loadRecords().records.find((record) => record.url === url);
+}
+
 /** Loads every saved install record; missing or unreadable files count as no records. */
 export function loadRecords(): RecordFile {
   try {

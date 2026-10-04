@@ -1,11 +1,14 @@
-import { existsSync, lstatSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from "node:fs";
 import type { AbsolutePath } from "../types";
+import { join } from "node:path";
 
 /** Why a recorded path was kept instead of deleted. */
 export type KeptReason = "guarded" | "failed";
 
 export type Removal = {
   removed: AbsolutePath[];
+  /** Tool-named children pruned out of a protected directory. */
+  pruned: AbsolutePath[];
   kept: { path: AbsolutePath; reason: KeptReason }[];
 };
 
@@ -50,11 +53,14 @@ const SHARED_ABSOLUTE = [
 ];
 
 /**
- * Deletes the recorded added paths, deepest first. Directories that look shared or too broad are guarded,
- * and anything that fails to delete is kept. With `dryRun` nothing touches the disk.
+ * Deletes the recorded added paths, deepest first. Directories that look shared or too broad are
+ * guarded: the tool's own entries inside them are pruned (matched by the tool name), and the
+ * directory itself is removed only if that leaves it empty. Anything that fails to delete is kept.
+ * With `dryRun` nothing touches the disk.
  */
-export function removeAdded(paths: AbsolutePath[], dryRun: boolean): Removal {
+export function removeAdded(paths: AbsolutePath[], name: string, dryRun: boolean): Removal {
   const removed: AbsolutePath[] = [];
+  const pruned: AbsolutePath[] = [];
   const kept: Removal["kept"] = [];
 
   const home = Bun.env.HOME;
@@ -71,7 +77,7 @@ export function removeAdded(paths: AbsolutePath[], dryRun: boolean): Removal {
 
     // Only directories get the guards: deleting a file from a shared bin folder is exactly what uninstall is for.
     if (lstatSync(path).isDirectory() && (isGuarded(path, home) || isShallow(path))) {
-      kept.push({ path, reason: "guarded" });
+      removeGuarded(path, name, dryRun, removed, pruned, kept);
       continue;
     }
 
@@ -88,7 +94,110 @@ export function removeAdded(paths: AbsolutePath[], dryRun: boolean): Removal {
     }
   }
 
-  return { removed, kept };
+  return { removed, pruned, kept };
+}
+
+/**
+ * Cleans a guarded directory: the tool's own entries anywhere inside it are pruned (matched by
+ * name), now-empty folders below it go too, and the directory itself is removed only if nothing
+ * else is left. A guard-refused dir that keeps other programs' files stays recorded.
+ */
+function removeGuarded(
+  path: AbsolutePath,
+  name: string,
+  dryRun: boolean,
+  removed: AbsolutePath[],
+  pruned: AbsolutePath[],
+  kept: Removal["kept"],
+): void {
+  const matches = (entry: string): boolean => entry.toLowerCase() === name.toLowerCase();
+
+  if (!pruneToolEntries(path, matches, dryRun, pruned, kept)) {
+    return;
+  }
+
+  if (dryRun) {
+    if (emptiesAfterPrune(path, matches)) {
+      removed.push(path);
+    } else {
+      kept.push({ path, reason: "guarded" });
+    }
+    return;
+  }
+
+  removeEmptyDirs(path);
+
+  if (!existsSync(path)) {
+    removed.push(path);
+  } else {
+    kept.push({ path, reason: "guarded" });
+  }
+}
+
+/** Deletes entries named like the tool at any depth; false means a delete failed and the run should stop. */
+function pruneToolEntries(
+  dir: AbsolutePath,
+  matches: (entry: string) => boolean,
+  dryRun: boolean,
+  pruned: AbsolutePath[],
+  kept: Removal["kept"],
+): boolean {
+  for (const entry of readdirSync(dir).sort()) {
+    const child = join(dir, entry);
+
+    if (matches(entry)) {
+      if (dryRun) {
+        pruned.push(child);
+        continue;
+      }
+      try {
+        rmSync(child, { recursive: true });
+        pruned.push(child);
+      } catch {
+        kept.push({ path: child, reason: "failed" });
+        return false;
+      }
+      continue;
+    }
+
+    if (lstatSync(child).isDirectory() && !pruneToolEntries(child, matches, dryRun, pruned, kept)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/** True when everything in the tree is either tool-named or an empty folder once they are pruned. */
+function emptiesAfterPrune(dir: AbsolutePath, matches: (entry: string) => boolean): boolean {
+  for (const entry of readdirSync(dir)) {
+    if (matches(entry)) {
+      continue;
+    }
+
+    const child = join(dir, entry);
+    if (!lstatSync(child).isDirectory() || !emptiesAfterPrune(child, matches)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/** Removes now-empty folders bottom up, the starting dir last; a dir with contents simply fails to rmdir. */
+function removeEmptyDirs(dir: AbsolutePath): void {
+  for (const entry of readdirSync(dir)) {
+    const child = join(dir, entry);
+    if (lstatSync(child).isDirectory()) {
+      removeEmptyDirs(child);
+    }
+  }
+
+  try {
+    rmdirSync(dir);
+  } catch {
+    // Still holds other programs' entries; that is what the guard is for.
+  }
 }
 
 function isGuarded(path: AbsolutePath, home: AbsolutePath): boolean {
