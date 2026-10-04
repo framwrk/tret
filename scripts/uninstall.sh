@@ -3,7 +3,7 @@
 # Never asks for a password.
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.tret/bin}"
+INSTALL_DIR="$HOME/.tret/bin"
 RECORDS="$HOME/.tret"
 
 DEST="$INSTALL_DIR/tret"
@@ -26,7 +26,7 @@ if [ -f "$DEST" ]; then
     exit 1
   fi
 else
-  echo "No tret binary at $DEST. If you installed to a custom directory, re-run with INSTALL_DIR set."
+  echo "No tret binary at $DEST."
 fi
 
 echo "Records kept at $RECORDS. To remove them, run: rm -rf \"$RECORDS\""
