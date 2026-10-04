@@ -10,5 +10,13 @@ export type MtimeMs = number;
 
 // Snapshots
 
-/** Every file and folder Tret tracks, mapped to its last-modified time. */
-export type Snapshot = Map<AbsolutePath, MtimeMs>;
+/** Everything recorded about one tracked entry; the size and inode catch a re-pointed symlink that mtime misses. */
+export type FileStamp = {
+  mtimeMs: MtimeMs;
+  size: number;
+  inode: number;
+  isDir: boolean;
+};
+
+/** Every file and folder Tret tracks, mapped to its stamp. */
+export type Snapshot = Map<AbsolutePath, FileStamp>;
