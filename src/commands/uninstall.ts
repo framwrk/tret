@@ -31,9 +31,12 @@ export function uninstall(name: string | undefined, dryRun: boolean): void {
       return;
     }
 
-    const plan = removeAdded(record.added, true);
+    const plan = removeAdded(record.added, name, true);
     for (const path of plan.removed) {
       log(`\twould remove ${path}`);
+    }
+    for (const path of plan.pruned) {
+      log(`\twould prune ${path}`);
     }
     for (const kept of plan.kept) {
       log(`\twould keep ${kept.path} (protected directory)`);
@@ -53,10 +56,13 @@ export function uninstall(name: string | undefined, dryRun: boolean): void {
   }
 
   log(`removing ${record.added.length} files and folders added by ${name}`, true);
-  const result = removeAdded(record.added, false);
+  const result = removeAdded(record.added, name, false);
 
   for (const path of result.removed) {
-    log(`\tremoved ${path}`);
+    log(`\tremoved ${path}`, true);
+  }
+  for (const path of result.pruned) {
+    log(`\tpruned ${path} (from a protected directory)`, true);
   }
   for (const kept of result.kept) {
     log(`\tkept ${kept.path}${kept.reason === "guarded" ? " (protected directory)" : " (delete failed)"}`);
