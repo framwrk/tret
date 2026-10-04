@@ -29,7 +29,7 @@ export async function install(url?: string): Promise<void> {
   }
 
   const before: Snapshot = snapshot();
-  log(`snapshotted ${before.size} files and folders`);
+  log(`snapshotted ${before.size} files and folders`, true);
 
   const exitCode = await runInstaller(script);
   if (exitCode !== 0) {
@@ -39,7 +39,7 @@ export async function install(url?: string): Promise<void> {
   }
 
   const after: Snapshot = snapshot();
-  log(`snapshotted ${after.size} files and folders`);
+  log(`snapshotted ${after.size} files and folders`, true);
 
   let changes = diff(before, after);
 
@@ -56,7 +56,7 @@ export async function install(url?: string): Promise<void> {
 
   if (await runFirstRun(executable)) {
     const finalSnapshot: Snapshot = snapshot();
-    log(`snapshotted ${finalSnapshot.size} files and folders`);
+    log(`snapshotted ${finalSnapshot.size} files and folders`, true);
     changes = mergeDiff(changes, diff(before, finalSnapshot));
   }
 

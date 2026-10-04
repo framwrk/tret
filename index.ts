@@ -37,7 +37,7 @@ switch (command) {
 if (timed) {
   const time = Date.now() - start;
 
-  log(`\n${time}ms taken`);
+  log(`\n${time}ms taken`, true);
 }
 
 function help(): void {

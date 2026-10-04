@@ -52,7 +52,7 @@ export function uninstall(name: string | undefined, dryRun: boolean): void {
     return;
   }
 
-  log(`removing ${record.added.length} files and folders added by ${name}`);
+  log(`removing ${record.added.length} files and folders added by ${name}`, true);
   const result = removeAdded(record.added, false);
 
   for (const path of result.removed) {
