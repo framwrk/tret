@@ -9,22 +9,22 @@ import { snapshot } from "../lib/snapshot";
 
 export async function install(url?: string): Promise<void> {
   if (!url) {
-    console.log("Error");
-    console.log("\tinstall requires a URL: tret install <URL>");
+    log("Error");
+    log("\tinstall requires a URL: tret install <URL>");
     process.exit(1);
   }
 
   const urlError = validateUrl(url);
   if (urlError) {
-    console.log("Error");
-    console.log(`\t${urlError}`);
+    log("Error");
+    log(`\t${urlError}`);
     process.exit(1);
   }
 
   const script = await fetchScript(url);
   if (script === undefined) {
-    console.log("Error");
-    console.log(`\tURL does not return a raw script file: ${url}`);
+    log("Error");
+    log(`\tURL does not return a raw script file: ${url}`);
     process.exit(1);
   }
 
@@ -33,8 +33,8 @@ export async function install(url?: string): Promise<void> {
 
   const exitCode = await runInstaller(script);
   if (exitCode !== 0) {
-    console.log("Error");
-    console.log(`\tinstall script exited with code ${exitCode}: ${url}`);
+    log("Error");
+    log(`\tinstall script exited with code ${exitCode}: ${url}`);
     process.exit(1);
   }
 
@@ -49,8 +49,8 @@ export async function install(url?: string): Promise<void> {
   const executable = pickExecutable(changes.added) ?? pickExecutable(changes.edited);
   const name = loadRecords().records.find((existing) => existing.url === url)?.name ?? executable?.split("/").pop();
   if (!executable || !name) {
-    console.log("Error");
-    console.log(`\tinstall script added no executable command: ${url}`);
+    log("Error");
+    log(`\tinstall script added no executable command: ${url}`);
     process.exit(1);
   }
 
@@ -69,7 +69,7 @@ export async function install(url?: string): Promise<void> {
   });
 
   log(`installed ${name}`);
-  console.log(`\tadded ${changes.added.length} files and folders`);
-  console.log(`\tedited ${changes.edited.length}`);
-  console.log(`\tdeleted ${changes.deleted.length}`);
+  log(`\tadded ${changes.added.length} files and folders`);
+  log(`\tedited ${changes.edited.length}`);
+  log(`\tdeleted ${changes.deleted.length}`);
 }
