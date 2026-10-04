@@ -29,3 +29,20 @@ export type Diff = {
   edited: AbsolutePath[];
   deleted: AbsolutePath[];
 };
+
+// Records
+
+/** One recorded install: the tool, its URL, and the changes its script made. Deletes stay out: uninstall logs edits and never reverses anything but additions. */
+export type ToolRecord = {
+  name: string;
+  url: string;
+  installedAt: string;
+  added: AbsolutePath[];
+  edited: AbsolutePath[];
+};
+
+/** The records file format, versioned so older builds can be detected. */
+export type RecordFile = {
+  version: number;
+  records: ToolRecord[];
+};

@@ -14,6 +14,14 @@ export const SCRIPT_NAME = "Tret";
  */
 export const IS_DEV = !import.meta.path.startsWith("/$bunfs/");
 
+// Records
+
+/** Format number for the records file; bump when the record shape changes. */
+export const RECORDS_VERSION = 2;
+
+/** Where Tret stores its records, relative to `$HOME`. */
+export const RECORDS_PATH = ".tret/records.json";
+
 // Snapshot walk
 
 /**
