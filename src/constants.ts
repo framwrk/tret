@@ -29,9 +29,10 @@ export const SCAN_OPTIONS: GlobScanOptions = { onlyFiles: false, followSymlinks:
 // Skipped entries are neither recorded nor descended, so mtime churn inside them can't register as an edit.
 
 /**
- * Top-level folder names under `$HOME` to skip. Applied to the home root only; edit this list to change what Tret ignores.
+ * Home-relative paths to skip: top-level folders under `$HOME` or deeper paths (a folder like `.hermes/state`
+ * or a single file like `.hermes/state.db-wal`). Edit this list to change what Tret ignores.
  */
-export const EXCLUDED_DIRS = [
+export const EXCLUDED_PATHS = [
   "Desktop",
   "Documents",
   "Downloads",
@@ -40,12 +41,10 @@ export const EXCLUDED_DIRS = [
   "Music",
   "Pictures",
   "Public",
-
   ".Trash",
-
-  ".hermes",
-  ".codex",
-  ".bun/install",
+  ".hermes/state",
+  ".hermes/cron",
+  ".hermes/state.db-wal",
 ];
 
 /**
@@ -54,7 +53,6 @@ export const EXCLUDED_DIRS = [
  */
 export const EXCLUDED_DIR_NAMES = new Set([
   "__pycache__",
-  ".cache",
   ".eggs",
   ".git",
   ".gradle",
@@ -64,7 +62,6 @@ export const EXCLUDED_DIR_NAMES = new Set([
   ".m2",
   ".mypy_cache",
   ".next",
-  ".npm",
   ".nuxt",
   ".parcel-cache",
   ".pnpm-store",
