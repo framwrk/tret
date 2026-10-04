@@ -1,12 +1,12 @@
+import { confirm, log } from "../lib/utilities";
 import { loadRecords, removeRecord, saveRecord } from "../lib/records";
-import { log } from "../lib/utilities";
 import { removeAdded } from "../lib/removal";
 import { removeRcLines } from "../lib/shellconfig";
 
-export function uninstall(name: string | undefined, dryRun: boolean): void {
+export function uninstall(name: string | undefined, dryRun: boolean, yes: boolean): void {
   if (!name || name.startsWith("--")) {
     log("Error");
-    log("\tuninstall requires a tool name: tret uninstall <name> [--dry-run]");
+    log("\tuninstall requires a tool name: tret uninstall <name> [--dry-run] [--yes]");
     process.exit(1);
   }
 
@@ -53,6 +53,24 @@ export function uninstall(name: string | undefined, dryRun: boolean): void {
     removeRecord(name);
     log(`removed the ${name} record; it had no tracked files`);
     return;
+  }
+
+  log(`uninstall ${name}?`);
+  for (const path of record.added) {
+    log(`\tremove ${path}`);
+  }
+
+  if (!yes) {
+    const answer = confirm("proceed? [y/N]");
+    if (answer === undefined) {
+      log("Error");
+      log("\tthere is no terminal to confirm on; pass --yes to uninstall without a prompt");
+      process.exit(1);
+    }
+    if (!answer) {
+      log(`aborted; ${name} is unchanged`);
+      process.exit(0);
+    }
   }
 
   log(`removing ${record.added.length} files and folders added by ${name}`, true);
