@@ -22,7 +22,7 @@ switch (command) {
   case "unadd":
   case "remove":
   case "uninstall":
-    uninstall();
+    uninstall(args[1], args.includes("--dry-run"));
     break;
 
   case "show":

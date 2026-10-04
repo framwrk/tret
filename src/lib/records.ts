@@ -11,6 +11,17 @@ export function saveRecord(record: ToolRecord): void {
   writeAtomic(join(home(), RECORDS_PATH), { version: RECORDS_VERSION, records });
 }
 
+/** Drops the record for a tool name; an unknown name leaves the file untouched. */
+export function removeRecord(name: string): void {
+  const stored = loadRecords();
+  const records = stored.records.filter((existing) => existing.name !== name);
+  if (records.length === stored.records.length) {
+    return;
+  }
+
+  writeAtomic(join(home(), RECORDS_PATH), { version: RECORDS_VERSION, records });
+}
+
 /** Loads every saved install record; missing or unreadable files count as no records. */
 export function loadRecords(): RecordFile {
   try {
