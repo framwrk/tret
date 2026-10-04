@@ -1,5 +1,5 @@
 import type { AbsolutePath, Snapshot } from "../types";
-import { EXCLUDED_DIRS, EXCLUDED_DIR_NAMES, SCAN_OPTIONS, SNAPSHOT_ROOTS } from "../constants";
+import { EXCLUDED_DIR_NAMES, EXCLUDED_PATHS, SCAN_OPTIONS, SNAPSHOT_ROOTS } from "../constants";
 import { Glob } from "bun";
 
 export function snapshot(): Snapshot {
@@ -7,7 +7,7 @@ export function snapshot(): Snapshot {
   if (!home) throw new Error("HOME is not set");
 
   const entries: Snapshot = new Map();
-  const excluded = new Set(EXCLUDED_DIRS.map((name) => `${home}/${name}`));
+  const excluded = new Set(EXCLUDED_PATHS.map((path) => `${home}/${path}`));
   snapshotDir(home, entries, excluded);
   for (const root of SNAPSHOT_ROOTS) snapshotDir(root, entries);
   return entries;
