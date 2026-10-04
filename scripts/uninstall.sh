@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Removes the tret binary. Pass --purge to also delete tret's records.
+# Removes the tret binary. Asks for confirmation first.
 # Never asks for a password.
 set -euo pipefail
 
@@ -9,15 +9,24 @@ RECORDS="$HOME/.tret"
 DEST="$INSTALL_DIR/tret"
 
 if [ -f "$DEST" ]; then
-  rm "$DEST"
-  echo "Removed $DEST"
+  if { true < /dev/tty; } 2>/dev/null; then
+    printf "Remove %s? [y/N] " "$DEST" > /dev/tty
+    read -r ANSWER < /dev/tty || ANSWER=""
+    case "$ANSWER" in
+      y|Y|yes|Yes|YES)
+        rm "$DEST"
+        echo "Removed $DEST"
+        ;;
+      *)
+        echo "Aborted. $DEST left in place."
+        ;;
+    esac
+  else
+    echo "No terminal to confirm with. Run this script interactively to remove $DEST." >&2
+    exit 1
+  fi
 else
   echo "No tret binary at $DEST. If you installed to a custom directory, re-run with INSTALL_DIR set."
 fi
 
-if [ "${1:-}" = "--purge" ]; then
-  rm -rf "$RECORDS"
-  echo "Removed records at $RECORDS"
-else
-  echo "Records kept at $RECORDS (re-run with --purge to delete them)"
-fi
+echo "Records kept at $RECORDS. To remove them, run: rm -rf \"$RECORDS\""
