@@ -14,10 +14,11 @@ export async function runInstaller(script: string): Promise<number> {
     await Bun.write(path, script);
     chmodSync(path, 0o755);
 
-    // node:child_process, not Bun.spawn: the script's output goes to tret's stderr, not stdout —
-    // a pasted `tret install curl ... | bash` would otherwise feed the script's output to bash.
+    // node:child_process, not Bun.spawn: when tret is piped (`tret install curl ... | bash`), the
+    // script's output goes to tret's stderr — stdout would feed every printed line to bash. On a
+    // TTY the script inherits stdout directly, so an interactive install is not painted red.
     return await new Promise<number>((resolve) => {
-      const child = spawn(path, { stdio: ["inherit", process.stderr, "inherit"] });
+      const child = spawn(path, { stdio: ["inherit", process.stdout.isTTY ? "inherit" : process.stderr, "inherit"] });
       child.once("exit", (code) => resolve(code ?? 1));
       child.once("error", () => resolve(1));
     });
