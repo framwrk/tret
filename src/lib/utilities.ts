@@ -1,4 +1,4 @@
-import { openSync, writeSync } from "node:fs";
+import { closeSync, openSync, readSync, writeSync } from "node:fs";
 import { IS_DEV } from "../constants";
 
 /** The controlling terminal's file descriptor, opened on first use; undefined when there is none. */
@@ -33,6 +33,43 @@ export function log(message: string, devOnly = false): void {
         writeSync(fd, `${message}\n`);
       }
     }
+  }
+}
+
+/** Asks a yes/no question on the controlling terminal; undefined when there is no terminal to ask on. */
+export function confirm(question: string): boolean | undefined {
+  let input: number;
+  try {
+    input = openSync("/dev/tty", "r");
+  } catch {
+    // No controlling terminal (agent runs, CI): the caller decides what a skipped prompt means.
+    return undefined;
+  }
+
+  try {
+    const out = ttyOutput();
+    if (out !== undefined) {
+      writeSync(out, `${question} `);
+    } else {
+      process.stdout.write(`${question} `);
+    }
+    const buffer = Buffer.alloc(256);
+    for (;;) {
+      let bytes: number;
+      try {
+        bytes = readSync(input, buffer);
+      } catch {
+        return undefined;
+      }
+      // The first read can race the terminal and return 0 before the answer arrives; retry.
+      if (bytes > 0) {
+        const answer = buffer.subarray(0, bytes).toString().trim().toLowerCase();
+        return answer === "y" || answer === "yes";
+      }
+      Bun.sleepSync(20);
+    }
+  } finally {
+    closeSync(input);
   }
 }
 

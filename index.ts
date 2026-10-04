@@ -24,7 +24,7 @@ switch (command) {
   case "unadd":
   case "remove":
   case "uninstall":
-    uninstall(args[1], args.includes("--dry-run"));
+    uninstall(args[1], args.includes("--dry-run"), args.includes("--yes"));
     break;
 
   case "show":
@@ -51,6 +51,6 @@ function help(): void {
 
   log("Commands");
   log("\tinstall      Run an installer and record everything it adds (paste the curl | bash line when no URL is given)");
-  log("\tuninstall    Remove a tool by reversing what its install added");
+  log("\tuninstall    Remove a tool by reversing what its install added (asks to confirm; --yes skips, --dry-run previews)");
   log("\tlist         Show past installs Tret is tracking");
 }
