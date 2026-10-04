@@ -1,5 +1,5 @@
 import { diff, mergeDiff } from "../lib/diff";
-import { fetchScript, log, validateUrl } from "../lib/utilities";
+import { extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
 import { findRecordByUrl, loadRecords, removeRecord, saveRecord } from "../lib/records";
 import type { Snapshot } from "../types";
 import { pickExecutable } from "../lib/executable";
@@ -11,10 +11,18 @@ import { snapshot } from "../lib/snapshot";
 
 export async function install(url?: string, force = false): Promise<void> {
   if (!url) {
+    log("Paste the install command (curl ... | bash):");
+    url = await readLine();
+  }
+
+  // The paste is a shell command like `curl -fsSL https://... | bash`, not a bare URL.
+  const pasted = extractUrl(url);
+  if (!pasted) {
     log("Error");
-    log("\tinstall requires a URL: tret install <URL>");
+    log(`\tno URL found in: ${url}`);
     process.exit(1);
   }
+  url = pasted;
 
   const urlError = validateUrl(url);
   if (urlError) {
