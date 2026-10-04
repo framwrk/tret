@@ -20,24 +20,20 @@ export function validateUrl(url: string): string | undefined {
   }
 }
 
-export async function isScript(url: string): Promise<boolean> {
+/** Fetches the full script at the URL, or undefined when it does not serve a raw script. */
+export async function fetchScript(url: string): Promise<string | undefined> {
   let response: Response;
   try {
     response = await fetch(url);
   } catch {
-    return false;
+    return undefined;
   }
 
   const contentType = response.headers.get("content-type") ?? "";
   if (!response.ok || contentType.startsWith("text/html")) {
-    return false;
+    return undefined;
   }
 
-  const reader = response.body?.getReader();
-  if (!reader) return false;
-
-  const chunk = await reader.read();
-  await reader.cancel();
-  const text = new TextDecoder().decode(chunk.value ?? new Uint8Array());
-  return !text.startsWith("<") && !text.includes("\0");
+  const text = await response.text();
+  return text.startsWith("<") || text.includes("\0") ? undefined : text;
 }
