@@ -1,6 +1,7 @@
-import type { AbsolutePath, Snapshot } from "../types";
+import type { AbsolutePath, FileStamp, Snapshot } from "../types";
 import { EXCLUDED_DIR_NAMES, EXCLUDED_PATHS, SCAN_OPTIONS, SNAPSHOT_ROOTS } from "../constants";
 import { Glob } from "bun";
+import { lstatSync } from "node:fs";
 
 export function snapshot(): Snapshot {
   const home = Bun.env.HOME;
@@ -27,7 +28,19 @@ function snapshotDir(dir: AbsolutePath, entries: Snapshot, excluded: Set<string>
     const path = `${dir}/${name}`;
     const isSubdir = subdirs.has(name);
     if (excluded.has(path) || (isSubdir && EXCLUDED_DIR_NAMES.has(name))) continue;
-    entries.set(path, Bun.file(path).lastModified);
+    const stamp = stampEntry(path);
+    if (!stamp) continue;
+    entries.set(path, stamp);
     if (isSubdir) snapshotDir(path, entries, excluded);
+  }
+}
+
+/** Stamps one entry with its lstat fields; returns undefined when the entry cannot be read. */
+function stampEntry(path: AbsolutePath): FileStamp | undefined {
+  try {
+    const stat = lstatSync(path);
+    return { mtimeMs: stat.mtimeMs, size: stat.size, inode: stat.ino, isDir: stat.isDirectory() };
+  } catch {
+    return undefined;
   }
 }
