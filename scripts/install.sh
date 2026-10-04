@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Installs the latest tret release binary to ~/.tret/bin/tret.
-# Never asks for a password. Override the target directory with INSTALL_DIR.
+# Installs the latest tret release binary to ~/.tret/bin/tret and puts it on
+# your PATH. Never asks for a password. Override the target with INSTALL_DIR.
 set -euo pipefail
 
 REPO="framwrk/tret"
@@ -63,6 +63,25 @@ install -m 755 "$TMP/$BINARY" "$DEST.tmp" && mv -f "$DEST.tmp" "$DEST"
 
 # Say what '$NAME' actually resolves to now, so the closing hint is truthful.
 RESOLVED="$(command -v "$NAME" || true)"
+
+# Put tret on PATH for new shells: append an export to the shell's rc file
+# unless an rc file already references the install dir (reinstalls skip it).
+RC="$HOME/.zshrc"
+case "${SHELL:-}" in *bash*) RC="$HOME/.bash_profile" ;; esac
+if ! grep -qsF "$INSTALL_DIR" "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.zshenv" \
+  "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; then
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) ;;
+    *)
+      if { echo; echo "# tret"; echo "export PATH=\"$INSTALL_DIR:\$PATH\""; } >> "$RC"; then
+        echo "Added $INSTALL_DIR to your PATH in $RC - open a new terminal or run 'source $RC' to use it."
+      else
+        echo "Could not write to $RC - add $INSTALL_DIR to your PATH manually." >&2
+      fi
+      ;;
+  esac
+fi
+
 if [ "$RESOLVED" = "$DEST" ]; then
   echo "$NAME installed to $DEST - run '$NAME' to start."
 elif [ -n "$RESOLVED" ]; then
@@ -70,5 +89,5 @@ elif [ -n "$RESOLVED" ]; then
   echo "Note: '$NAME' currently resolves to $RESOLVED - the new binary wins only where $INSTALL_DIR comes first in your PATH. Run '$DEST' to use it."
 else
   echo "$NAME installed to $DEST."
-  echo "Note: '$NAME' is not on your PATH. Run '$DEST' to start, or add $INSTALL_DIR to your PATH."
+  echo "Note: '$NAME' is not on this shell's PATH yet - open a new terminal or run 'source $RC' to pick it up."
 fi
