@@ -16,7 +16,9 @@ const start = Date.now();
 switch (command) {
   case "add":
   case "install":
-    await install(args[1], args.includes("--force"));
+    // The rest of the line, joined: a paste like `tret install curl -fsSL https://... | bash`
+    // reaches tret as separate arguments once the shell has taken the pipe.
+    await install(args.slice(1).join(" "), args.includes("--force"));
     break;
 
   case "unadd":
@@ -48,7 +50,7 @@ function help(): void {
   log(`\t${SCRIPT_NAME.toLowerCase()} <COMMAND>`);
 
   log("Commands");
-  log("\tinstall      Run an installer and record everything it adds");
+  log("\tinstall      Run an installer and record everything it adds (paste the curl | bash line when no URL is given)");
   log("\tuninstall    Remove a tool by reversing what its install added");
   log("\tlist         Show past installs Tret is tracking");
 }
