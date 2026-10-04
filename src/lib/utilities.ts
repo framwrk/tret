@@ -1,5 +1,10 @@
-export function log(message: string): void {
-  console.log(message);
+import { IS_DEV } from "../constants";
+
+/** Prints a message; with `devOnly` the message prints only when running from source, not a compiled binary. */
+export function log(message: string, devOnly = false): void {
+  if (!devOnly || IS_DEV) {
+    console.log(message);
+  }
 }
 
 export function validateUrl(url: string): string | undefined {
