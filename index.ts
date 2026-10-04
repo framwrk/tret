@@ -41,14 +41,14 @@ if (timed) {
 }
 
 function help(): void {
-  console.log("Name");
-  console.log(`\t${SCRIPT_NAME} - Wraps installers and remembers what they added, so you can cleanly remove them later.`);
+  log("Name");
+  log(`\t${SCRIPT_NAME} - Wraps installers and remembers what they added, so you can cleanly remove them later.`);
 
-  console.log("Usage");
-  console.log(`\t${SCRIPT_NAME.toLowerCase()} <COMMAND>`);
+  log("Usage");
+  log(`\t${SCRIPT_NAME.toLowerCase()} <COMMAND>`);
 
-  console.log("Commands");
-  console.log("\tinstall      Run an installer and record everything it adds");
-  console.log("\tuninstall    Remove a tool by reversing what its install added");
-  console.log("\tlist         Show past installs Tret is tracking");
+  log("Commands");
+  log("\tinstall      Run an installer and record everything it adds");
+  log("\tuninstall    Remove a tool by reversing what its install added");
+  log("\tlist         Show past installs Tret is tracking");
 }

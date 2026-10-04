@@ -1,11 +1,12 @@
 import { loadRecords } from "../lib/records";
+import { log } from "../lib/utilities";
 
 /** Prints every recorded install as an aligned table: name, install date, and change counts. */
 export function list(): void {
   const records = loadRecords().records;
 
   if (records.length === 0) {
-    console.log("No installs tracked.");
+    log("No installs tracked.");
     return;
   }
 
@@ -24,12 +25,12 @@ export function list(): void {
   const addedWidth = Math.max("Added".length, ...rows.map((row) => row.added.length));
   const editedWidth = Math.max("Edited".length, ...rows.map((row) => row.edited.length));
 
-  console.log(
+  log(
     `${"Name".padEnd(nameWidth)}  ${"Installed".padEnd(installedWidth)}  ${"Added".padEnd(addedWidth)}  ${"Edited".padEnd(editedWidth)}`,
   );
 
   for (const row of rows) {
-    console.log(
+    log(
       `${row.name.padEnd(nameWidth)}  ${row.installed.padEnd(installedWidth)}  ${row.added.padStart(addedWidth)}  ${row.edited.padStart(editedWidth)}`,
     );
   }
