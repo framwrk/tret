@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Installs the latest tret release binary to ~/.tret/bin/tret and puts it on
-# your PATH. Never asks for a password. Override the target with INSTALL_DIR.
+# your PATH. Never asks for a password.
 set -euo pipefail
 
 REPO="framwrk/tret"
 BINARY="tret-macos-arm64"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.tret/bin}"
-INSTALL_DIR="${INSTALL_DIR%/}"
+INSTALL_DIR="$HOME/.tret/bin"
 
 # macOS on Apple Silicon only, matching the compiled binary.
 [ "$(uname -s)" = "Darwin" ] || { echo "tret supports macOS only." >&2; exit 1; }
@@ -24,14 +23,14 @@ if [ ! -x "$DEST" ] && [ -n "$EXISTING" ] && [ "$EXISTING" != "$DEST" ]; then
   echo "Note: a 'tret' command already exists at $EXISTING - this install takes priority only where $INSTALL_DIR comes first in your PATH."
 fi
 
-# Install without sudo: the default target is user-writable. An existing
-# INSTALL_DIR that is not writable fails instead of falling back to sudo.
+# Install without sudo: the target is user-writable. An unwritable target
+# fails instead of falling back to sudo.
 if [ -d "$INSTALL_DIR" ] && [ ! -w "$INSTALL_DIR" ]; then
-  echo "$INSTALL_DIR is not writable - set INSTALL_DIR to a directory you own." >&2
+  echo "$INSTALL_DIR is not writable." >&2
   exit 1
 fi
 mkdir -p "$INSTALL_DIR" 2>/dev/null || {
-  echo "$INSTALL_DIR could not be created - set INSTALL_DIR to a directory you own." >&2
+  echo "$INSTALL_DIR could not be created." >&2
   exit 1
 }
 
