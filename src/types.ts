@@ -20,3 +20,12 @@ export type FileStamp = {
 
 /** Every file and folder Tret tracks, mapped to its stamp. */
 export type Snapshot = Map<AbsolutePath, FileStamp>;
+
+// Diff
+
+/** Everything between two snapshots: what an install added, edited, or deleted. */
+export type Diff = {
+  added: AbsolutePath[];
+  edited: AbsolutePath[];
+  deleted: AbsolutePath[];
+};
