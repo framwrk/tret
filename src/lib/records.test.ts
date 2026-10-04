@@ -12,6 +12,8 @@ function record(name: string): ToolRecord {
     name,
     url: `https://example.com/${name}.sh`,
     installedAt: "2026-10-03T00:00:00.000Z",
+    executable: `/home/.local/bin/${name}`,
+    scriptSha256: "a".repeat(64),
     added: [`/home/.local/bin/${name}`],
     edited: [],
   };

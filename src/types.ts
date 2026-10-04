@@ -32,11 +32,13 @@ export type Diff = {
 
 // Records
 
-/** One recorded install: the tool, its URL, and the changes its script made. Deletes stay out: uninstall logs edits and never reverses anything but additions. */
+/** One recorded install: the tool, its URL, the executable it put on disk, the script's hash, and the changes its script made. Deletes stay out: uninstall logs edits and never reverses anything but additions. */
 export type ToolRecord = {
   name: string;
   url: string;
   installedAt: string;
+  executable: AbsolutePath;
+  scriptSha256: string;
   added: AbsolutePath[];
   edited: AbsolutePath[];
 };

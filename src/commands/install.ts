@@ -69,6 +69,11 @@ export async function install(url?: string, force = false): Promise<void> {
     process.exit(1);
   }
 
+  const scriptSha256 = new Bun.CryptoHasher("sha256").update(script).digest("hex");
+  if (existing?.scriptSha256 && existing.scriptSha256 !== scriptSha256) {
+    log(`the script at ${url} changed since ${existing.name} was last installed`);
+  }
+
   const before: Snapshot = snapshot();
   log(`snapshotted ${before.size} files and folders`, true);
 
@@ -105,6 +110,8 @@ export async function install(url?: string, force = false): Promise<void> {
     name,
     url,
     installedAt: new Date().toISOString(),
+    executable,
+    scriptSha256,
     added: changes.added,
     edited: changes.edited,
   });
