@@ -1,13 +1,38 @@
+import { openSync, writeSync } from "node:fs";
 import { IS_DEV } from "../constants";
+
+/** The controlling terminal's file descriptor, opened on first use; undefined when there is none. */
+let ttyFd: number | undefined;
+
+/** The fd of the controlling terminal for direct terminal output, or undefined when there is none. */
+export function ttyOutput(): number | undefined {
+  if (ttyFd === undefined) {
+    try {
+      ttyFd = openSync("/dev/tty", "w");
+    } catch {
+      // No controlling terminal (agent runs, CI): the caller falls back to stderr.
+    }
+  }
+  return ttyFd;
+}
 
 /** Prints a message; with `devOnly` the message prints only when running from source, not a compiled binary. */
 export function log(message: string, devOnly = false): void {
   if (!devOnly || IS_DEV) {
-    // stderr, not stdout, when piped: a pasted `tret install curl ... | bash` sends tret's stdout
-    // to bash, which would execute every printed line. Empty stdout leaves bash nothing to run.
-    // Interactive runs print to stdout so the terminal doesn't paint every log line red as stderr.
-    const print = process.stdout.isTTY ? console.log : console.error;
-    print(message);
+    // stdout stays empty whenever it is not a terminal: a pasted `tret install curl ... | bash`
+    // pipes tret's stdout into bash, which would execute every printed line. Write to the
+    // controlling terminal instead, so the piped paste form doesn't paint every line red as
+    // stderr; stderr is only the fallback for runs with no terminal at all.
+    if (process.stdout.isTTY) {
+      console.log(message);
+    } else {
+      const fd = ttyOutput();
+      if (fd === undefined) {
+        console.error(message);
+      } else {
+        writeSync(fd, `${message}\n`);
+      }
+    }
   }
 }
 
