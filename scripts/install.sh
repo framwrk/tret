@@ -50,10 +50,33 @@ TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" | { grep -m1 '"t
   exit 1
 }
 BASE="https://github.com/$REPO/releases/download/$TAG"
-curl -fsSL "$BASE/$BINARY" -o "$TMP/$BINARY"
 curl -fsSL "$BASE/checksums.txt" -o "$TMP/checksums.txt"
 
-# Fail closed on a missing checksum entry or a corrupted download.
+# The release checksum for $BINARY. An empty result means no entry for the
+# binary, and the install fails here instead of skipping verification.
+EXPECTED="$(grep " $BINARY\$" "$TMP/checksums.txt" | cut -d' ' -f1)" ||
+  { echo "No checksum entry for $BINARY in $TAG's checksums.txt." >&2; exit 1; }
+
+# A hash match means the newest release is already installed: say so and
+# skip the download. A locally built binary never matches and gets updated,
+# and so does a matching binary whose execute bit was lost. A directory at
+# $DEST cannot be replaced by an install, so refuse instead of letting mv
+# file the new binary inside it.
+if [ -d "$DEST" ]; then
+  echo "$DEST is a directory - remove it and rerun the install." >&2
+  exit 1
+fi
+if [ -f "$DEST" ] && [ -x "$DEST" ]; then
+  INSTALLED="$(shasum -a 256 "$DEST" 2>/dev/null | cut -d' ' -f1 || true)"
+  if [ "$INSTALLED" = "$EXPECTED" ]; then
+    echo "tret is already up to date at $DEST (release $TAG)."
+    exit 0
+  fi
+fi
+
+curl -fsSL "$BASE/$BINARY" -o "$TMP/$BINARY"
+
+# Fail closed on a corrupted download.
 (cd "$TMP" && grep " $BINARY\$" checksums.txt | shasum -a 256 -c -)
 
 # Write to a temp name in the target directory, then rename, so an
