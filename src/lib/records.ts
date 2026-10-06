@@ -31,7 +31,9 @@ export function findRecordByUrl(url: string): ToolRecord | undefined {
 export function loadRecords(): RecordFile {
   try {
     const file = JSON.parse(readFileSync(join(home(), RECORDS_PATH), "utf8")) as RecordFile;
-    return { version: RECORDS_VERSION, records: file.records ?? [] };
+    // Records saved before source existed were all installs.
+    const records = (file.records ?? []).map((record) => (record.source ? record : { ...record, source: "install" as const }));
+    return { version: RECORDS_VERSION, records };
   } catch {
     return { version: RECORDS_VERSION, records: [] };
   }

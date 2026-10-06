@@ -3,6 +3,11 @@ import { Glob } from "bun";
 import { SCAN_OPTIONS } from "../constants";
 import { lstatSync } from "node:fs";
 
+/** Resolves a command name to its path on PATH, or undefined when no such command exists. */
+export function resolveCommand(name: string): AbsolutePath | undefined {
+  return Bun.which(name) ?? undefined;
+}
+
 /** Picks the most likely installed binary among the changes: something in a bin folder first, then any executable. */
 export function pickExecutable(added: AbsolutePath[]): AbsolutePath | undefined {
   const candidates = added.flatMap((path) => (isDirectory(path) ? executablesUnder(path) : isExecutable(path) ? [path] : []));

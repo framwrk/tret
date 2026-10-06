@@ -116,6 +116,7 @@ export async function install(url?: string, force = false): Promise<void> {
 
   saveRecord({
     name,
+    source: "install",
     url,
     installedAt: new Date().toISOString(),
     executable,
