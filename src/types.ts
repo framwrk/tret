@@ -35,6 +35,8 @@ export type Diff = {
 /** One recorded install: the tool, its URL, the executable it put on disk, the script's hash, and the changes its script made. Deletes stay out: uninstall logs edits and never reverses anything but additions. */
 export type ToolRecord = {
   name: string;
+  /** Whether the tool came through `tret install` or was adopted by `tret find`. */
+  source: "install" | "find";
   url: string;
   installedAt: string;
   executable: AbsolutePath;

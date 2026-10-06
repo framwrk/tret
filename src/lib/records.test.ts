@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { loadRecords, saveRecord } from "./records";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import type { ToolRecord } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ const HOME_BACKUP = process.env.HOME;
 function record(name: string): ToolRecord {
   return {
     name,
+    source: "install",
     url: `https://example.com/${name}.sh`,
     installedAt: "2026-10-03T00:00:00.000Z",
     executable: `/home/.local/bin/${name}`,
@@ -63,5 +64,16 @@ describe("records", () => {
     process.env.HOME = mkdtempSync(join(tmpdir(), "tret-test-"));
 
     expect(loadRecords()).toEqual({ version: 2, records: [] });
+  });
+
+  test("defaults the source of a record saved before source existed to install", () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "tret-test-"));
+    mkdirSync(join(process.env.HOME!, ".tret"), { recursive: true });
+    writeFileSync(
+      join(process.env.HOME!, ".tret", "records.json"),
+      JSON.stringify({ version: 2, records: [{ ...record("ripgrep"), source: undefined }] }),
+    );
+
+    expect(loadRecords().records).toEqual([record("ripgrep")]);
   });
 });

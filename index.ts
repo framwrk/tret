@@ -1,4 +1,5 @@
 import { IS_DEV, SCRIPT_NAME } from "./src/constants";
+import { find } from "./src/commands/find";
 import { install } from "./src/commands/install";
 import { list } from "./src/commands/list";
 import { log } from "./src/lib/utilities";
@@ -32,6 +33,10 @@ switch (command) {
     list();
     break;
 
+  case "find":
+    find(args[1]);
+    break;
+
   default:
     help();
 }
@@ -53,4 +58,5 @@ function help(): void {
   log("\tinstall      Run an installer and record everything it adds (paste the curl | bash line when no URL is given)");
   log("\tuninstall    Remove a tool by reversing what its install added (asks to confirm; --yes skips, --dry-run previews)");
   log("\tlist         Show past installs Tret is tracking");
+  log("\tfind         Find the files and folders a command owns and record them so Tret can remove them");
 }
