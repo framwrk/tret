@@ -1,5 +1,5 @@
 import type { AbsolutePath, FileStamp, Snapshot } from "../types";
-import { EXCLUDED_DIR_NAMES, EXCLUDED_PATHS, SCAN_OPTIONS, SNAPSHOT_ROOTS } from "../constants";
+import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN, EXCLUDED_PATHS, SCAN_OPTIONS, SNAPSHOT_ROOTS } from "../constants";
 import { Glob } from "bun";
 import { lstatSync } from "node:fs";
 
@@ -27,7 +27,7 @@ function snapshotDir(dir: AbsolutePath, entries: Snapshot, excluded: Set<string>
   for (const name of names) {
     const path = `${dir}/${name}`;
     const isSubdir = subdirs.has(name);
-    if (excluded.has(path) || (isSubdir && EXCLUDED_DIR_NAMES.has(name))) continue;
+    if (excluded.has(path) || (isSubdir && (EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name)))) continue;
     const stamp = stampEntry(path);
     if (!stamp) continue;
     entries.set(path, stamp);

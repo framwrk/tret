@@ -98,10 +98,15 @@ export const EXCLUDED_DIR_NAMES = new Set([
   ".vite",
   ".zcompcache",
   "build",
-  "cache",
   "dist",
   "node_modules",
   "out",
   "target",
   "vendor",
 ]);
+
+/**
+ * Folder names that contain this pattern are skipped at any depth, alongside `EXCLUDED_DIR_NAMES`. Package-manager
+ * caches (`~/.npm/_cacache`, `~/.cache`, `~/.bun/install/cache`) are shared by every installer, so no tool owns them.
+ */
+export const EXCLUDED_DIR_NAME_PATTERN = /cache/i;
