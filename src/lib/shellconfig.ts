@@ -43,7 +43,7 @@ export function removeRcLines(name: string, dirs: AbsolutePath[], dryRun: boolea
         continue;
       }
 
-      if (!dirs.some((dir) => line.includes(dir))) {
+      if (!mentionsDir(line, dirs, home)) {
         kept.push(line);
         continue;
       }
@@ -79,4 +79,23 @@ export function removeRcLines(name: string, dirs: AbsolutePath[], dryRun: boolea
   }
 
   return { cleaned, failed };
+}
+
+/**
+ * True when the line names one of the dirs, written expanded, as `$HOME/...`, `${HOME}/...`, or `~/...`.
+ * A match must end at a path boundary, so `/x/.mytool` does not match a line that names `/x/.mytool-tools`.
+ */
+function mentionsDir(line: string, dirs: AbsolutePath[], home: AbsolutePath): boolean {
+  return dirs.some((dir) => {
+    const forms = [dir];
+    if (dir.startsWith(`${home}/`)) {
+      const rest = dir.slice(home.length);
+      forms.push(`$HOME${rest}`, `\${HOME}${rest}`, `~${rest}`);
+    }
+    return forms.some((form) => new RegExp(`${escapeRegex(form)}(?![\\w.-])`).test(line));
+  });
+}
+
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
