@@ -1,7 +1,7 @@
-import { diff, mergeDiff } from "../lib/diff";
 import { extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
 import { findRecordByUrl, loadRecords, removeRecord, saveRecord } from "../lib/records";
 import type { Snapshot } from "../types";
+import { diff } from "../lib/diff";
 import { pickExecutable } from "../lib/executable";
 import { removeAdded } from "../lib/removal";
 import { removeRcLines } from "../lib/shellconfig";
@@ -92,6 +92,7 @@ export async function install(url?: string, force = false): Promise<void> {
     process.exit(1);
   }
 
+  // This middle snapshot only finds the executable the first run needs; the record comes from before and final.
   const after: Snapshot = snapshot();
   log(`snapshotted ${after.size} files and folders`, true);
 
@@ -111,7 +112,8 @@ export async function install(url?: string, force = false): Promise<void> {
   if (await runFirstRun(executable)) {
     const finalSnapshot: Snapshot = snapshot();
     log(`snapshotted ${finalSnapshot.size} files and folders`, true);
-    changes = mergeDiff(changes, diff(before, finalSnapshot));
+    // A path the first run deletes again is gone, so it is not recorded; the final diff is the whole picture.
+    changes = diff(before, finalSnapshot);
   }
 
   saveRecord({

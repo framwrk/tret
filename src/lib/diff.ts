@@ -1,5 +1,4 @@
 import type { AbsolutePath, Diff, Snapshot } from "../types";
-
 /** Compares two snapshots into sorted added, edited, and deleted paths. Files inside an added folder are not recorded. */
 export function diff(before: Snapshot, after: Snapshot): Diff {
   const added: AbsolutePath[] = [];
@@ -21,15 +20,4 @@ export function diff(before: Snapshot, after: Snapshot): Diff {
   }
 
   return { added, edited: edited.sort(), deleted: deleted.sort() };
-}
-
-/** Unions two diffs taken against the same before snapshot; a path deleted after being edited counts as deleted. */
-export function mergeDiff(first: Diff, second: Diff): Diff {
-  const union = (a: AbsolutePath[], b: AbsolutePath[]): AbsolutePath[] => [...new Set([...a, ...b])].sort();
-  const deleted = union(first.deleted, second.deleted);
-  return {
-    added: union(first.added, second.added),
-    edited: union(first.edited, second.edited).filter((path) => !deleted.includes(path)),
-    deleted,
-  };
 }
