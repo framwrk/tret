@@ -60,20 +60,20 @@ describe("diff", () => {
 
   test("omits files and subfolders inside an added folder", () => {
     const after = snap([
-      ["/home/.config/opencode", stamp(1, 96, 100)],
-      ["/home/.local/share/opencode", stamp(1, 96, 101)],
-      ["/home/.local/share/opencode/log", stamp(1, 96, 102)],
-      ["/home/.local/share/opencode/log/opencode.log", stamp(1, 10, 103)],
-      ["/home/.local/share/opencode/repos", stamp(1, 96, 104)],
-      ["/home/.local/state/opencode", stamp(1, 96, 105)],
-      ["/home/.opencode/bin/opencode", stamp(1, 10, 106)],
+      ["/home/.config/mytool", stamp(1, 96, 100)],
+      ["/home/.local/share/mytool", stamp(1, 96, 101)],
+      ["/home/.local/share/mytool/log", stamp(1, 96, 102)],
+      ["/home/.local/share/mytool/log/mytool.log", stamp(1, 10, 103)],
+      ["/home/.local/share/mytool/repos", stamp(1, 96, 104)],
+      ["/home/.local/state/mytool", stamp(1, 96, 105)],
+      ["/home/.mytool/bin/mytool", stamp(1, 10, 106)],
     ]);
 
     expect(diff(new Map(), after).added).toEqual([
-      "/home/.config/opencode",
-      "/home/.local/share/opencode",
-      "/home/.local/state/opencode",
-      "/home/.opencode/bin/opencode",
+      "/home/.config/mytool",
+      "/home/.local/share/mytool",
+      "/home/.local/state/mytool",
+      "/home/.mytool/bin/mytool",
     ]);
   });
 

@@ -48,54 +48,54 @@ describe("removal", () => {
 
   test("prunes the tool's entries out of a guarded directory and removes it when empty", () => {
     const home = testHome();
-    mkdirSync(join(home, ".cache/opencode"), { recursive: true });
-    writeFileSync(join(home, ".cache/opencode/data"), "");
+    mkdirSync(join(home, ".cache/mytool"), { recursive: true });
+    writeFileSync(join(home, ".cache/mytool/data"), "");
 
-    const result = removeAdded([join(home, ".cache")], "opencode", false);
+    const result = removeAdded([join(home, ".cache")], "mytool", false);
 
-    expect(result.pruned).toEqual([join(home, ".cache/opencode")]);
+    expect(result.pruned).toEqual([join(home, ".cache/mytool")]);
     expect(result.removed).toEqual([join(home, ".cache")]);
-    expect(existsSync(join(home, ".cache/opencode"))).toBe(false);
+    expect(existsSync(join(home, ".cache/mytool"))).toBe(false);
     expect(existsSync(join(home, ".cache"))).toBe(false);
   });
 
   test("prunes tool entries nested below a guarded directory", () => {
     const home = testHome();
-    mkdirSync(join(home, ".local/share/opencode"), { recursive: true });
-    mkdirSync(join(home, ".local/state/opencode"), { recursive: true });
+    mkdirSync(join(home, ".local/share/mytool"), { recursive: true });
+    mkdirSync(join(home, ".local/state/mytool"), { recursive: true });
 
-    const result = removeAdded([join(home, ".local")], "opencode", false);
+    const result = removeAdded([join(home, ".local")], "mytool", false);
 
-    expect(result.pruned).toEqual([join(home, ".local/share/opencode"), join(home, ".local/state/opencode")]);
+    expect(result.pruned).toEqual([join(home, ".local/share/mytool"), join(home, ".local/state/mytool")]);
     expect(result.removed).toEqual([join(home, ".local")]);
     expect(existsSync(join(home, ".local"))).toBe(false);
   });
 
   test("keeps a guarded directory that still holds other programs' entries", () => {
     const home = testHome();
-    mkdirSync(join(home, ".cache/opencode"), { recursive: true });
+    mkdirSync(join(home, ".cache/mytool"), { recursive: true });
     mkdirSync(join(home, ".cache/bun"), { recursive: true });
     writeFileSync(join(home, ".cache/bun/contents"), "");
 
-    const result = removeAdded([join(home, ".cache")], "opencode", false);
+    const result = removeAdded([join(home, ".cache")], "mytool", false);
 
-    expect(result.pruned).toEqual([join(home, ".cache/opencode")]);
+    expect(result.pruned).toEqual([join(home, ".cache/mytool")]);
     expect(result.kept.map((kept) => kept.path)).toEqual([join(home, ".cache")]);
-    expect(existsSync(join(home, ".cache/opencode"))).toBe(false);
+    expect(existsSync(join(home, ".cache/mytool"))).toBe(false);
     expect(existsSync(join(home, ".cache/bun/contents"))).toBe(true);
   });
 
   test("dry run reports prunes without deleting", () => {
     const home = testHome();
-    mkdirSync(join(home, ".cache/opencode"), { recursive: true });
+    mkdirSync(join(home, ".cache/mytool"), { recursive: true });
     mkdirSync(join(home, ".cache/bun"), { recursive: true });
     writeFileSync(join(home, ".cache/bun/contents"), "");
 
-    const result = removeAdded([join(home, ".cache")], "opencode", true);
+    const result = removeAdded([join(home, ".cache")], "mytool", true);
 
-    expect(result.pruned).toEqual([join(home, ".cache/opencode")]);
+    expect(result.pruned).toEqual([join(home, ".cache/mytool")]);
     expect(result.kept.map((kept) => kept.path)).toEqual([join(home, ".cache")]);
-    expect(existsSync(join(home, ".cache/opencode"))).toBe(true);
+    expect(existsSync(join(home, ".cache/mytool"))).toBe(true);
   });
 
   test("counts already-missing paths as removed", () => {

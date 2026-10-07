@@ -51,7 +51,7 @@ function addToolEntries(dir: AbsolutePath, name: string, found: Set<AbsolutePath
   }
 }
 
-/** True when an entry is the tool's: `opencode`, `opencode.plist`, `.opencode`, or `.opencoderc`. */
+/** True when an entry is the tool's: `mytool`, `mytool.plist`, `.mytool`, or `.mytoolrc`. */
 function belongsTo(entry: string, name: string): boolean {
   const base = entry.toLowerCase().replace(/^\./, "");
   const wanted = name.toLowerCase();
