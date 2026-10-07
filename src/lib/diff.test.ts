@@ -1,6 +1,6 @@
 import type { FileStamp, Snapshot } from "../types";
 import { describe, expect, test } from "bun:test";
-import { diff, mergeDiff } from "./diff";
+import { diff } from "./diff";
 
 function snap(entries: Array<[string, FileStamp]>): Snapshot {
   return new Map(entries);
@@ -90,42 +90,5 @@ describe("diff", () => {
     const after = snap([["/home/dir", stamp(2, 128, 100, true)]]);
 
     expect(diff(before, after).edited).toEqual([]);
-  });
-});
-
-describe("mergeDiff", () => {
-  test("unions paths that appear in only one diff", () => {
-    const first = { added: ["/b"], edited: ["/e"], deleted: [] };
-    const second = { added: ["/a"], edited: [], deleted: ["/d"] };
-
-    expect(mergeDiff(first, second)).toEqual({
-      added: ["/a", "/b"],
-      edited: ["/e"],
-      deleted: ["/d"],
-    });
-  });
-
-  test("drops duplicates between the two diffs", () => {
-    const first = { added: ["/a", "/b"], edited: [], deleted: [] };
-    const second = { added: ["/b", "/c"], edited: [], deleted: [] };
-
-    expect(mergeDiff(first, second).added).toEqual(["/a", "/b", "/c"]);
-  });
-
-  test("counts a path edited in one diff and deleted in the other as deleted", () => {
-    const first = { added: [], edited: ["/e"], deleted: [] };
-    const second = { added: [], edited: [], deleted: ["/e"] };
-
-    expect(mergeDiff(first, second)).toEqual({
-      added: [],
-      edited: [],
-      deleted: ["/e"],
-    });
-  });
-
-  test("returns empty arrays for two empty diffs", () => {
-    const empty = { added: [], edited: [], deleted: [] };
-
-    expect(mergeDiff(empty, empty)).toEqual(empty);
   });
 });
