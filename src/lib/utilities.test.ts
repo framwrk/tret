@@ -3,7 +3,7 @@ import { extractUrl } from "./utilities";
 
 describe("extractUrl", () => {
   test("reads the URL from a pasted curl command", () => {
-    expect(extractUrl("curl -fsSL https://opencode.ai/v2/install | bash")).toBe("https://opencode.ai/v2/install");
+    expect(extractUrl("curl -fsSL https://mytool.ai/v2/install | bash")).toBe("https://mytool.ai/v2/install");
   });
 
   test("stops at the pipe of a quoted paste", () => {
