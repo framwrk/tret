@@ -1,6 +1,12 @@
 import type { FileStamp, Snapshot } from "../types";
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { diff } from "./diff";
+
+const HOME_BACKUP = process.env.HOME;
+
+afterEach(() => {
+  process.env.HOME = HOME_BACKUP;
+});
 
 function snap(entries: Array<[string, FileStamp]>): Snapshot {
   return new Map(entries);
@@ -90,5 +96,21 @@ describe("diff", () => {
     const after = snap([["/home/dir", stamp(2, 128, 100, true)]]);
 
     expect(diff(before, after).edited).toEqual([]);
+  });
+
+  test("records what an install put inside a new shared folder, not the folder itself", () => {
+    process.env.HOME = "/h";
+    const before = snap([["/h/.zshrc", stamp(1, 1, 1)]]);
+    const after = snap([
+      ["/h/.zshrc", stamp(1, 1, 1)],
+      ["/h/.local", stamp(2, 0, 2, true)],
+      ["/h/.local/bin", stamp(2, 0, 3, true)],
+      ["/h/.local/bin/tool", stamp(2, 1, 4)],
+      ["/h/.local/share", stamp(2, 0, 5, true)],
+      ["/h/.local/share/uv", stamp(2, 0, 6, true)],
+      ["/h/.local/share/uv/python", stamp(2, 0, 7, true)],
+    ]);
+
+    expect(diff(before, after).added).toEqual(["/h/.local/bin/tool", "/h/.local/share/uv"]);
   });
 });

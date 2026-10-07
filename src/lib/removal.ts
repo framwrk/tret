@@ -200,6 +200,13 @@ function removeEmptyDirs(dir: AbsolutePath): void {
   }
 }
 
+/** True for a folder many programs share. An install never records a new one whole; what it put inside is recorded instead. */
+export function isSharedFolder(path: AbsolutePath): boolean {
+  const home = Bun.env.HOME;
+  if (!home) throw new Error("HOME is not set");
+  return isGuarded(path, home);
+}
+
 function isGuarded(path: AbsolutePath, home: AbsolutePath): boolean {
   if (SHARED_ABSOLUTE.includes(path) || path === home) {
     return true;
