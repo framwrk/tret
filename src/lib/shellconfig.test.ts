@@ -66,4 +66,28 @@ describe("shellconfig", () => {
     expect(readFileSync(join(home, ".zshrc"), "utf8")).toBe("");
     expect(readFileSync(join(home, ".bash_profile"), "utf8")).toBe("");
   });
+
+  test("matches a PATH line written with $HOME or ~ instead of the expanded path", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    writeFileSync(file, `# mytool\nexport PATH="$HOME/.mytool/bin:$PATH"\nexport PATH=~/.mytool/bin:$PATH\n`);
+
+    const rc = removeRcLines("mytool", [join(home, ".mytool")], false);
+
+    expect(rc.cleaned).toHaveLength(3);
+    expect(readFileSync(file, "utf8")).toBe("");
+  });
+
+  test("does not match a line that names a longer directory", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const before = `export PATH=$HOME/.mytool-tools/bin:$PATH\nexport PATH=${home}/.mytool2/bin:$PATH\n`;
+
+    writeFileSync(file, before);
+
+    const rc = removeRcLines("mytool", [join(home, ".mytool")], false);
+
+    expect(rc.cleaned).toHaveLength(0);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
 });
