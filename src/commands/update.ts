@@ -1,5 +1,6 @@
 import { fetchScript, log } from "../lib/utilities";
 import { UPDATE_SCRIPT_URL } from "../constants";
+import { clearUpdateCheck } from "../lib/updatecheck";
 import { runInstaller } from "../lib/installer";
 
 // The update re-runs the published install script: it resolves the newest release itself,
@@ -19,4 +20,7 @@ export async function update(): Promise<void> {
     log(`\tupdate script exited with code ${exitCode}`);
     process.exit(1);
   }
+
+  // The new binary makes the cached check result wrong for the rest of its day.
+  clearUpdateCheck();
 }

@@ -1,4 +1,5 @@
 import { IS_DEV, SCRIPT_NAME } from "./src/constants";
+import { checkForUpdate } from "./src/lib/updatecheck";
 import { find } from "./src/commands/find";
 import { install } from "./src/commands/install";
 import { list } from "./src/commands/list";
@@ -44,6 +45,13 @@ switch (command) {
 
   default:
     help();
+}
+
+// Every compiled run checks once a day for a newer release and prints a notice when one
+// exists; the check caches its result, so most runs only read it. Dev runs skip the check,
+// and `update` replaces the binary itself, so checking right after would be redundant.
+if (!IS_DEV && command !== "update") {
+  await checkForUpdate();
 }
 
 if (timed) {

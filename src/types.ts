@@ -50,3 +50,12 @@ export type RecordFile = {
   version: number;
   records: ToolRecord[];
 };
+
+// Update check
+
+/** The cached result of the last release check; written at most once a day by `checkForUpdate()`. */
+export type UpdateCheckFile = {
+  checkedAt: string;
+  tag: string;
+  outdated: boolean;
+};

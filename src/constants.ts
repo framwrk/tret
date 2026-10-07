@@ -14,6 +14,12 @@ export const SCRIPT_NAME = "Tret";
  */
 export const UPDATE_SCRIPT_URL = "https://tret.framwrk.com/scripts/install.sh";
 
+/** Where the daily update check caches its result, relative to `$HOME`. */
+export const UPDATE_CHECK_PATH = ".tret/update-check.json";
+
+/** The binary `tret update` replaces and the update check hashes, relative to `$HOME`. */
+export const INSTALLED_BINARY = ".tret/bin/tret";
+
 // Runtime mode
 
 /**
