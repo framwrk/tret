@@ -6,6 +6,14 @@ import type { GlobScanOptions } from "bun";
 /** Name Tret uses for itself in help output and prompts. */
 export const SCRIPT_NAME = "Tret";
 
+// Self-update
+
+/**
+ * Where `tret update` fetches its install script from: the same published script the public
+ * install uses, so an update path never has to track the script it runs.
+ */
+export const UPDATE_SCRIPT_URL = "https://tret.framwrk.com/scripts/install.sh";
+
 // Runtime mode
 
 /**
