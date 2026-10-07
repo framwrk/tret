@@ -42,7 +42,7 @@ Tret supports macOS on Apple Silicon only. To remove the Tret binary itself, run
 | `tret uninstall <tool_name>` (`remove`, `unadd`) | Remove the files the tool's install added                                   |
 | `tret list` (`show`)                             | List every tool installed with Tret                                         |
 
-`install` also takes `--force`: it uninstalls the tool first, then reinstalls it from a clean diff. `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt.
+`install` also takes `--force`: it uninstalls the tool first, then reinstalls it from a clean diff. Anything after `--` passes to the install script itself (`tret install <URL> -- --skip-browser`). `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt.
 
 ### Install a tool
 
