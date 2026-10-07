@@ -44,8 +44,10 @@ trap 'rm -rf "$TMP"; rm -f "$DEST.tmp"' EXIT
 # A 200 body with no tag (empty releases list, proxy error page) otherwise
 # exits silently under pipefail, so validate the tag before using it.
 # The API body may be minified (one line) or pretty-printed, so match the
-# tag_name field itself instead of relying on line positions.
-TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" | { grep -om1 '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' || true; } | cut -d'"' -f4)" ||
+# tag_name field itself instead of relying on line positions. -m stops after
+# one matching LINE, so with -o it would still print every tag_name on a
+# one-line body; head keeps only the first, which is the newest release.
+TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" | { grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' || true; } | head -n1 | cut -d'"' -f4)" ||
   { echo "Could not read releases for $REPO from the GitHub API." >&2; exit 1; }
 [ -n "$TAG" ] && [ "${TAG#v}" != "$TAG" ] || {
   echo "No release tag found for $REPO - is there a published release?" >&2
