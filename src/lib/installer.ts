@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -16,16 +16,32 @@ export async function runInstaller(script: string): Promise<number> {
     chmodSync(path, 0o755);
 
     // node:child_process, not Bun.spawn: when tret is piped (`tret install curl ... | bash`), the
-    // script's output must not touch stdout — bash would execute every printed line. It goes to
-    // the controlling terminal when there is one (an interactive paste still shows, unpainted);
-    // a run with no terminal sends it to stderr, and a TTY run inherits stdout directly.
+    // script's output must not touch stdout — bash would execute every printed line. Stdout is always
+    // a pipe, never a terminal: a script that checks `[ -t 1 ]` skips its interactive steps, such as
+    // offering to start the tool it just installed with exec, which would never return to tret.
+    // The output is copied to the same place tret prints: the terminal when stdout is one, else the
+    // controlling terminal, else stderr.
     return await new Promise<number>((resolve) => {
-      const out = process.stdout.isTTY ? "inherit" : (ttyOutput() ?? process.stderr);
-      const child = spawn(path, { stdio: ["inherit", out, "inherit"] });
-      child.once("exit", (code) => resolve(code ?? 1));
+      const child = spawn(path, { stdio: ["inherit", "pipe", "inherit"] });
+      child.stdout?.on("data", (chunk: Buffer) => writeOutput(chunk));
+      child.once("close", (code) => resolve(code ?? 1));
       child.once("error", () => resolve(1));
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Copies a chunk of script output to the terminal: stdout when it is one, else the controlling terminal, else stderr. */
+function writeOutput(chunk: Buffer): void {
+  if (process.stdout.isTTY) {
+    process.stdout.write(chunk);
+    return;
+  }
+  const fd = ttyOutput();
+  if (fd === undefined) {
+    process.stderr.write(chunk);
+  } else {
+    writeSync(fd, chunk);
   }
 }
