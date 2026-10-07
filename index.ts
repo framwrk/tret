@@ -18,11 +18,16 @@ const start = Date.now();
 
 switch (command) {
   case "add":
-  case "install":
-    // The rest of the line, joined: a paste like `tret install curl -fsSL https://... | bash`
+  case "install": {
+    // Everything after `--` goes to the installer script itself (`tret install <URL> -- --skip-browser`).
+    // The rest of the pre-`--` line, joined: a paste like `tret install curl -fsSL https://... | bash`
     // reaches tret as separate arguments once the shell has taken the pipe.
-    await install(args.slice(1).join(" "), args.includes("--force"));
+    const separator = args.indexOf("--");
+    const own = separator === -1 ? args : args.slice(0, separator);
+    const scriptArgs = separator === -1 ? [] : args.slice(separator + 1);
+    await install(own.slice(1).join(" "), own.includes("--force"), scriptArgs);
     break;
+  }
 
   case "unadd":
   case "remove":
@@ -68,7 +73,9 @@ function help(): void {
   log(`\t${SCRIPT_NAME.toLowerCase()} <COMMAND>`);
 
   log("Commands");
-  log("\tinstall      Run an installer and record everything it adds (paste the curl | bash line when no URL is given)");
+  log(
+    "\tinstall      Run an installer and record everything it adds (paste the curl | bash line when no URL is given; flags after -- go to the script)",
+  );
   log("\tuninstall    Remove a tool by reversing what its install added (asks to confirm; --yes skips, --dry-run previews)");
   log("\tlist         Show past installs Tret is tracking");
   log("\tfind         Find the files and folders a command owns and record them so Tret can remove them");

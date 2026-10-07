@@ -7,7 +7,7 @@ import { ttyOutput } from "./utilities";
 const TEMP_PREFIX = "tret-install-";
 
 /** Runs a downloaded install script: temp file, exec bit, spawn, then the exit code. */
-export async function runInstaller(script: string): Promise<number> {
+export async function runInstaller(script: string, args: string[] = []): Promise<number> {
   const dir = mkdtempSync(join(tmpdir(), TEMP_PREFIX));
   const path = join(dir, "install.sh");
 
@@ -22,7 +22,7 @@ export async function runInstaller(script: string): Promise<number> {
     // The output is copied to the same place tret prints: the terminal when stdout is one, else the
     // controlling terminal, else stderr.
     return await new Promise<number>((resolve) => {
-      const child = spawn(path, { stdio: ["inherit", "pipe", "inherit"] });
+      const child = spawn(path, args, { stdio: ["inherit", "pipe", "inherit"] });
       child.stdout?.on("data", (chunk: Buffer) => writeOutput(chunk));
       child.once("close", (code) => resolve(code ?? 1));
       child.once("error", () => resolve(1));

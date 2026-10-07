@@ -9,7 +9,7 @@ import { runFirstRun } from "../lib/first-run";
 import { runInstaller } from "../lib/installer";
 import { snapshot } from "../lib/snapshot";
 
-export async function install(url?: string, force = false): Promise<void> {
+export async function install(url?: string, force = false, scriptArgs: string[] = []): Promise<void> {
   if (!url) {
     log("Paste the install command (curl ... | bash):");
     url = await readLine();
@@ -85,7 +85,7 @@ export async function install(url?: string, force = false): Promise<void> {
   const before: Snapshot = snapshot();
   log(`snapshotted ${before.size} files and folders`, true);
 
-  const exitCode = await runInstaller(script);
+  const exitCode = await runInstaller(script, scriptArgs);
   if (exitCode !== 0) {
     log("Error");
     log(`\tinstall script exited with code ${exitCode}: ${url}`);
