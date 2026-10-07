@@ -59,6 +59,35 @@ describe("removal", () => {
     expect(existsSync(join(home, ".cache"))).toBe(false);
   });
 
+  test("removes the empty shared folders an install created, never their non-empty ones", () => {
+    const home = testHome();
+    mkdirSync(join(home, ".local/share/mytool"), { recursive: true });
+    mkdirSync(join(home, ".local/bin"), { recursive: true });
+    writeFileSync(join(home, ".local/share/mytool/data"), "");
+    writeFileSync(join(home, ".local/bin/mytool"), "#!/bin/sh\n");
+
+    const result = removeAdded([join(home, ".local/bin/mytool"), join(home, ".local/share/mytool")], "mytool", false);
+
+    expect(result.removed).toHaveLength(2);
+    expect(result.kept).toEqual([]);
+    expect(existsSync(join(home, ".local/share"))).toBe(false);
+    expect(existsSync(join(home, ".local/bin"))).toBe(false);
+    expect(existsSync(join(home, ".local"))).toBe(false);
+  });
+
+  test("keeps a shared folder that still holds another tool's files", () => {
+    const home = testHome();
+    mkdirSync(join(home, ".local/share/mytool"), { recursive: true });
+    mkdirSync(join(home, ".local/share/other"), { recursive: true });
+    writeFileSync(join(home, ".local/share/other/data"), "");
+
+    const result = removeAdded([join(home, ".local/share/mytool")], "mytool", false);
+
+    expect(result.removed).toHaveLength(1);
+    expect(existsSync(join(home, ".local/share"))).toBe(true);
+    expect(existsSync(join(home, ".local/share/other/data"))).toBe(true);
+  });
+
   test("prunes tool entries nested below a guarded directory", () => {
     const home = testHome();
     mkdirSync(join(home, ".local/share/mytool"), { recursive: true });

@@ -1,6 +1,6 @@
+import { dirname, join } from "node:path";
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from "node:fs";
 import type { AbsolutePath } from "../types";
-import { join } from "node:path";
 
 /** Why a recorded path was kept instead of deleted. */
 export type KeptReason = "guarded" | "failed";
@@ -89,6 +89,7 @@ export function removeAdded(paths: AbsolutePath[], name: string, dryRun: boolean
     try {
       rmSync(path, { recursive: true });
       removed.push(path);
+      pruneEmptyAncestors(path);
     } catch {
       kept.push({ path, reason: "failed" });
     }
@@ -129,6 +130,7 @@ function removeGuarded(
 
   if (!existsSync(path)) {
     removed.push(path);
+    pruneEmptyAncestors(path);
   } else {
     kept.push({ path, reason: "guarded" });
   }
@@ -205,6 +207,28 @@ export function isSharedFolder(path: AbsolutePath): boolean {
   const home = Bun.env.HOME;
   if (!home) throw new Error("HOME is not set");
   return isGuarded(path, home);
+}
+
+/**
+ * Removes now-empty parent folders of a deleted path, up to `$HOME` and only under it, so an install's
+ * empty leftovers (a fresh `~/.local/share`) do not survive uninstall. Each `rmdir` fails harmlessly on
+ * a folder that still holds anything.
+ */
+function pruneEmptyAncestors(path: AbsolutePath): void {
+  const home = Bun.env.HOME;
+  if (!home || !path.startsWith(`${home}/`)) {
+    return;
+  }
+
+  let parent = dirname(path);
+  while (parent.startsWith(`${home}/`)) {
+    try {
+      rmdirSync(parent);
+    } catch {
+      return;
+    }
+    parent = dirname(parent);
+  }
 }
 
 function isGuarded(path: AbsolutePath, home: AbsolutePath): boolean {
