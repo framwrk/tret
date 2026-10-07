@@ -4,6 +4,7 @@ import { install } from "./src/commands/install";
 import { list } from "./src/commands/list";
 import { log } from "./src/lib/utilities";
 import { uninstall } from "./src/commands/uninstall";
+import { update } from "./src/commands/update";
 
 const args = process.argv.slice(2).filter((arg) => arg !== "--time");
 
@@ -37,6 +38,10 @@ switch (command) {
     find(args[1]);
     break;
 
+  case "update":
+    await update();
+    break;
+
   default:
     help();
 }
@@ -59,4 +64,5 @@ function help(): void {
   log("\tuninstall    Remove a tool by reversing what its install added (asks to confirm; --yes skips, --dry-run previews)");
   log("\tlist         Show past installs Tret is tracking");
   log("\tfind         Find the files and folders a command owns and record them so Tret can remove them");
+  log("\tupdate       Update Tret to the latest release (skips the download when already up to date)");
 }
