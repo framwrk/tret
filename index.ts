@@ -55,6 +55,12 @@ switch (command) {
     await update();
     break;
 
+  case "help":
+  case "-h":
+  case "--help":
+    help();
+    break;
+
   default:
     help();
 }
@@ -73,18 +79,36 @@ if (timed) {
 }
 
 function help(): void {
-  log("Name");
-  log(`\t${SCRIPT_NAME} - Wraps installers and remembers what they added, so you can cleanly remove them later.`);
-
-  log("Usage");
-  log(`\t${SCRIPT_NAME.toLowerCase()} <COMMAND>`);
-
-  log("Commands");
+  log(`Usage`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} [--version] <command> [arguments]`);
+  log("");
+  log(`${SCRIPT_NAME} wraps installers and remembers what they added, so you can cleanly remove them later.`);
+  log("");
+  log(`Commands`);
   log(
-    "\tinstall      Run an installer and record everything it adds (paste the curl | bash line when no URL is given; flags after -- go to the script)",
+    `\tinstall <url>     Run an installer and record every file and folder it adds; paste the curl | bash line when no URL is given (alias: add)`,
   );
-  log("\tuninstall    Remove a tool by reversing what its install added (asks to confirm; --yes skips, --dry-run previews)");
-  log("\tlist         Show past installs Tret is tracking");
-  log("\tfind         Find the files and folders a command owns and record them so Tret can remove them");
-  log("\tupdate       Update Tret to the latest release (skips the download when already up to date)");
+  log(
+    `\tuninstall <tool>  Remove a tool by deleting what its install added, stripping its PATH lines, and dropping the record (aliases: remove, unadd)`,
+  );
+  log(`\tlist              Show the tools Tret is tracking (alias: show)`);
+  log(`\tfind <tool>       Find the files and folders an already-installed command owns and record them for uninstall`);
+  log(`\tupdate            Update Tret to the latest release (skips the download when already up to date)`);
+  log("");
+  log(`Options`);
+  log(`\t-h, --help    Show this help and exit`);
+  log(`\t--version     Print the running version and exit`);
+  log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
+  log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
+  log(`\t--yes         uninstall: skip the confirmation prompt`);
+  log(`\t--            install: every flag after this goes to the install script itself`);
+  log("");
+  log(`Examples`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} install curl -fsSL https://example.com/install.sh | bash`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh -- --skip-browser`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --dry-run`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --yes`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} find opencode`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} list`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} update`);
 }
