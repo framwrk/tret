@@ -6,6 +6,12 @@ import type { GlobScanOptions } from "bun";
 /** Name Tret uses for itself in help output and prompts. */
 export const SCRIPT_NAME = "Tret";
 
+/**
+ * Version printed by `--version`: the release tag injected into the compiled binary at build time
+ * (`--define` in the build script), falling back to `dev` when running from source.
+ */
+export const VERSION = process.env.TRET_VERSION ?? "dev";
+
 // Self-update
 
 /**

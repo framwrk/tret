@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "start": "bun index.ts",
-    "build": "bun build ./index.ts --compile --target=bun-darwin-arm64 --outfile dist/tret-macos-arm64",
+    "build": "bun build ./index.ts --compile --target=bun-darwin-arm64 --outfile dist/tret-macos-arm64 --define process.env.TRET_VERSION=\"\\\"$(git describe --tags --always)\\\"\"",
     "test": "bun test",
     "dev": "bun index.ts",
     "lint": "eslint .",

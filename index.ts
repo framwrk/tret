@@ -1,4 +1,4 @@
-import { IS_DEV, SCRIPT_NAME } from "./src/constants";
+import { IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
 import { checkForUpdate } from "./src/lib/updatecheck";
 import { find } from "./src/commands/find";
 import { install } from "./src/commands/install";
@@ -15,6 +15,13 @@ const command = args[0];
 const timed = IS_DEV && process.argv.includes("--time");
 
 const start = Date.now();
+
+// `--version` prints the release tag injected at build time and stops there — no update check,
+// so a compiled run answers instantly even when offline.
+if (args.includes("--version")) {
+  log(`${SCRIPT_NAME} ${VERSION}`);
+  process.exit(0);
+}
 
 switch (command) {
   case "add":
