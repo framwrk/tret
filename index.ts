@@ -19,7 +19,7 @@ const start = Date.now();
 // `--version` prints the release tag injected at build time and stops there — no update check,
 // so a compiled run answers instantly even when offline.
 if (args.includes("--version")) {
-  log(`${SCRIPT_NAME} ${VERSION}`);
+  log(`${VERSION}`);
   process.exit(0);
 }
 
