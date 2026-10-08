@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Installs the latest tret release binary to ~/.tret/bin/tret and puts it on
-# your PATH. Never asks for a password.
+# Installs the latest tret release binary to ~/.tret/bin/tret and links it as
+# ~/.local/bin/tret. Shell rc files are never touched. Never asks for a
+# password.
 set -euo pipefail
 
 REPO="framwrk/tret"
@@ -14,13 +15,35 @@ INSTALL_DIR="$HOME/.tret/bin"
 NAME="tret"
 DEST="$INSTALL_DIR/$NAME"
 
-# A pre-existing tret command outside our target is rare, but worth a note:
-# the new binary only wins where $INSTALL_DIR comes first in your PATH.
-# An already-installed target binary counts as ours: reinstalling it over
-# itself needs no note.
+# The command lives on PATH through a symlink in ~/.local/bin, the way the
+# pro tools do it: one standard, user-writable directory that is almost
+# always already on PATH, so no shell rc file ever needs editing.
+LINK_DIR="$HOME/.local/bin"
+LINK="$LINK_DIR/$NAME"
+
+# Make sure $LINK is a symlink to $DEST. Leaves a foreign file or symlink at
+# the link path alone and says so.
+ensure_link() {
+  if [ -L "$LINK" ] && [ "$(readlink "$LINK" || true)" = "$DEST" ]; then
+    return 0
+  fi
+  if [ -e "$LINK" ] || [ -L "$LINK" ]; then
+    echo "Note: $LINK already exists and is not a tret symlink - tret was not linked there." >&2
+    return 1
+  fi
+  mkdir -p "$LINK_DIR" 2>/dev/null || {
+    echo "$LINK_DIR could not be created." >&2
+    return 1
+  }
+  ln -s "$DEST" "$LINK" || {
+    echo "Could not create $LINK." >&2
+    return 1
+  }
+}
+
 EXISTING="$(command -v "$NAME" || true)"
 if [ ! -x "$DEST" ] && [ -n "$EXISTING" ] && [ "$EXISTING" != "$DEST" ]; then
-  echo "Note: a 'tret' command already exists at $EXISTING - this install takes priority only where $INSTALL_DIR comes first in your PATH."
+  echo "Note: a 'tret' command already exists at $EXISTING - this install takes priority only where $LINK_DIR comes first in your PATH."
 fi
 
 # Install without sudo: the target is user-writable. An unwritable target
@@ -70,6 +93,11 @@ if [ -d "$DEST" ]; then
   echo "$DEST is a directory - remove it and rerun the install." >&2
   exit 1
 fi
+
+# The symlink is repaired even on the up-to-date path: a rerun after a
+# deleted link restores it without redownloading the binary.
+ensure_link || exit 1
+
 if [ -f "$DEST" ] && [ -x "$DEST" ]; then
   INSTALLED="$(shasum -a 256 "$DEST" 2>/dev/null | cut -d' ' -f1 || true)"
   if [ "$INSTALLED" = "$EXPECTED" ]; then
@@ -87,33 +115,20 @@ curl -fsSL "$BASE/$BINARY" -o "$TMP/$BINARY"
 # interrupted install never leaves a truncated binary at $DEST.
 install -m 755 "$TMP/$BINARY" "$DEST.tmp" && mv -f "$DEST.tmp" "$DEST"
 
-# Say what '$NAME' actually resolves to now, so the closing hint is truthful.
+# Say what '$NAME' actually resolves to now, so the closing hints are truthful.
 RESOLVED="$(command -v "$NAME" || true)"
 
-# Put tret on PATH for new shells: append an export to the shell's rc file
-# unless an rc file already references the install dir (reinstalls skip it).
-RC="$HOME/.zshrc"
-case "${SHELL:-}" in *bash*) RC="$HOME/.bash_profile" ;; esac
-if ! grep -qsF "$INSTALL_DIR" "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.zshenv" \
-  "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; then
-  case ":$PATH:" in
-    *":$INSTALL_DIR:"*) ;;
-    *)
-      if { echo; echo "# tret"; echo "export PATH=\"$INSTALL_DIR:\$PATH\""; } >> "$RC"; then
-        echo "Added $INSTALL_DIR to your PATH in $RC - open a new terminal or run 'source $RC' to use it."
-      else
-        echo "Could not write to $RC - add $INSTALL_DIR to your PATH manually." >&2
-      fi
-      ;;
-  esac
-fi
-
-if [ "$RESOLVED" = "$DEST" ]; then
+if [ "$RESOLVED" = "$LINK" ]; then
   echo "$NAME installed to $DEST - run '$NAME' to start."
 elif [ -n "$RESOLVED" ]; then
-  echo "$NAME installed to $DEST."
-  echo "Note: '$NAME' currently resolves to $RESOLVED - the new binary wins only where $INSTALL_DIR comes first in your PATH. Run '$DEST' to use it."
+  echo "$NAME installed to $DEST ($LINK -> $DEST)."
+  echo "Note: '$NAME' currently resolves to $RESOLVED - the new install wins only where $LINK_DIR comes first in your PATH."
 else
-  echo "$NAME installed to $DEST."
-  echo "Note: '$NAME' is not on this shell's PATH yet - open a new terminal or run 'source $RC' to pick it up."
+  echo "$NAME installed to $DEST ($LINK -> $DEST)."
+  case ":$PATH:" in
+    *":$LINK_DIR:"*) ;;
+    *)
+      echo "Note: $LINK_DIR is not on this shell's PATH - add it to your shell profile to use '$NAME'."
+      ;;
+  esac
 fi
