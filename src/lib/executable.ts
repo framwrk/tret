@@ -1,7 +1,6 @@
 import type { AbsolutePath } from "../types";
-import { Glob } from "bun";
-import { SCAN_OPTIONS } from "../constants";
 import { lstatSync } from "node:fs";
+import { scanDir } from "./scan";
 
 /** Resolves a command name to its path on PATH, or undefined when no such command exists. */
 export function resolveCommand(name: string): AbsolutePath | undefined {
@@ -17,19 +16,13 @@ export function pickExecutable(added: AbsolutePath[]): AbsolutePath | undefined 
 
 /** Collects executable files anywhere under an added folder. */
 function executablesUnder(dir: AbsolutePath): AbsolutePath[] {
-  let names: string[];
-  let subdirs: Set<string>;
-  try {
-    names = [...new Glob("*").scanSync({ ...SCAN_OPTIONS, cwd: dir })];
-    subdirs = new Set(new Glob("*/").scanSync({ ...SCAN_OPTIONS, cwd: dir }));
-  } catch {
-    return [];
-  }
+  const scan = scanDir(dir);
+  if (!scan) return [];
 
   const found: AbsolutePath[] = [];
-  for (const name of names) {
+  for (const name of scan.names) {
     const path = `${dir}/${name}`;
-    if (subdirs.has(name)) found.push(...executablesUnder(path));
+    if (scan.subdirs.has(name)) found.push(...executablesUnder(path));
     else if (isExecutable(path)) found.push(path);
   }
   return found;
