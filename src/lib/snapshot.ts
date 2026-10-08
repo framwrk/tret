@@ -1,7 +1,7 @@
 import type { AbsolutePath, FileStamp, Snapshot } from "../types";
-import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN, EXCLUDED_PATHS, SCAN_OPTIONS, SNAPSHOT_ROOTS } from "../constants";
-import { Glob } from "bun";
+import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN, EXCLUDED_PATHS, SNAPSHOT_ROOTS } from "../constants";
 import { lstatSync } from "node:fs";
+import { scanDir } from "./scan";
 
 export function snapshot(): Snapshot {
   const home = Bun.env.HOME;
@@ -15,18 +15,12 @@ export function snapshot(): Snapshot {
 }
 
 function snapshotDir(dir: AbsolutePath, entries: Snapshot, excluded: Set<string> = new Set()): void {
-  let names: string[];
-  let subdirs: Set<string>;
-  try {
-    names = [...new Glob("*").scanSync({ ...SCAN_OPTIONS, cwd: dir })];
-    subdirs = new Set(new Glob("*/").scanSync({ ...SCAN_OPTIONS, cwd: dir }));
-  } catch {
-    return;
-  }
+  const scan = scanDir(dir);
+  if (!scan) return;
 
-  for (const name of names) {
+  for (const name of scan.names) {
     const path = `${dir}/${name}`;
-    const isSubdir = subdirs.has(name);
+    const isSubdir = scan.subdirs.has(name);
     if (excluded.has(path) || (isSubdir && (EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name)))) continue;
     const stamp = stampEntry(path);
     if (!stamp) continue;
