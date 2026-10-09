@@ -1,4 +1,5 @@
 import type { AbsolutePath, OwnedKind } from "../../../types";
+import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN } from "../../../constants";
 import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -118,7 +119,9 @@ export class MemoryBaseline implements Baseline {
 /**
  * Walks the observe roots once and records which paths already existed. This is deliberately
  * existence-only: it costs a `lstat` per path and never reads file bytes, so it cannot become the
- * global content diff the rewrite is replacing. It is bounded by the roots the platform hands in.
+ * global content diff the rewrite is replacing. It is bounded by the roots the platform hands in,
+ * and it skips the same churn directories the snapshot walk does (see `EXCLUDED_DIR_NAMES`), so a
+ * multi-GB cache such as a runner's `/opt/hostedtoolcache` is recorded as one entry, never walked.
  */
 export async function captureBaseline(roots: AbsolutePath[]): Promise<MemoryBaseline> {
   const baseline = new MemoryBaseline();
@@ -142,8 +145,15 @@ async function walk(dir: AbsolutePath, baseline: MemoryBaseline): Promise<void> 
     const path = join(dir, entry.name);
     const kind: OwnedKind = entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file";
     baseline.set(path, kind);
-    if (entry.isDirectory()) await walk(path, baseline);
+    // Mirror the snapshot walk: record an excluded directory but never descend into it, so a cache
+    // or dependency tree costs one entry instead of a full recursive walk.
+    if (entry.isDirectory() && !isExcludedDir(entry.name)) await walk(path, baseline);
   }
+}
+
+/** The snapshot walk's skip rules: a folder name is excluded by exact match or by pattern. */
+function isExcludedDir(name: string): boolean {
+  return EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name);
 }
 
 function kindOf(info: NodeInfo): OwnedKind {
