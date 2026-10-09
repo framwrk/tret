@@ -6,6 +6,40 @@
 **Host:** macOS 27 (Darwin, arm64). Bun `1.4.2`. Node not present; all runs use `~/.bun/bin/bun`.
 **Date:** 2026-10-09.
 
+> **Status update (2026-10-09) — supersedes the §1 decision and the §10 recommendation below.**
+>
+> This report validates `rewrite/integration` (`c71500a`) and holds because the install side was still
+> v2 (blockers B1–B8). The rewrite continued past that commit and every blocker was remediated:
+>
+> | Blocker | Fixed by |
+> | --- | --- |
+> | B1 — `install` writes v3 (phase 5) | `543ef39` |
+> | B2 — `find`/`list` on the v3 store (phase 9) | `a0618a3` |
+> | B3/S6 — legacy v2 writers disabled | `6ea73c2` |
+> | B5 — backups opt-in wired into `install` | `37c4f7b` |
+> | B6/B7 — failed-installer partial record, privilege from the process (phase 5) | `543ef39` |
+> | B8 — `list` completeness (phase 9) | `a0618a3` |
+> | End-to-end coverage (§9.4) | `55da8ad` |
+>
+> Re-verified on the rewrite tip `rewrite/backups-opt-in` (`7d0f9c9`), the commit merged into `dev`:
+>
+> | Check | Command | Result |
+> | --- | --- | --- |
+> | Unit/integration suite | `bun test` | **230 pass / 0 fail** (30 files) |
+> | Type check | `bunx tsc --noEmit` | clean |
+> | Lint | `bunx eslint .` | clean |
+> | Build | `bash scripts/build.sh darwin-arm64` | OK |
+> | Install script | `bash scripts/install.test.sh` | OK for `tret-darwin-arm64` |
+>
+> A new end-to-end test now exercises the primary workflow this report found broken (`install` →
+> `list` → `uninstall`, plus a labeled partial record on a failed installer), and the S6 corruption
+> regression test is present. Acceptance criteria 1–7 (§3) are met; the only residual caveat is the
+> low-severity B9 artifact-naming duplication. The legacy snapshot/diff path is retained only as the
+> `--no-capture` fallback, which the plan permits.
+>
+> **Updated recommendation: the rewrite is ready — merge `rewrite/backups-opt-in` (`7d0f9c9`) into
+> `dev`.** §1 and §10 below are kept as the historical verdict for `rewrite/integration`.
+
 ## 1. Decision
 
 **Do not remove the legacy snapshot path. Do not merge `rewrite/integration` as-is.**
