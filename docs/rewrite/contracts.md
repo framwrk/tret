@@ -10,13 +10,13 @@ The decisions referenced below (`D1`–`D10`) live in the Decisions log of `REWR
 
 ## Where each contract lives
 
-| Contract                                       | Module                                         | Implementing phase                           |
-| ---------------------------------------------- | ---------------------------------------------- | -------------------------------------------- |
-| `Platform` + macOS/Linux tables                | `src/lib/platform/`                            | 2 (this phase); wired into commands in 5/7/9 |
-| `CaptureBackend`, journal events, fake backend | `src/lib/capture/`                             | 4                                            |
-| Normalized effects + `RecordV3`                | `src/types.ts`, `src/lib/capture/normalize.ts` | 3                                            |
-| `Storage` (records + blobs)                    | `src/lib/storage.ts`                           | 6                                            |
-| `UninstallPlanner`                             | `src/lib/uninstall-planner.ts`                 | 7                                            |
+| Contract                                       | Module                             | Implementing phase                           |
+| ---------------------------------------------- | ---------------------------------- | -------------------------------------------- |
+| `Platform` + macOS/Linux tables                | `src/lib/platform/`                | 2 (this phase); wired into commands in 5/7/9 |
+| `CaptureBackend`, journal events, fake backend | `src/lib/capture/`                 | 4                                            |
+| Normalized effects + `RecordV3`                | `src/types.ts`, `src/lib/journal/` | 3                                            |
+| `Storage` (records + blobs)                    | `src/lib/storage.ts`               | 6                                            |
+| `UninstallPlanner`                             | `src/lib/uninstall-planner.ts`     | 7                                            |
 
 ## `Platform` (`src/lib/platform/`)
 
@@ -70,9 +70,9 @@ Metadata is `FileMetadata` (content hash, size, mode, mtime), `DirectoryMetadata
 
 ## Normalized effects and `RecordV3` (Phase 3)
 
-The pure conversion from a `Journal` to effects is **not implemented** in Phase 2;
-`src/lib/capture/normalize.ts` freezes its types (`NormalizedEffects`, `NormalizationDiagnostic`,
-`BackupPolicy`, `NormalizeInput`) so Phase 3 can implement it without signature churn.
+`src/lib/capture/normalize.ts` freezes the types (`NormalizedEffects`, `NormalizationDiagnostic`,
+`BackupPolicy`, `NormalizeInput`); Phase 3 implements the pure conversion as `normalizeJournal` in
+`src/lib/journal/` (re-exported from `capture/normalize.ts`, so this contract path is unchanged).
 
 `RecordV3` (in `src/types.ts`) is the plan section 3 shape with finalized names and the decided
 fields:
@@ -84,7 +84,9 @@ fields:
 - `privilege: "user" | "root"` (D8) and `caseSensitive: boolean` (D10).
 - `owned` (`OwnedEntry`: `kind`, optional symlink `linkTarget`, optional `installedHash`),
   `mutated` (`MutatedEntry`: before/after hashes, optional `beforeBlob`), and `deleted`
-  (`DeletedEntry`: before hash, optional `beforeBlob`).
+  (`DeletedEntry`: before hash, optional `beforeBlob`). `kind` is `"file" | "directory" |
+"symlink"`, plus `"unknown"` reserved for migrated v2 records, which stored paths without a kind;
+  a capture backend never emits `"unknown"`, and uninstall treats it as non-removable.
 
 `RecordFileV3` wraps `RecordV3[]` with `version: 3`. Multiple records may claim one path; conflicts
 are resolved by uninstall planning, never by silently transferring ownership (D4).

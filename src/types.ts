@@ -85,8 +85,12 @@ export type CaptureInfo = {
   segments: CaptureSegment[];
 };
 
-/** The kind of node an install owns. Symlinks are recorded by target, never followed. */
-export type OwnedKind = "file" | "directory" | "symlink";
+/**
+ * The kind of node an install owns. Symlinks are recorded by target, never followed.
+ * `"unknown"` is reserved for migrated v2 records, which stored paths without a kind; it is never
+ * produced by a capture backend, and uninstall treats it as non-removable rather than guessing.
+ */
+export type OwnedKind = "file" | "directory" | "symlink" | "unknown";
 
 /** A path an install created or now owns, with the content fingerprint to verify before removal. */
 export type OwnedEntry = {

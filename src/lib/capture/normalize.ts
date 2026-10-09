@@ -2,9 +2,9 @@ import type { AbsolutePath, DeletedEntry, MutatedEntry, OwnedEntry } from "../..
 import type { Journal } from "./events";
 
 /**
- * The install effects a journal normalizes into (plan section 3). The pure conversion from a
- * journal to this shape lands in phase 3; the types are frozen here so later phases, storage, and
- * the uninstall planner can be written against them.
+ * The install effects a journal normalizes into (plan section 3). The types are frozen here so
+ * later phases, storage, and the uninstall planner can be written against them; the pure conversion
+ * is implemented in `src/lib/journal/normalize.ts` and re-exported at the bottom of this file.
  */
 export type NormalizedEffects = {
   owned: OwnedEntry[];
@@ -30,10 +30,14 @@ export type BackupPolicy = {
   sizeLimitBytes: number;
 };
 
-/** Inputs the phase 3 converter will accept; frozen now so callers can be written against it. */
+/** Inputs the phase 3 converter accepts; frozen in phase 2 so callers can be written against it. */
 export type NormalizeInput = {
   journal: Journal;
   backups: BackupPolicy;
   /** Whether the record's filesystem is case-sensitive (D10). */
   caseSensitive: boolean;
 };
+
+// Phase 3 implements the conversion in the `journal` module; re-exported here so the frozen
+// contract path keeps exposing normalization to capture, storage, and uninstall.
+export { normalizeJournal } from "../journal/normalize";
