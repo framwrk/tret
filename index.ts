@@ -39,7 +39,7 @@ switch (command) {
   case "unadd":
   case "remove":
   case "uninstall":
-    uninstall(args[1], args.includes("--dry-run"), args.includes("--yes"));
+    await uninstall(args[1], args.includes("--dry-run"), args.includes("--yes"), args.includes("--force"));
     break;
 
   case "show":
@@ -99,6 +99,7 @@ function help(): void {
   log(`\t-h, --help    Show this help and exit`);
   log(`\t--version     Print the running version and exit`);
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
+  log(`\t              uninstall: remove owned paths even when their fingerprint changed or is shared`);
   log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
   log(`\t--yes         uninstall: skip the confirmation prompt`);
   log(`\t--            install: every flag after this goes to the install script itself`);

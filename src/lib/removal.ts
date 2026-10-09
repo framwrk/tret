@@ -1,7 +1,247 @@
+import type { AbsolutePath, RecordV3 } from "../types";
+import { PRIVATE_FILE_MODE, writeFileAtomic } from "./atomic";
+import type { UninstallAction, UninstallPlan, UninstallVerification } from "./uninstall-planner";
 import { dirname, join } from "node:path";
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from "node:fs";
-import type { AbsolutePath } from "../types";
-import { MACOS_PLATFORM } from "./platform";
+import { inspectPath, listChildren } from "./uninstall-planner";
+import type { Storage } from "./storage";
+
+// Verified uninstall (phase 7). The planner decides what is safe to do; this module carries it out.
+// Every operation is re-checked immediately before it runs and is deliberately non-recursive, so a
+// plan can never turn into an unverified recursive delete of a shared tree.
+
+/** Filesystem operations the applier needs; injectable so tests never touch the real disk. */
+export type RemovalFileSystem = {
+  /** Unlinks a file or symlink; never recursive, so a directory throws instead of vanishing. */
+  removeFile(path: AbsolutePath): void;
+  /** Removes an empty directory; a non-empty directory throws rather than being recursed. */
+  removeDir(path: AbsolutePath): void;
+  /** Atomically writes restored bytes, creating parent directories as needed. */
+  writeFile(path: AbsolutePath, bytes: Uint8Array): void;
+};
+
+/** The real filesystem, used when an applier caller does not inject one. */
+export const nodeRemovalFileSystem: RemovalFileSystem = {
+  removeFile(path) {
+    rmSync(path);
+  },
+  removeDir(path) {
+    rmdirSync(path);
+  },
+  writeFile(path, bytes) {
+    writeFileAtomic(path, bytes, PRIVATE_FILE_MODE);
+  },
+};
+
+/** What happened to one planned path. */
+export type ApplianceOutcome =
+  | { path: AbsolutePath; outcome: "removed" }
+  | { path: AbsolutePath; outcome: "restored" }
+  | { path: AbsolutePath; outcome: "skipped"; reason: string }
+  | { path: AbsolutePath; outcome: "conflict"; reason: string }
+  | { path: AbsolutePath; outcome: "failed"; reason: string };
+
+/** The result of applying a plan: what changed and what still blocks a clean uninstall. */
+export type ApplyUninstallResult = {
+  outcomes: ApplianceOutcome[];
+  removed: AbsolutePath[];
+  restored: AbsolutePath[];
+  skipped: AbsolutePath[];
+  conflicts: AbsolutePath[];
+  failed: AbsolutePath[];
+  /** True when conflicts or failures mean the record must be retained for a safe retry. */
+  incomplete: boolean;
+};
+
+/** Inputs the applier needs; a real caller supplies `storage` so before-images can be read. */
+export type ApplyUninstallOptions = {
+  /** Reads before-image blobs for restore actions. */
+  storage: Pick<Storage, "getBlob">;
+  /** Re-inspects a path immediately before acting; defaults to the real filesystem. */
+  inspect?: (path: AbsolutePath) => UninstallVerification;
+  /** Lists a directory to re-confirm it is still empty; defaults to the real filesystem. */
+  list?: (path: AbsolutePath) => AbsolutePath[];
+  /** Filesystem primitives; defaults to the real filesystem. */
+  fs?: RemovalFileSystem;
+};
+
+/**
+ * Applies a plan one action at a time, verifying against current state as it goes. A removal whose
+ * path was changed, replaced by a directory, or refilled between planning and applying is reported
+ * as a conflict instead of being forced. A restore never overwrites an existing path. Anything that
+ * throws is recorded as `failed` and left in place, so a retry sees only the survivors.
+ */
+export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUninstallOptions): Promise<ApplyUninstallResult> {
+  const inspect = options.inspect ?? inspectPath;
+  const list = options.list ?? listChildren;
+  const fs = options.fs ?? nodeRemovalFileSystem;
+
+  const outcomes: ApplianceOutcome[] = [];
+  const removed: AbsolutePath[] = [];
+  const restored: AbsolutePath[] = [];
+  const skipped: AbsolutePath[] = [];
+  const conflicts: AbsolutePath[] = [];
+  const failed: AbsolutePath[] = [];
+
+  for (const action of plan.actions) {
+    switch (action.action) {
+      case "skip":
+        outcomes.push({ path: action.path, outcome: "skipped", reason: action.reason });
+        skipped.push(action.path);
+        break;
+
+      case "conflict":
+        outcomes.push({ path: action.path, outcome: "conflict", reason: action.reason });
+        conflicts.push(action.path);
+        break;
+
+      case "remove":
+        applyRemove(action, inspect, list, fs, outcomes, removed, conflicts, failed);
+        break;
+
+      case "restore":
+        await applyRestore(action, options.storage, inspect, fs, outcomes, restored, conflicts, failed);
+        break;
+    }
+  }
+
+  return { outcomes, removed, restored, skipped, conflicts, failed, incomplete: conflicts.length > 0 || failed.length > 0 };
+}
+
+/** Removes one path if it still looks safe, using only non-recursive primitives. */
+function applyRemove(
+  action: Extract<UninstallAction, { action: "remove" }>,
+  inspect: (path: AbsolutePath) => UninstallVerification,
+  list: (path: AbsolutePath) => AbsolutePath[],
+  fs: RemovalFileSystem,
+  outcomes: ApplianceOutcome[],
+  removed: AbsolutePath[],
+  conflicts: AbsolutePath[],
+  failed: AbsolutePath[],
+): void {
+  const verification = inspect(action.path);
+  if (!verification.exists) {
+    outcomes.push({ path: action.path, outcome: "skipped", reason: "absent" });
+    return;
+  }
+
+  // Re-confirm an owned directory is still empty; between planning and applying a user file may
+  // have appeared, and the applier must never recurse into a tree it did not verify.
+  if (verification.kind === "directory") {
+    if (list(action.path).length > 0) {
+      outcomes.push({ path: action.path, outcome: "conflict", reason: "not-empty" });
+      conflicts.push(action.path);
+      return;
+    }
+    try {
+      fs.removeDir(action.path);
+    } catch (error) {
+      outcomes.push({ path: action.path, outcome: "failed", reason: message(error) });
+      failed.push(action.path);
+      return;
+    }
+  } else {
+    try {
+      fs.removeFile(action.path);
+    } catch (error) {
+      outcomes.push({ path: action.path, outcome: "failed", reason: message(error) });
+      failed.push(action.path);
+      return;
+    }
+  }
+
+  outcomes.push({ path: action.path, outcome: "removed" });
+  removed.push(action.path);
+}
+
+/** Restores one before-image, re-verifying the current state the plan was built from. */
+async function applyRestore(
+  action: Extract<UninstallAction, { action: "restore" }>,
+  storage: Pick<Storage, "getBlob">,
+  inspect: (path: AbsolutePath) => UninstallVerification,
+  fs: RemovalFileSystem,
+  outcomes: ApplianceOutcome[],
+  restored: AbsolutePath[],
+  conflicts: AbsolutePath[],
+  failed: AbsolutePath[],
+): Promise<void> {
+  const verification = inspect(action.path);
+
+  // A mutation restore overwrites the installed bytes; a deletion restore recreates an absent path.
+  // Either way, a state change since planning is preserved, not overwritten.
+  if (action.expect === "installed") {
+    if (!verification.exists) {
+      outcomes.push({ path: action.path, outcome: "conflict", reason: "diverged" });
+      conflicts.push(action.path);
+      return;
+    }
+    if (action.installedHash !== undefined && verification.hash !== action.installedHash) {
+      outcomes.push({ path: action.path, outcome: "conflict", reason: "diverged" });
+      conflicts.push(action.path);
+      return;
+    }
+  } else if (verification.exists) {
+    outcomes.push({ path: action.path, outcome: "conflict", reason: "diverged" });
+    conflicts.push(action.path);
+    return;
+  }
+
+  let bytes: Uint8Array | undefined;
+  try {
+    bytes = await storage.getBlob(action.beforeBlob);
+  } catch (error) {
+    outcomes.push({ path: action.path, outcome: "failed", reason: message(error) });
+    failed.push(action.path);
+    return;
+  }
+
+  if (bytes === undefined) {
+    outcomes.push({ path: action.path, outcome: "conflict", reason: "missing-blob" });
+    conflicts.push(action.path);
+    return;
+  }
+
+  try {
+    fs.writeFile(action.path, bytes);
+  } catch (error) {
+    outcomes.push({ path: action.path, outcome: "failed", reason: message(error) });
+    failed.push(action.path);
+    return;
+  }
+
+  outcomes.push({ path: action.path, outcome: "restored" });
+  restored.push(action.path);
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Drops everything a run actually removed or restored, plus shell configs it cleaned, leaving only
+ * the entries a retry still needs. Keeping the survivors (rather than the full record) means a
+ * restored or removed path is never re-verified on the next run and reported as a false conflict.
+ */
+export function reduceRecordForRetry(
+  record: RecordV3,
+  result: ApplyUninstallResult,
+  cleanedShell: Iterable<AbsolutePath> = [],
+): RecordV3 {
+  const removed = new Set(result.removed);
+  const restored = new Set(result.restored);
+  const cleaned = new Set(cleanedShell);
+  return {
+    ...record,
+    owned: record.owned.filter((entry) => !removed.has(entry.path)),
+    mutated: record.mutated.filter((entry) => !restored.has(entry.path) && !cleaned.has(entry.path)),
+    deleted: record.deleted.filter((entry) => !restored.has(entry.path)),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Legacy pre-rewrite removal, retained for the v2 `install` reinstall path until phase 5/9 move
+// that command onto v3 records. The rewritten `uninstall` command does not call any of this; see
+// `applyUninstallPlan` above for the evidence-based path.
 
 /** Why a recorded path was kept instead of deleted. */
 export type KeptReason = "guarded" | "failed";
@@ -193,14 +433,54 @@ function pruneEmptyAncestors(path: AbsolutePath): void {
 }
 
 function isGuarded(path: AbsolutePath, home: AbsolutePath): boolean {
-  if (MACOS_PLATFORM.sharedAbsolute.includes(path) || path === home) {
+  if (SHARED_ABSOLUTE.includes(path) || path === home) {
     return true;
   }
 
   const relative = path.startsWith(`${home}/`) ? path.slice(home.length + 1) : undefined;
-  return relative !== undefined && MACOS_PLATFORM.sharedInHome.includes(relative);
+  return relative !== undefined && SHARED_IN_HOME.includes(relative);
 }
 
 function isShallow(path: AbsolutePath): boolean {
   return path.split("/").filter(Boolean).length < 3;
 }
+
+// Directories many programs share; uninstall refuses to delete them. Adapted from bashka's SHARED_IN_HOME/SHARED_ABSOLUTE for macOS.
+const SHARED_IN_HOME = [
+  ".config",
+  ".cache",
+  ".local",
+  ".local/bin",
+  ".local/lib",
+  ".local/share",
+  ".local/state",
+  ".ssh",
+  ".zshrc.d",
+  "Applications",
+  "Library",
+  "bin",
+  "go",
+  "go/bin",
+];
+
+const SHARED_ABSOLUTE = [
+  "/",
+  "/Applications",
+  "/Library",
+  "/bin",
+  "/etc",
+  "/opt",
+  "/opt/homebrew",
+  "/opt/homebrew/bin",
+  "/sbin",
+  "/tmp",
+  "/usr",
+  "/usr/bin",
+  "/usr/lib",
+  "/usr/local",
+  "/usr/local/bin",
+  "/usr/local/lib",
+  "/usr/local/share",
+  "/usr/share",
+  "/var",
+];

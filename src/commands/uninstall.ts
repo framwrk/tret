@@ -1,64 +1,78 @@
+import type { AbsolutePath, RecordV3 } from "../types";
+import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "../lib/uninstall-planner";
+import { applyUninstallPlan, reduceRecordForRetry } from "../lib/removal";
 import { confirm, log } from "../lib/utilities";
-import { loadRecords, removeRecord, saveRecord } from "../lib/records";
-import { removeAdded } from "../lib/removal";
-import { removeRcLines } from "../lib/shellconfig";
+import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
+import type { ApplyUninstallResult } from "../lib/removal";
+import { FileStorage } from "../lib/store";
 
-export function uninstall(name: string | undefined, dryRun: boolean, yes: boolean): void {
+/** The shell-config work an uninstall may do, kept separate from the file plan. */
+type ShellCleanup = {
+  /** Owned paths whose mention in a config line the install is allowed to strip. */
+  dirs: AbsolutePath[];
+  /** Attributed config files with no before-image, still matching their installed state, safe to line-clean. */
+  files: AbsolutePath[];
+};
+
+/**
+ * Removes a tool by planning an evidence-based uninstall, printing exactly what it will do, then
+ * applying that same plan. Dry-run prints the identical plan without touching disk. A partial run
+ * keeps a reduced record so a retry only sees the paths that survived. Root-owned entries are never
+ * escalated for: the plan reports that sudo is required (D8).
+ */
+export async function uninstall(name: string | undefined, dryRun: boolean, yes: boolean, force = false): Promise<void> {
   if (!name || name.startsWith("--")) {
     log("Error");
-    log("\tuninstall requires a tool name: tret uninstall <name> [--dry-run] [--yes]");
+    log("\tuninstall requires a tool name: tret uninstall <name> [--dry-run] [--yes] [--force]");
     process.exit(1);
   }
 
-  const record = loadRecords().records.find((existing) => existing.name === name);
+  const storage = new FileStorage();
+  let records: RecordV3[];
+  try {
+    records = await storage.loadRecords();
+  } catch (error) {
+    log("Error");
+    log(`\tcould not read the install records: ${message(error)}`);
+    process.exit(1);
+  }
+
+  const record = records.find((existing) => existing.name === name);
   if (!record) {
     log("Error");
     log(`\tno tracked install named ${name}; see tret list`);
     process.exit(1);
   }
 
-  // Edits are log-only: uninstall never restores a file the install changed.
-  if (record.edited.length > 0) {
-    log("Edited files left in place");
-    for (const path of record.edited) {
-      log(`\t${path}`);
-    }
-  }
+  // Shell configs with no before-image are handled by the narrow line cleaner, not the file planner,
+  // so the two never double-handle a path. Shell configs that do have a before-image are restored by
+  // the planner like any other mutation; a diverged config is reported as a conflict there.
+  const shellPaths = new Set(shellConfigPaths());
+  const shell = planShellCleanup(record, shellPaths);
+  const lineClean = new Set(shell.files);
+  const fileRecord: RecordV3 = { ...record, mutated: record.mutated.filter((entry) => !lineClean.has(entry.path)) };
+  const planner = new VerifiedUninstallPlanner();
+  const plan = await planner.plan(fileRecord, { otherRecords: records, force });
 
   if (dryRun) {
-    if (record.added.length === 0) {
-      log(`nothing tracked to remove for ${name}`);
-      return;
-    }
-
-    const plan = removeAdded(record.added, name, true);
-    for (const path of plan.removed) {
-      log(`\twould remove ${path}`);
-    }
-    for (const path of plan.pruned) {
-      log(`\twould prune ${path}`);
-    }
-    for (const kept of plan.kept) {
-      log(`\twould keep ${kept.path} (protected directory)`);
-    }
-
-    const rc = removeRcLines(name, record.added, true);
-    for (const cleaned of rc.cleaned) {
-      log(`\twould clean ${cleaned.file}: ${cleaned.line.trim()}`);
-    }
+    printDryRun(name, plan, shell);
     return;
   }
 
-  if (record.added.length === 0) {
-    removeRecord(name);
+  const hasFileWork = plan.actions.length > 0;
+  const hasShellWork = shell.files.length > 0;
+
+  if (!hasFileWork && !hasShellWork) {
+    await storage.removeRecord(record.id);
     log(`removed the ${name} record; it had no tracked files`);
     return;
   }
 
   log(`uninstall ${name}?`);
-  for (const path of record.added) {
-    log(`\tremove ${path}`);
+  for (const line of formatUninstallPlan(plan, "apply")) {
+    log(`\t${line}`);
   }
+  printUnresolvedShell(name, shell.dirs, shell.files, true);
 
   if (!yes) {
     const answer = confirm("proceed? [y/N]");
@@ -73,42 +87,125 @@ export function uninstall(name: string | undefined, dryRun: boolean, yes: boolea
     }
   }
 
-  log(`removing ${record.added.length} files and folders added by ${name}`, true);
-  const result = removeAdded(record.added, name, false);
-
-  for (const path of result.removed) {
-    log(`\tremoved ${path}`, true);
-  }
-  for (const path of result.pruned) {
-    log(`\tpruned ${path} (from a protected directory)`, true);
-  }
-  for (const kept of result.kept) {
-    log(`\tkept ${kept.path}${kept.reason === "guarded" ? " (protected directory)" : " (delete failed)"}`);
+  const result = await applyUninstallPlan(plan, { storage });
+  for (const outcome of result.outcomes) {
+    log(`\t${describeOutcome(outcome)}`, true);
   }
 
-  // A partial run keeps the record trimmed to what is left, so a retry only sees the survivors.
-  if (result.kept.length > 0) {
-    saveRecord({ ...record, added: result.kept.map((kept) => kept.path) });
-    log("Error");
-    log("\tsome paths were not removed and stay tracked; retry with sudo if they were permission-denied");
-    process.exit(1);
-  }
-
-  const rc = removeRcLines(name, record.added, false);
+  const rc = removeRcLines(name, shell.dirs, false, shell.files);
   for (const cleaned of rc.cleaned) {
     log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
   }
+  const cleanedShell = new Set(rc.cleaned.map((cleaned) => cleaned.file));
+  const unresolved = shell.files.filter((file) => !cleanedShell.has(file));
+  for (const file of unresolved) {
+    log(`\tkept ${file} (nothing safe to clean)`);
+  }
+  for (const file of rc.failed) {
+    log(`\tcould not clean ${file}`);
+  }
 
-  // The record stays so a retry can clean the lines it could not reach.
-  if (rc.failed.length > 0) {
-    for (const file of rc.failed) {
-      log(`\tcould not clean ${file}`);
+  const incomplete = result.incomplete || rc.failed.length > 0 || unresolved.length > 0;
+  if (incomplete) {
+    const reduced = reduceRecordForRetry(record, result, cleanedShell);
+    await persistRetry(storage, reduced);
+    if (plan.requiresSudo) {
+      log("\tsome entries are root-owned; re-run with sudo to remove them");
     }
     log("Error");
-    log("\tsome shell config lines remain; run tret uninstall again to retry");
+    log("\tsome paths were not removed and stay tracked; run tret uninstall again to retry");
     process.exit(1);
   }
 
-  removeRecord(name);
+  await storage.removeRecord(record.id);
   log(`removed ${name}`);
+}
+
+/** Prints the same actions the real run will apply, with no side effects. */
+function printDryRun(name: string, plan: Awaited<ReturnType<VerifiedUninstallPlanner["plan"]>>, shell: ShellCleanup): void {
+  const lines = formatUninstallPlan(plan, "dry-run");
+  if (lines.length === 0 && shell.files.length === 0) {
+    log(`nothing tracked to remove for ${name}`);
+    return;
+  }
+
+  for (const line of lines) {
+    log(`\t${line}`);
+  }
+  printUnresolvedShell(name, shell.dirs, shell.files, true);
+
+  if (plan.requiresSudo) {
+    log("\tnote: some entries are root-owned; re-run with sudo to remove them");
+  }
+}
+
+/**
+ * Prints the shell-config lines the cleaner would strip, and flags any attributed config where no
+ * line can be safely matched; an unresolved config keeps the record for a retry instead of vanishing.
+ */
+function printUnresolvedShell(name: string, dirs: AbsolutePath[], files: AbsolutePath[], dryRun: boolean): void {
+  const rc = removeRcLines(name, dirs, dryRun, files);
+  for (const cleaned of rc.cleaned) {
+    log(`\t${dryRun ? "would clean" : "clean"} ${cleaned.file}: ${cleaned.line.trim()}`);
+  }
+  const cleanedFiles = new Set(rc.cleaned.map((cleaned) => cleaned.file));
+  for (const file of files) {
+    if (!cleanedFiles.has(file)) {
+      log(`\t${dryRun ? "conflict" : "keep"} ${file} (unresolved)`);
+    }
+  }
+}
+
+/**
+ * Selects the attributed shell-config mutations the narrow line cleaner should handle: those with
+ * no before-image (a before-image is restored by the planner like any other mutation) and whose
+ * bytes still match the recorded installed state. A config edited after install is left to the
+ * planner, which reports it as a conflict rather than risking a user's later edit.
+ */
+function planShellCleanup(record: RecordV3, shellPaths: Set<AbsolutePath>): ShellCleanup {
+  const dirs = record.owned.map((entry) => entry.path);
+  const files: AbsolutePath[] = [];
+
+  for (const entry of record.mutated) {
+    if (!shellPaths.has(entry.path)) continue;
+    if (entry.beforeBlob !== undefined) continue;
+    if (entry.installedHash !== undefined) {
+      const verification = inspectPath(entry.path);
+      if (verification.exists && verification.hash !== undefined && verification.hash !== entry.installedHash) {
+        continue;
+      }
+    }
+    files.push(entry.path);
+  }
+
+  return { dirs, files };
+}
+
+/** Saves the reduced record, or drops it when nothing is left to retry. */
+async function persistRetry(storage: FileStorage, reduced: RecordV3): Promise<void> {
+  const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
+  if (remaining === 0) {
+    await storage.removeRecord(reduced.id);
+    return;
+  }
+  await storage.saveRecord(reduced);
+}
+
+function describeOutcome(outcome: ApplyUninstallResult["outcomes"][number]): string {
+  switch (outcome.outcome) {
+    case "removed":
+      return `removed ${outcome.path}`;
+    case "restored":
+      return `restored ${outcome.path}`;
+    case "skipped":
+      return `skipped ${outcome.path} (${outcome.reason})`;
+    case "conflict":
+      return `kept ${outcome.path} (${outcome.reason})`;
+    case "failed":
+      return `failed ${outcome.path} (${outcome.reason})`;
+  }
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
