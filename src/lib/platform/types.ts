@@ -67,6 +67,12 @@ export interface Platform {
   scopeRoots: AbsolutePath[];
   /** Home-relative tool directories searched by `tret find` (the old `SEARCH_DIRS_IN_HOME`). */
   searchRootsInHome: AbsolutePath[];
+  /**
+   * Home-relative roots a scoped capture observes (D3). Kept separate from `searchRootsInHome`:
+   * `tret find` searches broadly to adopt a tool's files, while capture observes only install
+   * surfaces and drops roots that churn without an installer (see the macOS table).
+   */
+  captureRootsInHome: AbsolutePath[];
   /** Absolute directories searched by `tret find` (the old `SNAPSHOT_ROOTS`). */
   searchRootsAbsolute: AbsolutePath[];
   /** Absolute directories uninstall refuses to delete whole (the old `SHARED_ABSOLUTE`). */

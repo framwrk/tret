@@ -1,10 +1,16 @@
 import type { Platform } from "./types";
 
 /**
- * macOS platform table. The path tables reproduce the pre-rewrite macOS-only behavior exactly
- * (`SNAPSHOT_ROOTS`, `SHARED_ABSOLUTE`/`SHARED_IN_HOME`, `SEARCH_DIRS_IN_HOME`, `RC_FILES`) so the
+ * macOS platform table. The legacy path tables (`SNAPSHOT_ROOTS`, `SHARED_ABSOLUTE`/`SHARED_IN_HOME`,
+ * `SEARCH_DIRS_IN_HOME`, `RC_FILES`) reproduce the pre-rewrite macOS-only behavior exactly so the
  * existing modules keep behaving identically while reading from this seam. No new Homebrew scope is
  * added; the two `/opt/homebrew` roots already present are preserved for equivalence.
+ *
+ * `captureRootsInHome` is the one deliberate departure from the legacy search table (D3 revision,
+ * defect #2). The pre-rewrite capture skipped `~/Library` entirely via `EXCLUDED_PATHS`, so a
+ * scoped capture must not scan the volatile Library subtrees the rewrite first carried over from
+ * `tret find`'s search list. Capture keeps only the surfaces an installer genuinely targets;
+ * `searchRootsInHome` stays broad so `tret find` can still adopt tool files by hand.
  */
 export const MACOS_PLATFORM: Platform = {
   id: "darwin",
@@ -25,6 +31,21 @@ export const MACOS_PLATFORM: Platform = {
     "Library/Preferences",
     "Library/Saved Application State",
     "Library/WebKit",
+  ],
+  // Curated install surfaces only. Dropped as pure churn (no installer target): `.cache`,
+  // `Library/Caches`, `Library/Containers`, `Library/HTTPStorages`, `Library/Logs`,
+  // `Library/Saved Application State`, `Library/WebKit`. `Library/Preferences` is dropped too:
+  // cfprefsd rewrites `*.plist` continuously and no filename rule separates that churn from a real
+  // install write. `Library/Application Support` stays because it holds real tool state; its known
+  // churn shapes are skipped at scan time (see `isVolatileChurnPath`).
+  captureRootsInHome: [
+    ".config",
+    ".local/bin",
+    ".local/lib",
+    ".local/share",
+    ".local/state",
+    "Library/Application Support",
+    "Library/LaunchAgents",
   ],
   searchRootsAbsolute: ["/opt/homebrew/bin", "/usr/local/bin"],
   sharedAbsolute: [

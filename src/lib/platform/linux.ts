@@ -20,6 +20,18 @@ export const LINUX_PLATFORM: Platform = {
     ".local/state",
     ".cargo/bin",
   ],
+  // Capture surfaces match the search roots minus `.cache`: no installer owns a shared cache, and
+  // the Linux tracer does not need a broader scope than the tool directories it already records.
+  captureRootsInHome: [
+    ".config",
+    ".config/systemd/user",
+    ".local/bin",
+    ".local/lib",
+    ".local/share",
+    ".local/share/applications",
+    ".local/state",
+    ".cargo/bin",
+  ],
   searchRootsAbsolute: ["/usr/bin", "/usr/local/bin", "/opt"],
   sharedAbsolute: [
     "/",

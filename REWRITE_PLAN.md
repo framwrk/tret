@@ -256,6 +256,7 @@ Each entry resolves or explicitly defers one item from "Open decisions". Status 
 - **Rationale:** fixed defaults give predictable, bounded scans; user overrides adapt to unusual installers without rebuilding a sprawling exclusion list. Scope is revisited with test fixtures and real installer examples.
 - **Status:** decided
 - **Date:** 2026-10-09
+- **Revision (defect #2, 2026-10-09):** the macOS heuristic scope no longer reuses `tret find`'s broad `searchRootsInHome`; capture uses a separate, curated `captureRootsInHome` and skips known database/journal churn shapes. Volatile `~/Library` subtrees (`Logs`, `Caches`, `HTTPStorages`, `WebKit`, `Saved Application State`, `Containers`, `Preferences`) are dropped; `Application Support` and `LaunchAgents` stay. See `docs/rewrite/macos-capture.md`.
 
 ### D4. Ownership-conflict resolution
 
