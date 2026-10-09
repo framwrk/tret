@@ -35,10 +35,10 @@ export const IS_DEV = !import.meta.path.startsWith("/$bunfs/");
 
 // Records
 
-/** Format number for the records file; bump when the record shape changes. */
-export const RECORDS_VERSION = 2;
-
-/** Where Tret stores its records, relative to `$HOME`. */
+/**
+ * Where Tret stores its records, relative to `$HOME`. The on-disk format is version 3; `FileStorage`
+ * owns the format number, so there is no second constant to drift out of sync.
+ */
 export const RECORDS_PATH = ".tret/records.json";
 
 /**
