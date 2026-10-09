@@ -58,6 +58,16 @@ chmod +x "$HOME/.local/bin/badtool"
 exit 3
 `;
 
+// Defect #3: an installer that writes a tool directory and a dotfile directly at `$HOME` (the shape
+// of `~/.claude/` + `~/.claude.json`) must be observed and removable.
+const HOME_ROOT_SCRIPT = `#!/bin/bash
+set -e
+printf '#!/bin/sh\\necho hometool\\n' > "$HOME/.toolrc"
+mkdir -p "$HOME/.tool/bin"
+printf '#!/bin/sh\\necho hometool\\n' > "$HOME/.tool/bin/hometool"
+chmod +x "$HOME/.tool/bin/hometool"
+`;
+
 type StoredRecord = {
   name: string;
   source: string;
@@ -136,6 +146,27 @@ describe("install -> list -> uninstall", () => {
       expect(record?.capture.completeness).toBe("partial");
       expect(record?.capture.segments[0]?.partialReason).toContain("3");
       expect(record?.owned.some((entry) => entry.path.endsWith("/.local/bin/badtool"))).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("captures tool state written at the home root and removes it on uninstall (defect #3)", async () => {
+    const home = makeHome();
+    const server = serve(HOME_ROOT_SCRIPT);
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      const file = readStore(home);
+      const record = file.records.find((entry) => entry.name === "hometool");
+      expect(record).toBeDefined();
+      // The dotfile and the dot-directory at `$HOME` top level are owned, not left uncovered.
+      expect(record?.owned.some((entry) => entry.path === join(home, ".toolrc"))).toBe(true);
+      expect(record?.owned.some((entry) => entry.path === join(home, ".tool", "bin", "hometool"))).toBe(true);
+
+      expect(await runCli(["uninstall", "hometool", "--yes"], home)).toBe(0);
+      expect(existsSync(join(home, ".toolrc"))).toBe(false);
+      expect(existsSync(join(home, ".tool", "bin", "hometool"))).toBe(false);
     } finally {
       await server.stop();
     }

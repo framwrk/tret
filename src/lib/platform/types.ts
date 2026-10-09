@@ -65,6 +65,13 @@ export interface Platform {
   label: string;
   /** Absolute roots outside `$HOME` included in a scoped capture/snapshot (the old `SNAPSHOT_ROOTS`). */
   scopeRoots: AbsolutePath[];
+  /**
+   * Whether a scoped capture also observes `$HOME` itself, bounded by the shared skip rules
+   * (`EXCLUDED_PATHS`, `EXCLUDED_DIR_NAMES`, `EXCLUDED_DIR_NAME_PATTERN`). macOS sets this so an
+   * installer's top-level dotfiles/dot-directories (`~/.claude.json`, `~/.claude/`) are captured;
+   * Linux keeps its narrower XDG scope and leaves it unset.
+   */
+  captureHomeRoot?: boolean;
   /** Home-relative tool directories searched by `tret find` (the old `SEARCH_DIRS_IN_HOME`). */
   searchRootsInHome: AbsolutePath[];
   /** Absolute directories searched by `tret find` (the old `SNAPSHOT_ROOTS`). */
