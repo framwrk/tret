@@ -55,11 +55,12 @@ To remove the Tret binary itself, run `curl -fsSL https://tret.framwrk.com/scrip
 | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `tret install <URL>` (`add`)                     | Fetch the install script at the URL, run it in a bounded capture window, then record what it changed |
 | `tret uninstall <tool_name>` (`remove`, `unadd`) | Remove the files the tool's install owns, after verifying their fingerprints                         |
-| `tret list` (`show`)                             | List every tool installed with Tret, with its capture completeness                                   |
+| `tret list` (`show`)                             | List every tool installed with Tret, with its capture completeness and whether it is still installed |
 | `tret find <tool_name>`                          | Adopt an already-installed command and record the files it owns                                      |
+| `tret forget <tool_name>`                        | Stop tracking a tool without touching its files                                                      |
 | `tret update`                                    | Update Tret to the latest release                                                                    |
 
-`install` also takes `--force` (uninstall the tool first, then reinstall it from a clean capture), `--no-capture` (run the installer without attaching a capture window), and `--backup` (capture before-images so overwritten or deleted files can be restored on uninstall). Anything after `--` passes to the install script itself (`tret install <URL> -- --skip-browser`). `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt.
+`install` also takes `--force` (uninstall the tool first, then reinstall it from a clean capture), `--no-capture` (run the installer without attaching a capture window), and `--backup` (capture before-images so overwritten or deleted files can be restored on uninstall). Anything after `--` passes to the install script itself (`tret install <URL> -- --skip-browser`). `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt. `forget` drops a tool's record without touching its files, which is the escape hatch for a record left with only detect-only (non-restorable) changes.
 
 ### Install a tool
 
@@ -93,7 +94,9 @@ A later explicit `tret trace` will run a tool under the same bounded session and
 tret uninstall <tool_name>
 ```
 
-Uninstall removes only files whose recorded fingerprint still matches, restores a mutated or deleted file only when a before-image exists (captured with `--backup` at install time) and the current state still matches the record, and preserves anything that diverged. It strips the tool's PATH lines from shell config only when it can attribute those edits to the install, asks for confirmation first, and prints every remove, restore, skip, and conflict. Use `--dry-run` to see the plan without changing anything.
+Uninstall removes only files whose recorded fingerprint still matches, restores a mutated or deleted file only when a before-image exists (captured with `--backup` at install time) and the current state still matches the record, and preserves anything that diverged. It strips the tool's PATH lines from shell config only when it can attribute those edits to the install, asks for confirmation first, and prints every remove, restore, skip, conflict, and detect-only change. Use `--dry-run` to see the plan without changing anything.
+
+With backups off, a mutation or deletion has no before-image and is **detect-only**: uninstall reports it (`detected <path> changed during install (not restored; no before-image was captured)`) and leaves the current files alone, but it does **not** block completion. Once nothing actionable is left, uninstall drops the record instead of keeping a reduced one forever. Shared-ownership conflicts still block until you pass `--force`, and if you would rather stop tracking the tool entirely, `tret forget <tool_name>` drops the record without touching any files.
 
 ### List installed tools
 
@@ -101,7 +104,7 @@ Uninstall removes only files whose recorded fingerprint still matches, restores 
 tret list
 ```
 
-Each row shows the tool's name, URL, install date, executable path, the script's hash, how many files the install owns, and the capture completeness (see below).
+Each row shows the tool's name, URL, install date, a `State` column (`installed` when the tracked executable is still on disk, `partial` when it is gone), the executable path, the script's hash, how many files the install owns, and the capture completeness (see below). A `partial` row shows `-` for the binary rather than a stale path.
 
 ## Capture completeness and labels
 
@@ -125,7 +128,7 @@ tret install --backup https://example.com/install.sh
 
 With `--backup`, Tret captures the contents of pre-existing files the installer overwrites or deletes (up to a 1 MiB limit per file) and stores them content-addressed under owner-only `~/.tret/objects/`, written atomically and deduplicated by content. Reference-aware garbage collection removes only blobs no record references. `uninstall` then restores a mutated file from its before-image, or recreates a deleted file from it.
 
-Without `--backup`, a record still supports detection, verification, and logging, and is marked non-restorable: uninstall reports a conflict (`missing-blob`) and keeps the current files instead of restoring them. Files above the size limit or that cannot be read are recorded as mutations or deletions but are never claimed restorable.
+Without `--backup`, a record still supports detection, verification, and logging, and is marked non-restorable: uninstall reports the change as detect-only (`detected ... not restored; no before-image was captured`) and keeps the current files instead of restoring them. A detect-only change never blocks completion, so it cannot keep the record alive forever. Files above the size limit or that cannot be read are recorded as mutations or deletions but are never claimed restorable.
 
 Tret never silently restores over a file that changed after installation: a diverged mutation, or a deleted path the user recreated, is preserved and reported as a conflict.
 
@@ -136,8 +139,9 @@ Uninstall is evidence-based and conservative:
 - An owned file is removed only if its installed fingerprint still matches; otherwise Tret keeps it and reports the conflict unless you explicitly force the action.
 - Owned directories are removed only when empty after their owned descendants are handled; a shared tree is never recursively deleted because its parent was recorded.
 - A mutation or deletion is restored only when a before-image exists and the current state still matches. Diverged state is preserved and reported.
+- A mutation or deletion with **no before-image** (backups off) is detect-only: Tret reports it and leaves the file unchanged, but it never blocks completion. Shared-ownership conflicts still block unless `--force`.
 - If two records claim the same path, Tret reports the conflict instead of transferring ownership or guessing from a matching filename. Passing `--force` removes this record's verified entry regardless.
-- Incomplete cleanup keeps a partial record so a retry stays safe.
+- Only actionable cleanup (a conflict or a failure) keeps a partial record so a retry stays safe; once nothing actionable remains, the record is dropped. `tret forget <tool_name>` drops a record immediately without touching files.
 
 ## Migration
 
