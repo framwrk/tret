@@ -116,8 +116,10 @@ window's start (`Journal.beforeImages`, keyed by content address), stores them w
 ## `UninstallPlanner` (`src/lib/uninstall-planner.ts`)
 
 `plan(record, context?) -> Promise<UninstallPlan>` is a conservative, side-effect-free plan
-(plan section 6). `UninstallAction` is a four-way union: `remove`, `restore`, `skip`, or `conflict`.
-The plan records `requiresSudo` (D8) and `incomplete` (a conflict blocks a clean uninstall). The
+(plan section 6). `UninstallAction` is a five-way union: `remove`, `restore`, `skip`, `detected`,
+or `conflict`. `detected` is a non-restorable change (no `beforeBlob`), reported for honesty and
+never blocking; only `conflict` is actionable. The plan records `requiresSudo` (D8) and
+`incomplete` (an actionable conflict blocks a clean uninstall). The
 context can carry other records that claim the same paths (D4 shared ownership), a `force` flag, and
 an `inspect` callback for current state. Applying the plan is Phase 7; a dry run and the real
 uninstall share the same plan so they cannot diverge.

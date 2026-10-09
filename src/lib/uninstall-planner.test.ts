@@ -190,11 +190,20 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
     expect(plan.actions).toEqual([{ action: "conflict", path: "/h/rc", reason: "diverged" }]);
   });
 
-  test("a mutation with no before-image is non-restorable", async () => {
+  test("a mutation with no before-image is detect-only and does not block", async () => {
     const target = { ...record(), owned: [], mutated: [{ path: "/h/rc", installedHash: h("b") }] };
     const plan = await planFor(target, { "/h/rc": { exists: true, kind: "file", hash: h("b") } });
 
-    expect(plan.actions).toEqual([{ action: "conflict", path: "/h/rc", reason: "missing-blob" }]);
+    expect(plan.actions).toEqual([{ action: "detected", path: "/h/rc", kind: "mutated" }]);
+    expect(plan.incomplete).toBe(false);
+  });
+
+  test("a diverged mutation with no before-image is still detect-only, not a blocking conflict", async () => {
+    const target = { ...record(), owned: [], mutated: [{ path: "/h/rc", installedHash: h("b") }] };
+    const plan = await planFor(target, { "/h/rc": { exists: true, kind: "file", hash: h("user") } });
+
+    expect(plan.actions).toEqual([{ action: "detected", path: "/h/rc", kind: "mutated" }]);
+    expect(plan.incomplete).toBe(false);
   });
 
   test("an unreadable mutation is reported as unreadable", async () => {
@@ -219,11 +228,12 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
     expect(recreated.actions).toEqual([{ action: "conflict", path: "/h/gone", reason: "diverged" }]);
   });
 
-  test("a deletion with no before-image cannot be restored", async () => {
+  test("a deletion with no before-image is detect-only and does not block", async () => {
     const target = { ...record(), owned: [], mutated: [], deleted: [{ path: "/h/gone" }] };
     const plan = await planFor(target, {});
 
-    expect(plan.actions).toEqual([{ action: "conflict", path: "/h/gone", reason: "missing-blob" }]);
+    expect(plan.actions).toEqual([{ action: "detected", path: "/h/gone", kind: "deleted" }]);
+    expect(plan.incomplete).toBe(false);
   });
 });
 
@@ -246,6 +256,27 @@ describe("VerifiedUninstallPlanner shared ownership", () => {
 
     const forced = await planFor(target, state, { otherRecords: [other], force: true });
     expect(forced.actions).toEqual([{ action: "remove", path: "/h/bin/tool", kind: "file" }]);
+  });
+
+  test("another record claiming a detect-only mutation still blocks unless forced (D4)", async () => {
+    const target = { ...record(), owned: [], mutated: [{ path: "/h/rc", installedHash: h("b") }] };
+    const state = { "/h/rc": { exists: true, kind: "file", hash: h("b") } } satisfies Record<string, UninstallVerification>;
+    const other: RecordV3 = {
+      ...record(),
+      id: "rec-2",
+      name: "other",
+      owned: [],
+      mutated: [{ path: "/h/rc", installedHash: h("b") }],
+    };
+
+    const blocked = await planFor(target, state, { otherRecords: [other] });
+    expect(blocked.actions).toEqual([{ action: "conflict", path: "/h/rc", reason: "shared-owner" }]);
+    expect(blocked.incomplete).toBe(true);
+
+    // Forcing past D4 leaves the non-restorable change, which is then detect-only and non-blocking.
+    const forced = await planFor(target, state, { otherRecords: [other], force: true });
+    expect(forced.actions).toEqual([{ action: "detected", path: "/h/rc", kind: "mutated" }]);
+    expect(forced.incomplete).toBe(false);
   });
 });
 
@@ -323,13 +354,14 @@ describe("dry-run parity", () => {
 });
 
 describe("uninstall planner contract", () => {
-  test("a plan can express remove, restore, skip, and conflict", async () => {
+  test("a plan can express remove, restore, skip, detected, and conflict", async () => {
     const stub: UninstallPlanner = {
       async plan(target: RecordV3): Promise<UninstallPlan> {
         const actions: UninstallAction[] = [
           { action: "remove", path: target.owned[0]?.path ?? "/home/.local/bin/mytool", kind: "file" },
           { action: "restore", path: target.mutated[0]?.path ?? "/home/.zshrc", kind: "file", beforeBlob: "blob-1" },
           { action: "skip", path: "/home/.mytool/gone", reason: "absent" },
+          { action: "detected", path: "/home/.mytool/churn", kind: "mutated" },
           { action: "conflict", path: "/home/.mytool/edited", reason: "modified" },
         ];
         return { recordId: target.id, tool: target.name, actions, requiresSudo: false, incomplete: true };
@@ -337,13 +369,13 @@ describe("uninstall planner contract", () => {
     };
     const plan = await stub.plan(record());
 
-    expect(plan.actions.map((action) => action.action)).toEqual(["remove", "restore", "skip", "conflict"]);
+    expect(plan.actions.map((action) => action.action)).toEqual(["remove", "restore", "skip", "detected", "conflict"]);
     expect(plan.incomplete).toBe(true);
     expect(plan.requiresSudo).toBe(false);
   });
 
   test("the action union discriminates by its action field", () => {
-    const actions: UninstallAction[] = [{ action: "conflict", path: "/home/.mytool/edited", reason: "diverged" }];
+    const actions: UninstallAction[] = [{ action: "detected", path: "/home/.mytool/churn", kind: "mutated" }];
     const action = actions[0];
     if (!action) throw new Error("expected one action");
 
@@ -351,9 +383,10 @@ describe("uninstall planner contract", () => {
       case "remove":
       case "restore":
       case "skip":
-        throw new Error("expected a conflict");
       case "conflict":
-        expect(action.reason).toBe("diverged");
+        throw new Error("expected a detect-only action");
+      case "detected":
+        expect(action.kind).toBe("mutated");
         break;
     }
   });

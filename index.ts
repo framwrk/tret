@@ -2,6 +2,7 @@ import { IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
 import { DEFAULT_BACKUP_POLICY } from "./src/lib/store";
 import { checkForUpdate } from "./src/lib/updatecheck";
 import { find } from "./src/commands/find";
+import { forget } from "./src/commands/forget";
 import { install } from "./src/commands/install";
 import { list } from "./src/commands/list";
 import { log } from "./src/lib/utilities";
@@ -56,6 +57,10 @@ switch (command) {
     await find(args[1]);
     break;
 
+  case "forget":
+    await forget(args[1]);
+    break;
+
   case "update":
     await update();
     break;
@@ -102,6 +107,7 @@ function help(): void {
   );
   log(`\tlist              Show the tools Tret is tracking (alias: show)`);
   log(`\tfind <tool>       Find the files and folders an already-installed command owns and record them for uninstall`);
+  log(`\tforget <tool>     Stop tracking a tool without touching its files (escape hatch for detect-only leftovers)`);
   log(`\tupdate            Update Tret to the latest release (skips the download when already up to date)`);
   log("");
   log(`Options`);
@@ -115,6 +121,8 @@ function help(): void {
   );
   log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
   log(`\t--yes         uninstall: skip the confirmation prompt`);
+  log(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);
+  log(`\t              a record with nothing actionable left is dropped, or remove it with tret forget <tool>`);
   log(`\t--            install: every flag after this goes to the install script itself`);
   log("");
   log(`Examples`);
@@ -123,6 +131,7 @@ function help(): void {
   log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --dry-run`);
   log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --yes`);
   log(`\t${SCRIPT_NAME.toLowerCase()} find opencode`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} forget opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} list`);
   log(`\t${SCRIPT_NAME.toLowerCase()} update`);
 }

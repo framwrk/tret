@@ -1,14 +1,19 @@
-import type { CaptureCompleteness, RecordV3 } from "../types";
+import type { AbsolutePath, CaptureCompleteness, RecordV3 } from "../types";
 import { FileStorage } from "../lib/store";
+import { existsSync } from "node:fs";
 import { log } from "../lib/utilities";
 
-/** One printable `tret list` row, derived purely from a record so it can be tested without a terminal. */
+/** Whether a record's tracked executable is still on disk, so `list` never advertises a stale path. */
+export type ListState = "installed" | "partial";
+
+/** One printable `tret list` row, derived from a record plus an existence check so it is testable. */
 export type ListRow = {
   name: string;
   source: string;
   url: string;
   installed: string;
   executable: string;
+  state: ListState;
   script: string;
   completeness: CaptureCompleteness;
   owned: number;
@@ -16,33 +21,52 @@ export type ListRow = {
   deleted: number;
 };
 
-/** Builds the sorted rows for a set of v3 records. */
-export function listRows(records: RecordV3[]): ListRow[] {
+/** Builds the sorted rows for a set of v3 records; `exists` is injectable so tests need no real files. */
+export function listRows(records: RecordV3[], exists: (path: AbsolutePath) => boolean = existsSync): ListRow[] {
   return records
     .slice()
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((record) => ({
-      name: record.name,
-      source: record.source,
-      url: record.url || "-",
-      installed: record.installedAt.slice(0, 10),
-      executable: record.executable || "-",
-      script: record.scriptSha256 ? record.scriptSha256.slice(0, 12) : "-",
-      completeness: record.capture.completeness,
-      owned: record.owned.length,
-      mutated: record.mutated.length,
-      deleted: record.deleted.length,
-    }));
+    .map((record) => {
+      // A record whose executable is gone is stale (its paths were removed outside Tret); show `-`
+      // for the binary and mark it `partial` rather than printing a path that no longer exists.
+      const present = record.executable !== "" && exists(record.executable);
+      return {
+        name: record.name,
+        source: record.source,
+        url: record.url || "-",
+        installed: record.installedAt.slice(0, 10),
+        executable: present ? record.executable : "-",
+        state: present ? "installed" : "partial",
+        script: record.scriptSha256 ? record.scriptSha256.slice(0, 12) : "-",
+        completeness: record.capture.completeness,
+        owned: record.owned.length,
+        mutated: record.mutated.length,
+        deleted: record.deleted.length,
+      };
+    });
 }
 
 /** Renders the aligned table for a set of v3 records; the first line is the header. */
-export function formatList(records: RecordV3[]): string[] {
-  const headers = ["Name", "Source", "URL", "Installed", "Binary", "Script sha256", "Capture", "Owned", "Mutated", "Deleted"];
-  const columns = listRows(records).map((row) => [
+export function formatList(records: RecordV3[], exists: (path: AbsolutePath) => boolean = existsSync): string[] {
+  const headers = [
+    "Name",
+    "Source",
+    "URL",
+    "Installed",
+    "State",
+    "Binary",
+    "Script sha256",
+    "Capture",
+    "Owned",
+    "Mutated",
+    "Deleted",
+  ];
+  const columns = listRows(records, exists).map((row) => [
     row.name,
     row.source,
     row.url,
     row.installed,
+    row.state,
     row.executable,
     row.script,
     row.completeness,
@@ -53,8 +77,10 @@ export function formatList(records: RecordV3[]): string[] {
   const widths = headers.map((header, index) =>
     Math.max(header.length, ...columns.map((column) => column[index]?.length ?? 0)),
   );
+  // Text columns read left-aligned; the trailing counts stay right-aligned for easy comparison.
+  const numeric = new Set([8, 9, 10]);
   const line = (cells: string[]): string =>
-    cells.map((cell, index) => (index < 7 ? cell.padEnd(widths[index]!) : cell.padStart(widths[index]!))).join("  ");
+    cells.map((cell, index) => (numeric.has(index) ? cell.padStart(widths[index]!) : cell.padEnd(widths[index]!))).join("  ");
 
   return [line(headers), ...columns.map(line)];
 }
