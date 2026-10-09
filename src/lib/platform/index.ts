@@ -2,6 +2,7 @@ import type { CpuArch, Platform, PlatformId } from "./types";
 import { LINUX_PLATFORM } from "./linux";
 import { MACOS_PLATFORM } from "./macos";
 
+export * from "./roots";
 export * from "./types";
 export { LINUX_PLATFORM, MACOS_PLATFORM };
 
