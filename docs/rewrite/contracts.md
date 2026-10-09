@@ -57,6 +57,10 @@ tracer and the labeled macOS heuristic fallback produce the same shape (D1, D7).
 - `FakeCaptureBackend` (in `fake.ts`) is an in-memory backend for tests: queue events with `push()`,
   then `start`/`stop` to collect a journal. It records every `start()` call for assertions.
 
+The Phase 4 macOS implementation (`MacosHeuristicCaptureBackend`, `src/lib/capture/macos/`) implements
+this interface as a labeled heuristic fallback; see `docs/rewrite/macos-capture.md` for its scope,
+hashing policy, and coverage limits.
+
 ### Journal events (`src/lib/capture/events.ts`)
 
 `JournalEvent` is the union of operations a backend can report, each carrying `seq`, `at`, the
