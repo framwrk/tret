@@ -11,25 +11,25 @@
 > This report validates `rewrite/integration` (`c71500a`) and holds because the install side was still
 > v2 (blockers B1–B8). The rewrite continued past that commit and every blocker was remediated:
 >
-> | Blocker | Fixed by |
-> | --- | --- |
-> | B1 — `install` writes v3 (phase 5) | `543ef39` |
-> | B2 — `find`/`list` on the v3 store (phase 9) | `a0618a3` |
-> | B3/S6 — legacy v2 writers disabled | `6ea73c2` |
-> | B5 — backups opt-in wired into `install` | `37c4f7b` |
+> | Blocker                                                                       | Fixed by  |
+> | ----------------------------------------------------------------------------- | --------- |
+> | B1 — `install` writes v3 (phase 5)                                            | `543ef39` |
+> | B2 — `find`/`list` on the v3 store (phase 9)                                  | `a0618a3` |
+> | B3/S6 — legacy v2 writers disabled                                            | `6ea73c2` |
+> | B5 — backups opt-in wired into `install`                                      | `37c4f7b` |
 > | B6/B7 — failed-installer partial record, privilege from the process (phase 5) | `543ef39` |
-> | B8 — `list` completeness (phase 9) | `a0618a3` |
-> | End-to-end coverage (§9.4) | `55da8ad` |
+> | B8 — `list` completeness (phase 9)                                            | `a0618a3` |
+> | End-to-end coverage (§9.4)                                                    | `55da8ad` |
 >
 > Re-verified on the rewrite tip `rewrite/backups-opt-in` (`7d0f9c9`), the commit merged into `dev`:
 >
-> | Check | Command | Result |
-> | --- | --- | --- |
-> | Unit/integration suite | `bun test` | **230 pass / 0 fail** (30 files) |
-> | Type check | `bunx tsc --noEmit` | clean |
-> | Lint | `bunx eslint .` | clean |
-> | Build | `bash scripts/build.sh darwin-arm64` | OK |
-> | Install script | `bash scripts/install.test.sh` | OK for `tret-darwin-arm64` |
+> | Check                  | Command                              | Result                           |
+> | ---------------------- | ------------------------------------ | -------------------------------- |
+> | Unit/integration suite | `bun test`                           | **230 pass / 0 fail** (30 files) |
+> | Type check             | `bunx tsc --noEmit`                  | clean                            |
+> | Lint                   | `bunx eslint .`                      | clean                            |
+> | Build                  | `bash scripts/build.sh darwin-arm64` | OK                               |
+> | Install script         | `bash scripts/install.test.sh`       | OK for `tret-darwin-arm64`       |
 >
 > A new end-to-end test now exercises the primary workflow this report found broken (`install` →
 > `list` → `uninstall`, plus a labeled partial record on a failed installer), and the S6 corruption
@@ -56,25 +56,25 @@ install record. Removing it would break `install` outright.
 
 ## 2. What was run
 
-| Check | Command | Result |
-| --- | --- | --- |
-| Unit/integration suite | `bun test` | **223 pass / 0 fail** (25 files) |
-| Type check | `bunx tsc --noEmit` | **clean** (was 6 errors; fixed) |
-| Lint (CI gate) | `bunx eslint .` | **clean** |
-| Build + install script | `bash scripts/build.sh darwin-arm64` then `bash scripts/install.test.sh` | **OK for `tret-darwin-arm64`** |
-| Manual scenarios | isolated `$HOME` + local HTTP installer (see §5) | mixed: see verdicts |
+| Check                  | Command                                                                  | Result                           |
+| ---------------------- | ------------------------------------------------------------------------ | -------------------------------- |
+| Unit/integration suite | `bun test`                                                               | **223 pass / 0 fail** (25 files) |
+| Type check             | `bunx tsc --noEmit`                                                      | **clean** (was 6 errors; fixed)  |
+| Lint (CI gate)         | `bunx eslint .`                                                          | **clean**                        |
+| Build + install script | `bash scripts/build.sh darwin-arm64` then `bash scripts/install.test.sh` | **OK for `tret-darwin-arm64`**   |
+| Manual scenarios       | isolated `$HOME` + local HTTP installer (see §5)                         | mixed: see verdicts              |
 
 ## 3. Acceptance criteria verdicts
 
-| # | Criterion | Verdict | Evidence |
-| --- | --- | --- | --- |
-| 1 | Record distinguishes created / modified / deleted and records capture completeness | **FAIL (CLI)** | The `RecordV3` model, normalizer, and migration do this, but a real `tret install` writes a v2 record with only `added`/`edited`, no `deleted`, no `capture` (§5-S1). |
-| 2 | Uninstall verifies state and preserves diverged data | **PARTIAL** | Verified planner/applier passes remove/restore/deleted/conflict and dry-run parity on hand-built v3 records (§5-S2/S3). But records produced by `install` migrate to `kind:"unknown"` with no hashes, so uninstall removes **nothing** and only reports conflicts (§5-S1). |
-| 3 | Backups enabled are bounded, private, integrity-checked, never silently overwrite | **PARTIAL (library only)** | `store.test.ts` (26) + `removal-verify.test.ts` cover dedup, permissions, size limit, corruption, GC, restore conflicts. No CLI opt-in exists and `install` never writes a `beforeBlob`, so restore is unreachable from the shipped commands. |
-| 4 | Existing records migrate without loss or fabricated restore | **PASS** | Verified on a representative 3-record v2 sample (§4). |
-| 5 | Tests show documented coverage; CLI labels heuristic/partial | **PARTIAL** | Backend/normalize/session tests are thorough and `install` prints the coverage label. `tret list` does **not** show completeness (README claims it) and crashes on any v3 file (§5-S4). |
-| 6 | README claims match shipped behavior | **FAIL** | README describes journal-based install, v3 records, `list` completeness, backups opt-in, partial record on installer failure, and sudo-aware installs. Shipped `install` is v2-only, `list` crashes, backups are unreachable, a failed installer saves no record (§5-S5), and `privilege` is hard-coded `"user"`. |
-| 7 | Shared core builds/tests against macOS + Linux table; adding a platform is a backend + table | **PASS (with caveats)** | Suite green; `platform.test.ts` exercises both tables; Linux backend/conformance/integration run hermetically with fake tracers. Caveats: no real Linux host run, and artifact naming is duplicated between `src/lib/artifacts.ts` and `Platform.artifacts` (a second place to edit per platform). |
+| #   | Criterion                                                                                    | Verdict                    | Evidence                                                                                                                                                                                                                                                                                                          |
+| --- | -------------------------------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Record distinguishes created / modified / deleted and records capture completeness           | **FAIL (CLI)**             | The `RecordV3` model, normalizer, and migration do this, but a real `tret install` writes a v2 record with only `added`/`edited`, no `deleted`, no `capture` (§5-S1).                                                                                                                                             |
+| 2   | Uninstall verifies state and preserves diverged data                                         | **PARTIAL**                | Verified planner/applier passes remove/restore/deleted/conflict and dry-run parity on hand-built v3 records (§5-S2/S3). But records produced by `install` migrate to `kind:"unknown"` with no hashes, so uninstall removes **nothing** and only reports conflicts (§5-S1).                                        |
+| 3   | Backups enabled are bounded, private, integrity-checked, never silently overwrite            | **PARTIAL (library only)** | `store.test.ts` (26) + `removal-verify.test.ts` cover dedup, permissions, size limit, corruption, GC, restore conflicts. No CLI opt-in exists and `install` never writes a `beforeBlob`, so restore is unreachable from the shipped commands.                                                                     |
+| 4   | Existing records migrate without loss or fabricated restore                                  | **PASS**                   | Verified on a representative 3-record v2 sample (§4).                                                                                                                                                                                                                                                             |
+| 5   | Tests show documented coverage; CLI labels heuristic/partial                                 | **PARTIAL**                | Backend/normalize/session tests are thorough and `install` prints the coverage label. `tret list` does **not** show completeness (README claims it) and crashes on any v3 file (§5-S4).                                                                                                                           |
+| 6   | README claims match shipped behavior                                                         | **FAIL**                   | README describes journal-based install, v3 records, `list` completeness, backups opt-in, partial record on installer failure, and sudo-aware installs. Shipped `install` is v2-only, `list` crashes, backups are unreachable, a failed installer saves no record (§5-S5), and `privilege` is hard-coded `"user"`. |
+| 7   | Shared core builds/tests against macOS + Linux table; adding a platform is a backend + table | **PASS (with caveats)**    | Suite green; `platform.test.ts` exercises both tables; Linux backend/conformance/integration run hermetically with fake tracers. Caveats: no real Linux host run, and artifact naming is duplicated between `src/lib/artifacts.ts` and `Platform.artifacts` (a second place to edit per platform).                |
 
 ## 4. v2 → v3 migration (criterion 4) — PASS
 
@@ -205,21 +205,21 @@ Error
 
 ## 6. Plan test-bullet coverage
 
-| Required coverage | Status | Where |
-| --- | --- | --- |
-| create/write, overwrite, delete, rename-overwrite, symlink, chmod, temp-file, nested-dir, create-then-delete | Covered | `journal/normalize.test.ts` (24), `capture/linux/reconstruct.test.ts` (8), `macos.test.ts` (15) |
-| unrelated churn not attributed | Covered | `capture/linux/linux.integration.test.ts` (out-of-scope marker dropped) |
-| partial/daemonized reported incomplete | Covered | `capture/linux/backend.test.ts`, `linux.conformance.test.ts`, `session.test.ts` |
-| hash change with preserved mtime / noisy metadata ignored | Covered | `journal/normalize.test.ts` |
-| shared paths, two records, pre-existing, replaced, dirs with user files | Covered | `uninstall-planner.test.ts` (24) |
-| backup dedup, permissions, size limits, corrupt/missing blobs, restore conflicts, GC | Covered | `store.test.ts` (26), `removal-verify.test.ts` (9), `storage.test.ts` (4) |
-| dry-run equivalence, interrupted/partial cleanup + retry | Covered | `uninstall-planner.test.ts`, `removal-verify.test.ts` |
-| v2 migration, malformed records, atomic-write failure, legacy non-restorable | Covered | `records.test.ts` (16), `store.test.ts` |
-| shell config appended/rewritten/user-edited | Covered | `shellconfig.test.ts` (8) |
-| first-run/lazy writes + trace-session boundaries | Covered (trace deferred D5) | `session.test.ts` (13) |
-| macOS/Linux platform tables, guards, shell configs, artifacts, case behavior | Covered | `platform.test.ts` (10), `artifacts.test.ts` (8) |
-| privilege: root capture, sudo-aware uninstall, rejection/warning | **Partial** | planner `requiresSudo` + platform policy tests; no root capture at the CLI |
-| self-update / install.sh across `{darwin,linux}×{arm64,x64}` | **Partial** | `artifacts.test.ts`, `updatecheck.test.ts` (unit); `install.test.sh` runs only the host target |
+| Required coverage                                                                                            | Status                      | Where                                                                                           |
+| ------------------------------------------------------------------------------------------------------------ | --------------------------- | ----------------------------------------------------------------------------------------------- |
+| create/write, overwrite, delete, rename-overwrite, symlink, chmod, temp-file, nested-dir, create-then-delete | Covered                     | `journal/normalize.test.ts` (24), `capture/linux/reconstruct.test.ts` (8), `macos.test.ts` (15) |
+| unrelated churn not attributed                                                                               | Covered                     | `capture/linux/linux.integration.test.ts` (out-of-scope marker dropped)                         |
+| partial/daemonized reported incomplete                                                                       | Covered                     | `capture/linux/backend.test.ts`, `linux.conformance.test.ts`, `session.test.ts`                 |
+| hash change with preserved mtime / noisy metadata ignored                                                    | Covered                     | `journal/normalize.test.ts`                                                                     |
+| shared paths, two records, pre-existing, replaced, dirs with user files                                      | Covered                     | `uninstall-planner.test.ts` (24)                                                                |
+| backup dedup, permissions, size limits, corrupt/missing blobs, restore conflicts, GC                         | Covered                     | `store.test.ts` (26), `removal-verify.test.ts` (9), `storage.test.ts` (4)                       |
+| dry-run equivalence, interrupted/partial cleanup + retry                                                     | Covered                     | `uninstall-planner.test.ts`, `removal-verify.test.ts`                                           |
+| v2 migration, malformed records, atomic-write failure, legacy non-restorable                                 | Covered                     | `records.test.ts` (16), `store.test.ts`                                                         |
+| shell config appended/rewritten/user-edited                                                                  | Covered                     | `shellconfig.test.ts` (8)                                                                       |
+| first-run/lazy writes + trace-session boundaries                                                             | Covered (trace deferred D5) | `session.test.ts` (13)                                                                          |
+| macOS/Linux platform tables, guards, shell configs, artifacts, case behavior                                 | Covered                     | `platform.test.ts` (10), `artifacts.test.ts` (8)                                                |
+| privilege: root capture, sudo-aware uninstall, rejection/warning                                             | **Partial**                 | planner `requiresSudo` + platform policy tests; no root capture at the CLI                      |
+| self-update / install.sh across `{darwin,linux}×{arm64,x64}`                                                 | **Partial**                 | `artifacts.test.ts`, `updatecheck.test.ts` (unit); `install.test.sh` runs only the host target  |
 
 ## 7. Blockers (scoped)
 

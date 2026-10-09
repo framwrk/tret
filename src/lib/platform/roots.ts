@@ -28,6 +28,10 @@ export function observationRoots(platform: Platform, options: ObservationRootsOp
     else if (home) roots.add(`${home}/${config.path}`);
   }
   if (home) for (const relative of platform.searchRootsInHome) roots.add(`${home}/${relative}`);
+  // Platforms that opt in (macOS) also observe `$HOME` top level, so an installer that drops a
+  // dotfile or dot-directory at home is captured (defect #3). The scoped engine bounds this root
+  // with the shared skip rules, so it does not become a global scan.
+  if (home && platform.captureHomeRoot) roots.add(home);
   for (const path of options.include ?? []) roots.add(path);
   for (const path of options.exclude ?? []) roots.delete(path);
 
