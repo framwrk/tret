@@ -75,6 +75,11 @@ export const EXCLUDED_PATHS = [
   ".hermes/state",
   ".hermes/cron",
   ".hermes/state.db-wal",
+  // Shared package-manager global state. Every `bun install -g` rewrites the same `package.json`
+  // and `bun.lock` and shares one `node_modules`, so no single tool owns them; deleting them is
+  // unsafe and the real package files are under the already-skipped `node_modules`. The package is
+  // removed through the manager instead, driven by a record's `managedBy` (see package-manager.ts).
+  ".bun/install/global",
 ];
 
 /**

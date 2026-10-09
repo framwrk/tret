@@ -96,6 +96,8 @@ tret uninstall <tool_name>
 
 Uninstall removes only files whose recorded fingerprint still matches, restores a mutated or deleted file only when a before-image exists (captured with `--backup` at install time) and the current state still matches the record, and preserves anything that diverged. It strips the tool's PATH lines from shell config only when it can attribute those edits to the install, asks for confirmation first, and prints every remove, restore, skip, conflict, and detect-only change. Use `--dry-run` to see the plan without changing anything.
 
+When an install registered its executable through a package manager's global mode (a `bun install -g` shim, for example), Tret never owns the shared `node_modules`, `package.json`, or `bun.lock`: every global install edits them, so deleting them would break unrelated tools. Uninstall asks the manager to remove the package **first** (`bun remove -g <pkg>`); only once that succeeds does Tret remove the tool's remaining files. If the manager is unavailable or the removal fails, Tret touches nothing else and keeps the record for a retry.
+
 With backups off, a mutation or deletion has no before-image and is **detect-only**: uninstall reports it (`detected <path> changed during install (not restored; no before-image was captured)`) and leaves the current files alone, but it does **not** block completion. Once nothing actionable is left, uninstall drops the record instead of keeping a reduced one forever. Shared-ownership conflicts still block until you pass `--force`, and if you would rather stop tracking the tool entirely, `tret forget <tool_name>` drops the record without touching any files.
 
 ### List installed tools
@@ -141,6 +143,7 @@ Uninstall is evidence-based and conservative:
 - A mutation or deletion is restored only when a before-image exists and the current state still matches. Diverged state is preserved and reported.
 - A mutation or deletion with **no before-image** (backups off) is detect-only: Tret reports it and leaves the file unchanged, but it never blocks completion. Shared-ownership conflicts still block unless `--force`.
 - If two records claim the same path, Tret reports the conflict instead of transferring ownership or guessing from a matching filename. Passing `--force` removes this record's verified entry regardless.
+- Shared package-manager global state (`~/.bun/install/global`, its `package.json`/`bun.lock`, and the shared `node_modules`) is never recorded as owned; a managed package is removed through its manager instead.
 - Only actionable cleanup (a conflict or a failure) keeps a partial record so a retry stays safe; once nothing actionable remains, the record is dropped. `tret forget <tool_name>` drops a record immediately without touching files.
 
 ## Migration
@@ -160,6 +163,7 @@ Existing `find` records and their URL/hash semantics are preserved.
 - **Daemonized or privilege-escalated descendants:** a process that detaches or changes user during install can escape the capture window; Tret labels the record `partial` instead of `complete`.
 - **Backup coverage:** with `--backup`, the macOS heuristic backend captures before-images of pre-existing files under the size limit; the Linux tracer records hashes but not content yet, so `--backup` installs there stay detect-only. Files that exceed the size limit or cannot be read are recorded but not restorable; files written through `mmap` on some backends and changes on network filesystems may not appear in a journal.
 - **Privileged installs:** Tret supports installers that use `sudo`, records the install's privilege, and makes uninstall sudo-aware for root-owned entries. It never escalates on your behalf.
+- **Package-manager global installs:** a global package (recognized from a `bun`/`npm` bin shim pointing into the manager's shared `node_modules`) is removed by invoking the manager (`bun remove -g`, `npm uninstall -g`), not by deleting files. If the manager is unavailable or exits non-zero with the package still present, the record is kept so you can retry.
 - **Case sensitivity:** Tret probes each filesystem rather than assuming the macOS default, so ownership and collision checks stay correct on case-sensitive volumes.
 
 ## Development

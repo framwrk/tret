@@ -118,6 +118,20 @@ export type DeletedEntry = {
   beforeBlob?: string;
 };
 
+/** A package manager whose global mode Tret can delegate package removal to. */
+export type PackageManagerId = "bun" | "npm" | "pnpm" | "yarn";
+
+/**
+ * A global package an install registered through a package manager's global mode. Its shared
+ * `node_modules` root, lockfile, and manifest are never owned (they are updated by every global
+ * install), so uninstall asks the manager to remove the package instead of deleting them.
+ */
+export type ManagedPackage = {
+  manager: PackageManagerId;
+  /** Package spec passed to the manager's remove command, e.g. `@scope/name`. */
+  package: string;
+};
+
 /**
  * Rewrite record shape (plan section 3). Separates ownership (`owned`) from mutation (`mutated`)
  * and deletion (`deleted`), carries capture completeness and privilege explicitly, and never
@@ -140,6 +154,11 @@ export type RecordV3 = {
   owned: OwnedEntry[];
   mutated: MutatedEntry[];
   deleted: DeletedEntry[];
+  /**
+   * Set when the executable was put on disk by a package manager's global mode. The shared global
+   * state stays out of `owned`; uninstall delegates removal to the manager (see `src/lib/package-manager.ts`).
+   */
+  managedBy?: ManagedPackage;
 };
 
 /** The v3 records file: a version wrapper around `RecordV3` entries. */
