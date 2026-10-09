@@ -1,6 +1,6 @@
 import type { AbsolutePath, RecordV3 } from "../types";
 import { PRIVATE_FILE_MODE, writeFileAtomic } from "./atomic";
-import type { UninstallAction, UninstallPlan, UninstallVerification } from "./uninstall-planner";
+import type { UninstallAction, UninstallDetectedKind, UninstallPlan, UninstallVerification } from "./uninstall-planner";
 import { dirname, join } from "node:path";
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from "node:fs";
 import { inspectPath, listChildren } from "./uninstall-planner";
@@ -38,6 +38,8 @@ export type ApplianceOutcome =
   | { path: AbsolutePath; outcome: "removed" }
   | { path: AbsolutePath; outcome: "restored" }
   | { path: AbsolutePath; outcome: "skipped"; reason: string }
+  /** A detect-only change: reported for honesty, never changed and never blocking (D2). */
+  | { path: AbsolutePath; outcome: "detected"; kind: UninstallDetectedKind }
   | { path: AbsolutePath; outcome: "conflict"; reason: string }
   | { path: AbsolutePath; outcome: "failed"; reason: string };
 
@@ -47,9 +49,11 @@ export type ApplyUninstallResult = {
   removed: AbsolutePath[];
   restored: AbsolutePath[];
   skipped: AbsolutePath[];
+  /** Detect-only paths that were reported but cannot be restored; never affect `incomplete`. */
+  detected: AbsolutePath[];
   conflicts: AbsolutePath[];
   failed: AbsolutePath[];
-  /** True when conflicts or failures mean the record must be retained for a safe retry. */
+  /** True when actionable conflicts or failures mean the record must be retained for a safe retry. */
   incomplete: boolean;
 };
 
@@ -80,6 +84,7 @@ export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUnin
   const removed: AbsolutePath[] = [];
   const restored: AbsolutePath[] = [];
   const skipped: AbsolutePath[] = [];
+  const detected: AbsolutePath[] = [];
   const conflicts: AbsolutePath[] = [];
   const failed: AbsolutePath[] = [];
 
@@ -88,6 +93,12 @@ export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUnin
       case "skip":
         outcomes.push({ path: action.path, outcome: "skipped", reason: action.reason });
         skipped.push(action.path);
+        break;
+
+      case "detected":
+        // Detect-only: no filesystem work, no effect on `incomplete`. Reported for honesty.
+        outcomes.push({ path: action.path, outcome: "detected", kind: action.kind });
+        detected.push(action.path);
         break;
 
       case "conflict":
@@ -105,7 +116,16 @@ export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUnin
     }
   }
 
-  return { outcomes, removed, restored, skipped, conflicts, failed, incomplete: conflicts.length > 0 || failed.length > 0 };
+  return {
+    outcomes,
+    removed,
+    restored,
+    skipped,
+    detected,
+    conflicts,
+    failed,
+    incomplete: conflicts.length > 0 || failed.length > 0,
+  };
 }
 
 /** Removes one path if it still looks safe, using only non-recursive primitives. */
@@ -247,6 +267,10 @@ export function describeOutcome(outcome: ApplianceOutcome): string {
       return `restored ${outcome.path}`;
     case "skipped":
       return `skipped ${outcome.path} (${outcome.reason})`;
+    case "detected":
+      return outcome.kind === "deleted"
+        ? `detected ${outcome.path} was removed during install (not restored; no before-image was captured)`
+        : `detected ${outcome.path} changed during install (not restored; no before-image was captured)`;
     case "conflict":
       return `kept ${outcome.path} (${outcome.reason})`;
     case "failed":

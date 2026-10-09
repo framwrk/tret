@@ -292,10 +292,16 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   const result = await applyUninstallPlan(plan, { storage });
 
   const announced = new Set(
-    plan.actions.filter((action) => action.action === "conflict" || action.action === "skip").map((action) => action.path),
+    plan.actions
+      .filter((action) => action.action === "conflict" || action.action === "skip" || action.action === "detected")
+      .map((action) => action.path),
   );
   for (const outcome of result.outcomes) {
-    if ((outcome.outcome === "conflict" || outcome.outcome === "skipped") && announced.has(outcome.path)) continue;
+    if (
+      (outcome.outcome === "conflict" || outcome.outcome === "skipped" || outcome.outcome === "detected") &&
+      announced.has(outcome.path)
+    )
+      continue;
     log(`\t${describeOutcome(outcome)}`);
   }
 
