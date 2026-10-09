@@ -122,7 +122,7 @@ describe("macOS scoped snapshot diff", () => {
     ];
     const events = diffScopedSnapshots(snap([]), snap(created));
     expect(events.map((event) => event.type)).toEqual(["mkdir", "mkdir", "create"]);
-    expect(events.map((event) => event.path)).toEqual([
+    expect(events.map((event) => ("path" in event ? event.path : undefined))).toEqual([
       "/s/.mytool/share",
       "/s/.mytool/share/doc",
       "/s/.mytool/share/doc/README",
