@@ -2,12 +2,12 @@ import type { AbsolutePath, UpdateCheckFile } from "../types";
 import { INSTALLED_BINARY, UPDATE_CHECK_PATH } from "../constants";
 import { dirname, join } from "node:path";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { hostArtifact } from "./artifacts";
 import { log } from "./utilities";
 import { randomUUID } from "node:crypto";
 
 const REPO = "framwrk/tret";
 const RELEASES_API = `https://api.github.com/repos/${REPO}/releases`;
-const BINARY = "tret-macos-arm64";
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 3000;
 
@@ -18,6 +18,10 @@ const FETCH_TIMEOUT_MS = 3000;
  * notice on its own. Silent when up to date, and silent on any failure.
  */
 export async function checkForUpdate(): Promise<void> {
+  // No artifact for this OS/arch: there is nothing to compare the binary against.
+  const artifact = hostArtifact();
+  if (!artifact) return;
+
   const cached = readCache();
   if (cached && Date.now() - Date.parse(cached.checkedAt) < CHECK_INTERVAL_MS) {
     if (cached.outdated) {
@@ -28,7 +32,7 @@ export async function checkForUpdate(): Promise<void> {
 
   const tag = await latestTag();
   if (!tag) return;
-  const expected = await releasedChecksum(tag);
+  const expected = await releasedChecksum(tag, artifact.binary);
   if (!expected) return;
   const installed = await sha256(join(home(), INSTALLED_BINARY));
   if (!installed) return;
@@ -61,13 +65,13 @@ async function latestTag(): Promise<string | undefined> {
   }
 }
 
-async function releasedChecksum(tag: string): Promise<string | undefined> {
+async function releasedChecksum(tag: string, binary: string): Promise<string | undefined> {
   try {
     const url = `https://github.com/${REPO}/releases/download/${tag}/checksums.txt`;
     const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!response.ok) return undefined;
     const text = await response.text();
-    const line = text.split("\n").find((entry) => entry.endsWith(` ${BINARY}`));
+    const line = text.split("\n").find((entry) => entry.endsWith(` ${binary}`));
     return line?.split(" ")[0];
   } catch {
     return undefined;
