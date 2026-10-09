@@ -1,5 +1,6 @@
 import type { AbsolutePath, FileStamp, Snapshot } from "../types";
-import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN, EXCLUDED_PATHS, SNAPSHOT_ROOTS } from "../constants";
+import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN, EXCLUDED_PATHS } from "../constants";
+import { MACOS_PLATFORM } from "./platform";
 import { lstatSync } from "node:fs";
 import { scanDir } from "./scan";
 
@@ -10,7 +11,7 @@ export function snapshot(): Snapshot {
   const entries: Snapshot = new Map();
   const excluded = new Set(EXCLUDED_PATHS.map((path) => `${home}/${path}`));
   snapshotDir(home, entries, excluded);
-  for (const root of SNAPSHOT_ROOTS) snapshotDir(root, entries);
+  for (const root of MACOS_PLATFORM.scopeRoots) snapshotDir(root, entries);
   return entries;
 }
 

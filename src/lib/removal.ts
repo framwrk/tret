@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from "node:fs";
 import type { AbsolutePath } from "../types";
+import { MACOS_PLATFORM } from "./platform";
 
 /** Why a recorded path was kept instead of deleted. */
 export type KeptReason = "guarded" | "failed";
@@ -11,46 +12,6 @@ export type Removal = {
   pruned: AbsolutePath[];
   kept: { path: AbsolutePath; reason: KeptReason }[];
 };
-
-// Directories many programs share; uninstall refuses to delete them. Adapted from bashka's SHARED_IN_HOME/SHARED_ABSOLUTE for macOS.
-const SHARED_IN_HOME = [
-  ".config",
-  ".cache",
-  ".local",
-  ".local/bin",
-  ".local/lib",
-  ".local/share",
-  ".local/state",
-  ".ssh",
-  ".zshrc.d",
-  "Applications",
-  "Library",
-  "bin",
-  "go",
-  "go/bin",
-];
-
-const SHARED_ABSOLUTE = [
-  "/",
-  "/Applications",
-  "/Library",
-  "/bin",
-  "/etc",
-  "/opt",
-  "/opt/homebrew",
-  "/opt/homebrew/bin",
-  "/sbin",
-  "/tmp",
-  "/usr",
-  "/usr/bin",
-  "/usr/lib",
-  "/usr/local",
-  "/usr/local/bin",
-  "/usr/local/lib",
-  "/usr/local/share",
-  "/usr/share",
-  "/var",
-];
 
 /**
  * Deletes the recorded added paths, deepest first. Directories that look shared or too broad are
@@ -232,12 +193,12 @@ function pruneEmptyAncestors(path: AbsolutePath): void {
 }
 
 function isGuarded(path: AbsolutePath, home: AbsolutePath): boolean {
-  if (SHARED_ABSOLUTE.includes(path) || path === home) {
+  if (MACOS_PLATFORM.sharedAbsolute.includes(path) || path === home) {
     return true;
   }
 
   const relative = path.startsWith(`${home}/`) ? path.slice(home.length + 1) : undefined;
-  return relative !== undefined && SHARED_IN_HOME.includes(relative);
+  return relative !== undefined && MACOS_PLATFORM.sharedInHome.includes(relative);
 }
 
 function isShallow(path: AbsolutePath): boolean {
