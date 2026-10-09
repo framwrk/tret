@@ -1,9 +1,16 @@
-import type { AbsolutePath, RecordV3 } from "../types";
+import type { AbsolutePath, ManagedPackage, RecordV3 } from "../types";
 import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { confirm, log } from "../lib/utilities";
+import {
+  describeManagedPackage,
+  detectManagedPackage,
+  isManagedGlobalPath,
+  removeManagedPackage,
+} from "../lib/package-manager";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import { FileStorage } from "../lib/store";
+import type { PackageRemoval } from "../lib/package-manager";
 
 /** The shell-config work an uninstall may do, kept separate from the file plan. */
 type ShellCleanup = {
@@ -43,25 +50,32 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     process.exit(1);
   }
 
+  // A bin shim that points into a package manager's shared global state is removed through the
+  // manager, not by deleting that state. The recorded `managedBy` is preferred; a record written
+  // before that field existed is recognized from its executable so it is still handled safely.
+  const managed = record.managedBy ?? detectManagedPackage(record.executable, record.owned);
+  const target = managed === undefined ? record : withoutManagedGlobalState(record, managed);
+
   // Shell configs with no before-image are handled by the narrow line cleaner, not the file planner,
   // so the two never double-handle a path. Shell configs that do have a before-image are restored by
   // the planner like any other mutation; a diverged config is reported as a conflict there.
   const shellPaths = new Set(shellConfigPaths());
-  const shell = planShellCleanup(record, shellPaths);
+  const shell = planShellCleanup(target, shellPaths);
   const lineClean = new Set(shell.files);
-  const fileRecord: RecordV3 = { ...record, mutated: record.mutated.filter((entry) => !lineClean.has(entry.path)) };
+  const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
   const planner = new VerifiedUninstallPlanner();
   const plan = await planner.plan(fileRecord, { otherRecords: records, force });
 
   if (dryRun) {
-    printDryRun(name, plan, shell);
+    printDryRun(name, plan, shell, target.managedBy);
     return;
   }
 
   const hasFileWork = plan.actions.length > 0;
   const hasShellWork = shell.files.length > 0;
+  const hasPackageWork = target.managedBy !== undefined;
 
-  if (!hasFileWork && !hasShellWork) {
+  if (!hasFileWork && !hasShellWork && !hasPackageWork) {
     await storage.removeRecord(record.id);
     log(`removed the ${name} record; it had no tracked files`);
     return;
@@ -72,6 +86,9 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     log(`\t${line}`);
   }
   printUnresolvedShell(name, shell.dirs, shell.files, true);
+  if (target.managedBy !== undefined) {
+    log(`\tremove package ${describeManagedPackage(target.managedBy)} through ${target.managedBy.manager}`);
+  }
 
   if (!yes) {
     const answer = confirm("proceed? [y/N]");
@@ -117,12 +134,27 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     log(`\tcould not clean ${file}`);
   }
 
-  // Only actionable work blocks: file conflicts/failures plus a shell config Tret could not read or
-  // write. Detect-only leftovers (no before-image) never keep a record alive.
-  const incomplete = result.incomplete || rc.failed.length > 0;
+  // A global package-manager install is removed through its manager: the shared node_modules,
+  // lockfile, and manifest are never owned, so only the manager can remove the package cleanly.
+  let packageRemoval: PackageRemoval | undefined;
+  if (target.managedBy !== undefined) {
+    packageRemoval = await removeManagedPackage(target.managedBy, { home: Bun.env.HOME });
+    const label = describeManagedPackage(target.managedBy);
+    if (packageRemoval.ok) {
+      log(`\tpackage ${label}: ${packageRemoval.detail}`);
+    } else {
+      log(`\tcould not remove package ${label}: ${packageRemoval.detail}`);
+    }
+  }
+  const packageFailed = packageRemoval !== undefined && !packageRemoval.ok;
+
+  // Only actionable work blocks: file conflicts/failures, a shell config Tret could not read or
+  // write, and a global package the manager could not remove. Detect-only leftovers (no
+  // before-image) never keep a record alive.
+  const incomplete = result.incomplete || rc.failed.length > 0 || packageFailed;
   if (incomplete) {
-    const reduced = reduceRecordForRetry(record, result, cleanedShell);
-    await persistRetry(storage, reduced);
+    const reduced = reduceRecordForRetry(target, result, cleanedShell);
+    await persistRetry(storage, reduced, packageFailed);
     if (plan.requiresSudo) {
       log("\tsome entries are root-owned; re-run with sudo to remove them");
     }
@@ -136,9 +168,14 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
 }
 
 /** Prints the same actions the real run will apply, with no side effects. */
-function printDryRun(name: string, plan: Awaited<ReturnType<VerifiedUninstallPlanner["plan"]>>, shell: ShellCleanup): void {
+function printDryRun(
+  name: string,
+  plan: Awaited<ReturnType<VerifiedUninstallPlanner["plan"]>>,
+  shell: ShellCleanup,
+  managed?: ManagedPackage,
+): void {
   const lines = formatUninstallPlan(plan, "dry-run");
-  if (lines.length === 0 && shell.files.length === 0) {
+  if (lines.length === 0 && shell.files.length === 0 && managed === undefined) {
     log(`nothing tracked to remove for ${name}`);
     return;
   }
@@ -147,6 +184,9 @@ function printDryRun(name: string, plan: Awaited<ReturnType<VerifiedUninstallPla
     log(`\t${line}`);
   }
   printUnresolvedShell(name, shell.dirs, shell.files, true);
+  if (managed !== undefined) {
+    log(`\twould remove package ${describeManagedPackage(managed)} through ${managed.manager}`);
+  }
 
   if (plan.requiresSudo) {
     log("\tnote: some entries are root-owned; re-run with sudo to remove them");
@@ -169,6 +209,26 @@ function printUnresolvedShell(name: string, dirs: AbsolutePath[], files: Absolut
       log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
     }
   }
+}
+
+/**
+ * Drops a managed package's shared global state from a record so uninstall never plans to delete it.
+ * The bin shim (outside the global root) stays owned and is still removed; the manifest, lockfile,
+ * and shared node_modules are left to the package manager. A record that predates `managedBy` gets
+ * the detected value stamped on so a retry keeps deferring to the manager.
+ */
+function withoutManagedGlobalState(record: RecordV3, managed: ManagedPackage): RecordV3 {
+  const home = Bun.env.HOME;
+  if (!home) return { ...record, managedBy: record.managedBy ?? managed };
+
+  const keep = (entry: { path: AbsolutePath }): boolean => !isManagedGlobalPath(entry.path, managed, home);
+  return {
+    ...record,
+    managedBy: record.managedBy ?? managed,
+    owned: record.owned.filter(keep),
+    mutated: record.mutated.filter(keep),
+    deleted: record.deleted.filter(keep),
+  };
 }
 
 /**
@@ -196,10 +256,13 @@ function planShellCleanup(record: RecordV3, shellPaths: Set<AbsolutePath>): Shel
   return { dirs, files };
 }
 
-/** Saves the reduced record, or drops it when nothing is left to retry. */
-async function persistRetry(storage: FileStorage, reduced: RecordV3): Promise<void> {
+/**
+ * Saves the reduced record, or drops it when nothing is left to retry. `keep` forces retention even
+ * when no file work remains, for a global package the manager could not remove.
+ */
+async function persistRetry(storage: FileStorage, reduced: RecordV3, keep = false): Promise<void> {
   const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
-  if (remaining === 0) {
+  if (remaining === 0 && !keep) {
     await storage.removeRecord(reduced.id);
     return;
   }

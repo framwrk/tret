@@ -236,6 +236,8 @@ export function isV3Record(value: unknown): value is RecordV3 {
     return false;
   }
 
+  if (value.managedBy !== undefined && !isManagedPackage(value.managedBy)) return false;
+
   const capture = value.capture;
   if (!isObject(capture)) return false;
   if (typeof capture.backend !== "string") return false;
@@ -243,6 +245,13 @@ export function isV3Record(value: unknown): value is RecordV3 {
     return false;
   }
   return Array.isArray(capture.segments);
+}
+
+/** Validates the optional `managedBy` field: a known manager plus a non-empty package spec. */
+function isManagedPackage(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (typeof value.package !== "string" || value.package.length === 0) return false;
+  return value.manager === "bun" || value.manager === "npm" || value.manager === "pnpm" || value.manager === "yarn";
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

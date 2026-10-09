@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -25,9 +25,9 @@ afterEach(() => {
 });
 
 /** Runs the CLI from source as a child process so its `process.exit` never kills the test runner. */
-async function runCli(args: string[], home: string): Promise<number> {
+async function runCli(args: string[], home: string, extraEnv: Record<string, string> = {}): Promise<number> {
   const proc = Bun.spawn([BUN, TRET, ...args], {
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, ...extraEnv, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -144,5 +144,119 @@ describe("uninstall record lifecycle", () => {
     writeRecords(home, [record()]);
     expect(await runCli(["forget", "nope"], home)).toBe(1);
     expect(readRecords(home).records).toHaveLength(1);
+  });
+
+  test("a managed global package is removed through its package manager", async () => {
+    const home = makeHome();
+    const shim = join(home, ".bun", "bin", "acmetool");
+    const packageDir = join(home, ".bun", "install", "global", "node_modules", "@acme", "tool");
+    mkdirSync(join(home, ".bun", "bin"), { recursive: true });
+    mkdirSync(packageDir, { recursive: true });
+    symlinkSync("../install/global/node_modules/@acme/tool/cli.js", shim);
+
+    // A fake `bun` on PATH records its arguments and does what `bun remove -g` would do.
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeBun = join(fakebin, "bun");
+    writeFileSync(
+      fakeBun,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "$HOME/fake-bun-args.txt"\nrm -rf "$HOME/.bun/install/global/node_modules/@acme/tool"\nexit 0\n`,
+    );
+    chmodSync(fakeBun, 0o755);
+
+    writeRecords(home, [
+      record({
+        name: "acmetool",
+        executable: shim,
+        owned: [{ path: shim, kind: "symlink", linkTarget: "../install/global/node_modules/@acme/tool/cli.js" }],
+        managedBy: { manager: "bun", package: "@acme/tool" },
+      }),
+    ]);
+
+    const path = `${fakebin}:${process.env.PATH ?? ""}`;
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
+
+    expect(existsSync(shim)).toBe(false);
+    expect(existsSync(packageDir)).toBe(false);
+    expect(readFileSync(join(home, "fake-bun-args.txt"), "utf8").trim().split("\n")).toEqual(["remove", "-g", "@acme/tool"]);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("a managed package the manager cannot remove keeps the record for a retry", async () => {
+    const home = makeHome();
+    const shim = join(home, ".bun", "bin", "acmetool");
+    const packageDir = join(home, ".bun", "install", "global", "node_modules", "@acme", "tool");
+    mkdirSync(join(home, ".bun", "bin"), { recursive: true });
+    mkdirSync(packageDir, { recursive: true });
+    symlinkSync("../install/global/node_modules/@acme/tool/cli.js", shim);
+
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeBun = join(fakebin, "bun");
+    writeFileSync(fakeBun, `#!/bin/sh\necho 'remove failed' >&2\nexit 1\n`);
+    chmodSync(fakeBun, 0o755);
+
+    writeRecords(home, [
+      record({
+        name: "acmetool",
+        executable: shim,
+        owned: [{ path: shim, kind: "symlink", linkTarget: "../install/global/node_modules/@acme/tool/cli.js" }],
+        managedBy: { manager: "bun", package: "@acme/tool" },
+      }),
+    ]);
+
+    const path = `${fakebin}:${process.env.PATH ?? ""}`;
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).not.toBe(0);
+
+    // The shim was removed, but the package survives, so the record stays with its managed package.
+    expect(existsSync(packageDir)).toBe(true);
+    const file = readRecords(home);
+    expect(file.records).toHaveLength(1);
+    expect(file.records[0]?.managedBy).toEqual({ manager: "bun", package: "@acme/tool" });
+  });
+
+  test("recognizes a managed package on a record written before managedBy existed", async () => {
+    const home = makeHome();
+    const shim = join(home, ".bun", "bin", "acmetool");
+    const globalDir = join(home, ".bun", "install", "global");
+    const manifest = join(globalDir, "package.json");
+    const packageDir = join(globalDir, "node_modules", "@acme", "tool");
+    mkdirSync(join(home, ".bun", "bin"), { recursive: true });
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(manifest, "{}");
+    symlinkSync("../install/global/node_modules/@acme/tool/cli.js", shim);
+
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeBun = join(fakebin, "bun");
+    writeFileSync(
+      fakeBun,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "$HOME/fake-bun-args.txt"\nrm -rf "$HOME/.bun/install/global/node_modules/@acme/tool"\nexit 0\n`,
+    );
+    chmodSync(fakeBun, 0o755);
+
+    // A record from before `managedBy`: it owns the shared global directory and manifest too.
+    writeRecords(home, [
+      record({
+        name: "acmetool",
+        executable: shim,
+        owned: [
+          { path: shim, kind: "symlink", linkTarget: "../install/global/node_modules/@acme/tool/cli.js" },
+          { path: globalDir, kind: "directory" },
+          { path: manifest, kind: "file" },
+        ],
+      }),
+    ]);
+
+    const path = `${fakebin}:${process.env.PATH ?? ""}`;
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
+
+    // Shared state survives; only the shim is removed by Tret and the package by the manager.
+    expect(existsSync(manifest)).toBe(true);
+    expect(existsSync(globalDir)).toBe(true);
+    expect(existsSync(shim)).toBe(false);
+    expect(existsSync(packageDir)).toBe(false);
+    expect(readFileSync(join(home, "fake-bun-args.txt"), "utf8").trim().split("\n")).toEqual(["remove", "-g", "@acme/tool"]);
+    expect(readRecords(home).records).toHaveLength(0);
   });
 });

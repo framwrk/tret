@@ -4,6 +4,7 @@ import type { BoundedSessionResult, SessionCoverage } from "../lib/session";
 import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { caseSensitiveFor, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
+import { describeManagedPackage, detectManagedPackage, removeManagedPackage } from "../lib/package-manager";
 import { extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
 import { formatCoverage, runBoundedSession } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
@@ -133,6 +134,9 @@ export async function install(
   }
 
   const failed = window.exitCode !== 0;
+  // A global package-manager install keeps its executable as a bin shim into shared state; record
+  // that so uninstall delegates to the manager instead of touching the shared node_modules/manifest.
+  const managedBy = detectManagedPackage(executable, effects.owned);
   const record: RecordV3 = {
     id: randomUUID(),
     name,
@@ -147,6 +151,7 @@ export async function install(
     owned: effects.owned,
     mutated: effects.mutated,
     deleted: effects.deleted,
+    ...(managedBy === undefined ? {} : { managedBy }),
   };
   await storage.saveRecord(record);
 
@@ -162,6 +167,8 @@ export async function install(
   log(`\towned ${effects.owned.length} files and folders`);
   log(`\tmutated ${effects.mutated.length}`);
   log(`\tdeleted ${effects.deleted.length}`);
+  if (managedBy !== undefined)
+    log(`\tglobal package ${describeManagedPackage(managedBy)} will be removed through ${managedBy.manager}`);
 }
 
 /** What one install window produced: the exit code, its capture, and a fallback diff when no journal exists. */
@@ -349,14 +356,25 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
   }
 
-  if (result.incomplete) {
+  // A previous global package-manager install is removed through the manager too, so a reinstall
+  // does not stack a second global package on top of the first.
+  let packageFailed = false;
+  if (existing.managedBy !== undefined) {
+    const removal = await removeManagedPackage(existing.managedBy, { home: Bun.env.HOME });
+    packageFailed = !removal.ok;
+    log(
+      `\t${removal.ok ? "removed" : "could not remove"} package ${describeManagedPackage(existing.managedBy)} (${removal.detail})`,
+    );
+  }
+
+  if (result.incomplete || packageFailed) {
     const reduced = reduceRecordForRetry(
       existing,
       result,
       rc.cleaned.map((cleaned) => cleaned.file),
     );
     const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
-    if (remaining === 0) await storage.removeRecord(reduced.id);
+    if (remaining === 0 && !packageFailed) await storage.removeRecord(reduced.id);
     else await storage.saveRecord(reduced);
     log("Error");
     log("\tprevious install could not be fully removed; run tret uninstall <name>, then tret install <URL> --force");
