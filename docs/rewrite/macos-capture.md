@@ -65,23 +65,32 @@ moved, plus files already known to be created. Files present and unchanged at bo
 read. A created file always gets an `installedHash` (sha256 of its content); `hashFile()` returns
 `undefined` rather than throwing when a file cannot be read.
 
+When backups are enabled (`--backup`), the start snapshot additionally reads each pre-existing
+regular file within the size limit, records its bytes in the journal's `beforeImages` map (keyed by
+content address), and sets its `beforeHash`. That is the one place content is read before the
+installer runs, and it is what makes a later overwrite or deletion restorable; with backups off the
+start snapshot stores stamps only, exactly as before.
+
 ## Coverage limits (the "heuristic" part)
 
 The backend reports these limits in its completeness label; they are not silently smoothed over.
 
-| Area                   | Behavior                                                                                                                                                                                                                          |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Process attribution    | **None.** Any process that writes inside the scope during the window is attributed, installer or not. Concurrent unrelated churn is indistinguishable from installer activity.                                                    |
-| Missed content change  | A content edit that leaves size, mtime, and inode unchanged is not detected, because change detection is stamp-first.                                                                                                             |
-| Renames                | Not paired. A rename surfaces as a removal plus a creation and normalizes to a deletion plus a creation/mutation, with no source→destination relationship.                                                                        |
-| Before-images          | Not captured. The start snapshot stores stamps, not content, so a mutation or deletion of a pre-existing file has no `beforeHash`/`beforeBlob` and is **not restorable**; only newly created files carry an `installedHash`.      |
-| Symlinks               | Recorded by target, never followed; a target change reads as a replacement.                                                                                                                                                       |
-| Daemonized descendants | Writes inside the scope before `stop()` are seen; writes after the window are not, and without a PID the backend cannot say a change came from the installer's tree.                                                              |
-| Unreadable scope       | A root that exists but cannot be read, or a file that cannot be hashed, sets `partialReason` (completeness stays `heuristic`).                                                                                                    |
-| Case behavior          | Uses the platform table's default (macOS: case-insensitive) for path identity, matching journal normalization (D10). Per-mount probing is a later stub; when it lands, the resolved `caseSensitive` flag is stored on the record. |
+| Area                   | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Process attribution    | **None.** Any process that writes inside the scope during the window is attributed, installer or not. Concurrent unrelated churn is indistinguishable from installer activity.                                                                                                                                                                                                                                                          |
+| Missed content change  | A content edit that leaves size, mtime, and inode unchanged is not detected, because change detection is stamp-first.                                                                                                                                                                                                                                                                                                                   |
+| Renames                | Not paired. A rename surfaces as a removal plus a creation and normalizes to a deletion plus a creation/mutation, with no source→destination relationship.                                                                                                                                                                                                                                                                              |
+| Before-images          | Captured only when backups are enabled (`--backup`). At `start` the fallback reads each pre-existing regular file within the size limit and keeps its bytes in the journal (`beforeImages`, keyed by content address); with backups off the start snapshot stores stamps only, so a mutation or deletion of a pre-existing file has no `beforeHash`/`beforeBlob` and is **not restorable**. Over-limit or unreadable files are skipped. |
+| Symlinks               | Recorded by target, never followed; a target change reads as a replacement.                                                                                                                                                                                                                                                                                                                                                             |
+| Daemonized descendants | Writes inside the scope before `stop()` are seen; writes after the window are not, and without a PID the backend cannot say a change came from the installer's tree.                                                                                                                                                                                                                                                                    |
+| Unreadable scope       | A root that exists but cannot be read, or a file that cannot be hashed, sets `partialReason` (completeness stays `heuristic`).                                                                                                                                                                                                                                                                                                          |
+| Case behavior          | Uses the platform table's default (macOS: case-insensitive) for path identity, matching journal normalization (D10). Per-mount probing is a later stub; when it lands, the resolved `caseSensitive` flag is stored on the record.                                                                                                                                                                                                       |
 
-Because mutations and deletions are non-restorable, uninstall can still remove owned files whose
-`installedHash` matches, but it must report a conflict rather than restore a heuristic mutation.
+With backups off, mutations and deletions are non-restorable: uninstall can still remove owned files
+whose `installedHash` matches, but it reports a conflict rather than restore a heuristic mutation.
+With `--backup`, `tret install` stores the captured bytes through `FileStorage.captureBeforeImage`
+and records the blob address as `beforeBlob`, so uninstall can restore a mutation or recreate a
+deletion — provided the current state still matches the record (D2).
 
 ## Tests
 

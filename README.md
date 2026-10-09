@@ -59,7 +59,7 @@ To remove the Tret binary itself, run `curl -fsSL https://tret.framwrk.com/scrip
 | `tret find <tool_name>`                          | Adopt an already-installed command and record the files it owns                                      |
 | `tret update`                                    | Update Tret to the latest release                                                                    |
 
-`install` also takes `--force` (uninstall the tool first, then reinstall it from a clean capture) and `--no-capture` (run the installer without attaching a capture window). Anything after `--` passes to the install script itself (`tret install <URL> -- --skip-browser`). `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt.
+`install` also takes `--force` (uninstall the tool first, then reinstall it from a clean capture), `--no-capture` (run the installer without attaching a capture window), and `--backup` (capture before-images so overwritten or deleted files can be restored on uninstall). Anything after `--` passes to the install script itself (`tret install <URL> -- --skip-browser`). `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt.
 
 ### Install a tool
 
@@ -93,7 +93,7 @@ A later explicit `tret trace` will run a tool under the same bounded session and
 tret uninstall <tool_name>
 ```
 
-Uninstall removes only files whose recorded fingerprint still matches, restores a mutated or deleted file only when a before-image exists and the current state still matches the record, and preserves anything that diverged. It strips the tool's PATH lines from shell config only when it can attribute those edits to the install, asks for confirmation first, and prints every remove, restore, skip, and conflict. Use `--dry-run` to see the plan without changing anything.
+Uninstall removes only files whose recorded fingerprint still matches, restores a mutated or deleted file only when a before-image exists (captured with `--backup` at install time) and the current state still matches the record, and preserves anything that diverged. It strips the tool's PATH lines from shell config only when it can attribute those edits to the install, asks for confirmation first, and prints every remove, restore, skip, and conflict. Use `--dry-run` to see the plan without changing anything.
 
 ### List installed tools
 
@@ -117,9 +117,17 @@ Linux provides the complete/partial tiers through kernel and process tracing. ma
 
 Tret stores paths and content **hashes** by default; it does **not** copy file contents. Before-image blobs are **off by default**, because prior config files can contain secrets.
 
-With backups disabled, a record still supports detection, verification, and logging, and is marked non-restorable. The storage layer implements a bounded, private, content-addressed opt-in (owner-only `~/.tret/objects/`, atomic writes, deduplication, a size limit, and reference-aware garbage collection), but `tret install` does not yet expose a flag or config for it, so restore is not reachable from the shipped commands.
+Opt in per install with `--backup`:
 
-Tret never silently restores over a file that changed after installation.
+```bash
+tret install --backup https://example.com/install.sh
+```
+
+With `--backup`, Tret captures the contents of pre-existing files the installer overwrites or deletes (up to a 1 MiB limit per file) and stores them content-addressed under owner-only `~/.tret/objects/`, written atomically and deduplicated by content. Reference-aware garbage collection removes only blobs no record references. `uninstall` then restores a mutated file from its before-image, or recreates a deleted file from it.
+
+Without `--backup`, a record still supports detection, verification, and logging, and is marked non-restorable: uninstall reports a conflict (`missing-blob`) and keeps the current files instead of restoring them. Files above the size limit or that cannot be read are recorded as mutations or deletions but are never claimed restorable.
+
+Tret never silently restores over a file that changed after installation: a diverged mutation, or a deleted path the user recreated, is preserved and reported as a conflict.
 
 ## Recovery and safe uninstall
 
@@ -146,7 +154,7 @@ Existing `find` records and their URL/hash semantics are preserved.
 - **OS/arch:** Windows and CPUs other than `arm64`/`x64` are unsupported; the install script and update check stop with a message.
 - **macOS attribution:** without an Apple-granted tracer entitlement, Tret can only infer ownership from scoped snapshots, and reports `heuristic`.
 - **Daemonized or privilege-escalated descendants:** a process that detaches or changes user during install can escape the capture window; Tret labels the record `partial` instead of `complete`.
-- **Backup coverage:** files that exceed the size limit or cannot be read are recorded but not restorable; files written through `mmap` on some backends and changes on network filesystems may not appear in a journal.
+- **Backup coverage:** with `--backup`, the macOS heuristic backend captures before-images of pre-existing files under the size limit; the Linux tracer records hashes but not content yet, so `--backup` installs there stay detect-only. Files that exceed the size limit or cannot be read are recorded but not restorable; files written through `mmap` on some backends and changes on network filesystems may not appear in a journal.
 - **Privileged installs:** Tret supports installers that use `sudo`, records the install's privilege, and makes uninstall sudo-aware for root-owned entries. It never escalates on your behalf.
 - **Case sensitivity:** Tret probes each filesystem rather than assuming the macOS default, so ownership and collision checks stay correct on case-sensitive volumes.
 
