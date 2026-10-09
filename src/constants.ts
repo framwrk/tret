@@ -41,6 +41,12 @@ export const RECORDS_VERSION = 2;
 /** Where Tret stores its records, relative to `$HOME`. */
 export const RECORDS_PATH = ".tret/records.json";
 
+/**
+ * Where Tret stores content-addressed before-image blobs, relative to `$HOME`. Blob files are named
+ * by the sha256 of their content; nothing else lives in this directory.
+ */
+export const OBJECTS_PATH = ".tret/objects";
+
 // Snapshot walk
 
 /**
