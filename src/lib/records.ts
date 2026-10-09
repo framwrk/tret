@@ -1,7 +1,8 @@
 import type { AbsolutePath, MutatedEntry, OwnedEntry, RecordFile, RecordFileV3, RecordV3, ToolRecord } from "../types";
+import { PRIVATE_FILE_MODE, writeFileAtomic } from "./atomic";
 import { RECORDS_PATH, RECORDS_VERSION } from "../constants";
-import { dirname, join } from "node:path";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { readFileSync } from "node:fs";
 
 /** Saves one install record, replacing any earlier record for the same tool name. */
 export function saveRecord(record: ToolRecord): void {
@@ -46,10 +47,7 @@ function home(): AbsolutePath {
 }
 
 function writeAtomic(path: AbsolutePath, file: RecordFile): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.tmp`;
-  writeFileSync(temp, JSON.stringify(file, null, 2));
-  renameSync(temp, path);
+  writeFileAtomic(path, JSON.stringify(file, null, 2), PRIVATE_FILE_MODE);
 }
 
 // Records v3 and the explicit v2 -> v3 migration (plan section 7).
@@ -241,7 +239,8 @@ function validateRecordFileV3(value: Record<string, unknown>): RecordFileV3 {
   return { version: 3, records: value.records as RecordV3[] };
 }
 
-function isV3Record(value: unknown): value is RecordV3 {
+/** Structural validation of one v3 record, enough to reject a corrupt or foreign entry before trusting it. */
+export function isV3Record(value: unknown): value is RecordV3 {
   if (!isObject(value)) return false;
   if (
     typeof value.id !== "string" ||
