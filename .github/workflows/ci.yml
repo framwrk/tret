@@ -13,7 +13,7 @@ jobs:
         # Every supported release target builds and tests on a native runner.
         include:
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
           - target: darwin-x64
             runner: macos-15-intel
           - target: linux-x64
