@@ -238,6 +238,22 @@ export function reduceRecordForRetry(
   };
 }
 
+/** One-line description of what happened to a planned path; shared by install and uninstall. */
+export function describeOutcome(outcome: ApplianceOutcome): string {
+  switch (outcome.outcome) {
+    case "removed":
+      return `removed ${outcome.path}`;
+    case "restored":
+      return `restored ${outcome.path}`;
+    case "skipped":
+      return `skipped ${outcome.path} (${outcome.reason})`;
+    case "conflict":
+      return `kept ${outcome.path} (${outcome.reason})`;
+    case "failed":
+      return `failed ${outcome.path} (${outcome.reason})`;
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Legacy pre-rewrite removal, retained for the v2 `install` reinstall path until phase 5/9 move
 // that command onto v3 records. The rewritten `uninstall` command does not call any of this; see

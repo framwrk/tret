@@ -1,9 +1,8 @@
 import type { AbsolutePath, RecordV3 } from "../types";
 import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "../lib/uninstall-planner";
-import { applyUninstallPlan, reduceRecordForRetry } from "../lib/removal";
+import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { confirm, log } from "../lib/utilities";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
-import type { ApplyUninstallResult } from "../lib/removal";
 import { FileStorage } from "../lib/store";
 
 /** The shell-config work an uninstall may do, kept separate from the file plan. */
@@ -195,21 +194,6 @@ async function persistRetry(storage: FileStorage, reduced: RecordV3): Promise<vo
     return;
   }
   await storage.saveRecord(reduced);
-}
-
-function describeOutcome(outcome: ApplyUninstallResult["outcomes"][number]): string {
-  switch (outcome.outcome) {
-    case "removed":
-      return `removed ${outcome.path}`;
-    case "restored":
-      return `restored ${outcome.path}`;
-    case "skipped":
-      return `skipped ${outcome.path} (${outcome.reason})`;
-    case "conflict":
-      return `kept ${outcome.path} (${outcome.reason})`;
-    case "failed":
-      return `failed ${outcome.path} (${outcome.reason})`;
-  }
 }
 
 function message(error: unknown): string {
