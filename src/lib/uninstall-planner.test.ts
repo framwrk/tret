@@ -40,10 +40,14 @@ function lister(map: Record<string, string[]>): (path: string) => string[] {
 function planFor(
   record: RecordV3,
   state: Record<string, UninstallVerification>,
-  options: { force?: boolean; otherRecords?: RecordV3[]; list?: Record<string, string[]> } = {},
+  options: { force?: boolean; otherRecords?: RecordV3[]; list?: Record<string, string[]>; delegatedRoots?: string[] } = {},
 ): Promise<UninstallPlan> {
   const planner = new VerifiedUninstallPlanner(inspector(state), lister(options.list ?? {}));
-  return planner.plan(record, { force: options.force, otherRecords: options.otherRecords });
+  return planner.plan(record, {
+    force: options.force,
+    otherRecords: options.otherRecords,
+    delegatedRoots: options.delegatedRoots,
+  });
 }
 
 describe("VerifiedUninstallPlanner fingerprints", () => {
@@ -162,6 +166,45 @@ describe("VerifiedUninstallPlanner directories", () => {
       { action: "conflict", path: "/h/dir/tool", reason: "modified" },
       { action: "conflict", path: "/h/dir", reason: "not-empty" },
     ]);
+  });
+});
+
+describe("VerifiedUninstallPlanner delegated roots", () => {
+  test("a delegated root counts as gone so an owned ancestor can be removed, not reported not-empty", async () => {
+    const target = {
+      ...record(),
+      owned: [
+        { path: "/h/agent", kind: "directory" as const },
+        { path: "/h/agent/bin", kind: "directory" as const },
+        { path: "/h/agent/bin/pi", kind: "file" as const, installedHash: h("b") },
+      ],
+    };
+    const state = {
+      "/h/agent": { exists: true, kind: "directory" as const },
+      "/h/agent/bin": { exists: true, kind: "directory" as const },
+      "/h/agent/bin/pi": { exists: true, kind: "file" as const, hash: h("b") },
+    };
+    // `agent` also holds the delegated managed root, whose untracked payload the record never owns.
+    const list = {
+      "/h/agent": ["/h/agent/bin", "/h/agent/install"],
+      "/h/agent/bin": ["/h/agent/bin/pi"],
+    };
+
+    const without = await planFor(target, state, { list });
+    expect(without.actions).toEqual([
+      { action: "remove", path: "/h/agent/bin/pi", kind: "file" },
+      { action: "remove", path: "/h/agent/bin", kind: "directory" },
+      { action: "conflict", path: "/h/agent", reason: "not-empty" },
+    ]);
+    expect(without.incomplete).toBe(true);
+
+    const withRoot = await planFor(target, state, { list, delegatedRoots: ["/h/agent/install"] });
+    expect(withRoot.actions).toEqual([
+      { action: "remove", path: "/h/agent/bin/pi", kind: "file" },
+      { action: "remove", path: "/h/agent/bin", kind: "directory" },
+      { action: "remove", path: "/h/agent", kind: "directory" },
+    ]);
+    expect(withRoot.incomplete).toBe(false);
   });
 });
 

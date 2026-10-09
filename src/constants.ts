@@ -80,6 +80,12 @@ export const EXCLUDED_PATHS = [
   // unsafe and the real package files are under the already-skipped `node_modules`. The package is
   // removed through the manager instead, driven by a record's `managedBy` (see package-manager.ts).
   ".bun/install/global",
+  // npm's user-level state (cache, logs, update-notifier). An installer that shells out to
+  // `npm install`/`npm ci` writes here, but it is shared npm state no tool owns, and its cache
+  // subdirectory is already skipped. Owning the `.npm` directory itself would strand a record:
+  // uninstall would remove the tracked log/notifier files and then report `.npm` `not-empty` against
+  // the untracked cache. Excluded outright, like bun's shared global root.
+  ".npm",
 ];
 
 /**

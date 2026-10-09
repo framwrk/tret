@@ -371,4 +371,39 @@ describe("uninstall record lifecycle", () => {
     expect(readFileSync(join(home, "fake-bun-args.txt"), "utf8").trim().split("\n")).toEqual(["remove", "-g", "@acme/tool"]);
     expect(readRecords(home).records).toHaveLength(0);
   });
+
+  test("removes a managed install recognized from its executable when the record predates the field", async () => {
+    const home = makeHome();
+    const root = join(home, ".pi", "agent", "install");
+    const launcher = join(home, ".pi", "agent", "bin", "pi");
+    mkdirSync(join(root, "releases", "1.0.0", "node_modules"), { recursive: true });
+    mkdirSync(join(home, ".pi", "agent", "bin"), { recursive: true });
+    writeFileSync(
+      join(root, "managed-install.json"),
+      JSON.stringify({ kind: "pi-managed-install", schemaVersion: 1, layout: "releases-v1" }),
+    );
+    // Untracked payload capture skipped; a record written before `managedInstall` exists owns only
+    // the wrapper directories, so removing them alone would leave every ancestor `not-empty`.
+    writeFileSync(join(root, "releases", "1.0.0", "node_modules", "blob.js"), "x");
+    writeFileSync(launcher, "#!/bin/sh\n");
+
+    writeRecords(home, [
+      record({
+        name: "pi",
+        executable: launcher,
+        owned: [
+          { path: join(home, ".pi"), kind: "directory" },
+          { path: join(home, ".pi", "agent"), kind: "directory" },
+          { path: join(home, ".pi", "agent", "bin"), kind: "directory" },
+          { path: join(home, ".pi", "agent", "bin", "pi"), kind: "file", installedHash: sha256("#!/bin/sh\n") },
+        ],
+      }),
+    ]);
+
+    expect(await runCli(["uninstall", "pi", "--yes"], home)).toBe(0);
+
+    // The delegated recursive removal clears the root and its payload; Tret clears the ancestors.
+    expect(existsSync(join(home, ".pi"))).toBe(false);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
 });

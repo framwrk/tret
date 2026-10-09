@@ -100,6 +100,17 @@ fields:
   the shared root the package lives under (the directory containing the shared `node_modules`) when
   it is not the manager's fixed home-relative default; npm records it because its prefix varies per
   machine, while bun's fixed `.bun/install/global` needs no override.
+- optional `managedInstall` (`ManagedInstall`: `kind`, `layout`, `root`) marks a tool installed
+  through its own first-party managed layout, recognized by a marker file under `root`
+  (`managed-install.json` with `kind: pi-managed-install`, `schemaVersion: 1`, `layout: releases-v1`).
+  The whole root subtree — the marker, the versioned releases, and the `node_modules` payload capture
+  skips everywhere — stays out of `owned`; the launcher and PATH entrypoint outside the root do not.
+  Detection resolves a PATH entrypoint symlink to the launcher under `<agent>/bin` and takes the
+  sibling `<agent>/install` as the root, mirroring the installer's own uninstaller. Uninstall
+  re-verifies the marker and delegates a recursive removal of the root (`rm -rf`) **before** removing
+  the remaining paths, and only drops the record once that removal proves the root gone; an invalid
+  marker or a failed removal keeps the record. npm's shared `~/.npm` state is excluded from capture
+  like bun's shared global root, so an installer's `npm ci` churn is never attributed to the tool.
 
 `RecordFileV3` wraps `RecordV3[]` with `version: 3`. Multiple records may claim one path; conflicts
 are resolved by uninstall planning, never by silently transferring ownership (D4).
@@ -129,8 +140,12 @@ window's start (`Journal.beforeImages`, keyed by content address), stores them w
 or `conflict`. `detected` is a non-restorable change (no `beforeBlob`), reported for honesty and
 never blocking; only `conflict` is actionable. The plan records `requiresSudo` (D8) and
 `incomplete` (an actionable conflict blocks a clean uninstall). The
-context can carry other records that claim the same paths (D4 shared ownership), a `force` flag, and
-an `inspect` callback for current state. Applying the plan is Phase 7; a dry run and the real
+context can carry other records that claim the same paths (D4 shared ownership), a `force` flag, an
+`inspect` callback for current state, and `delegatedRoots` — managed-install roots whose whole
+subtree a recursive removal will clear (see `managedInstall` above). The planner treats each
+delegated root as already gone, so an owned ancestor directory that only held the root is still
+planned for removal instead of being reported `not-empty` against payload the record never owns.
+Applying the plan is Phase 7; a dry run and the real
 uninstall share the same plan so they cannot diverge.
 
 ## Tests

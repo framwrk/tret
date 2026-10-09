@@ -140,6 +140,23 @@ export type ManagedPackage = {
 };
 
 /**
+ * A tool installed through its own first-party "managed install" layout rather than a package
+ * manager: a marker file inside an install root declares the layout, and the installer owns that
+ * root plus a launcher. The root's payload is a full `node_modules` tree, which capture deliberately
+ * skips everywhere, so the shared payload is never owned. Uninstall verifies the marker and delegates
+ * the whole root to a recursive removal before removing the remaining owned paths, so the untracked
+ * payload can no longer leave the root `not-empty` and strand the record (see `src/lib/managed-install.ts`).
+ */
+export type ManagedInstall = {
+  /** Marker kind that identifies the layout, e.g. `pi-managed-install`. */
+  kind: string;
+  /** Layout name from the marker, e.g. `releases-v1`. */
+  layout: string;
+  /** Absolute managed root; holds the marker and the (unowned) release payload. */
+  root: AbsolutePath;
+};
+
+/**
  * Rewrite record shape (plan section 3). Separates ownership (`owned`) from mutation (`mutated`)
  * and deletion (`deleted`), carries capture completeness and privilege explicitly, and never
  * infers ownership from a path's name. Multiple records may claim one path; conflicts are
@@ -166,6 +183,12 @@ export type RecordV3 = {
    * state stays out of `owned`; uninstall delegates removal to the manager (see `src/lib/package-manager.ts`).
    */
   managedBy?: ManagedPackage;
+  /**
+   * Set when the tool installed itself through a first-party managed layout (a marker file under
+   * `root`). The root and its untracked payload stay out of `owned`; uninstall delegates the whole
+   * root to a recursive removal before removing the rest (see `src/lib/managed-install.ts`).
+   */
+  managedInstall?: ManagedInstall;
 };
 
 /** The v3 records file: a version wrapper around `RecordV3` entries. */

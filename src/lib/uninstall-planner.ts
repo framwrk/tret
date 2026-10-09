@@ -82,6 +82,13 @@ export type UninstallPlanContext = {
   inspect?: (path: AbsolutePath) => UninstallVerification;
   /** Lists a directory's direct children; defaults to disk. Used to prove an owned directory is empty. */
   list?: (path: AbsolutePath) => AbsolutePath[];
+  /**
+   * Managed-install roots whose whole subtree is delegated to a recursive removal (see
+   * `src/lib/managed-install.ts`). The planner treats each as already gone, so an owned ancestor
+   * directory that only held the root can still be planned for removal instead of being reported
+   * `not-empty` against payload the record deliberately does not own.
+   */
+  delegatedRoots?: AbsolutePath[];
 };
 
 /**
@@ -180,8 +187,10 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     const force = context.force ?? false;
     const claimed = claimedByOthers(context.otherRecords ?? [], record.id);
     const actions: UninstallAction[] = [];
-    // Paths the plan will leave absent, either by removing them or because they were already gone.
-    const gone = new Set<AbsolutePath>();
+    // Paths the plan will leave absent: this plan's own removals plus any managed root whose whole
+    // subtree is delegated to a recursive removal, so ancestors of a delegated root are not
+    // mistaken for `not-empty` against payload the record never owned.
+    const gone = new Set<AbsolutePath>(context.delegatedRoots ?? []);
     let requiresSudo = false;
 
     const sudoNeeded = (verification: UninstallVerification): boolean => {
