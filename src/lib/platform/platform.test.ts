@@ -81,6 +81,29 @@ describe("platform tables", () => {
     expect(MACOS_PLATFORM.searchRootsInHome).toEqual(LEGACY_SEARCH_DIRS_IN_HOME);
   });
 
+  test("macOS keeps volatile ~/Library roots out of the capture scope (D3 revision, defect #2)", () => {
+    const capture = MACOS_PLATFORM.captureRootsInHome;
+    expect(capture).toContain(".config");
+    expect(capture).toContain(".local/bin");
+    expect(capture).toContain(".local/lib");
+    expect(capture).toContain(".local/share");
+    expect(capture).toContain(".local/state");
+    expect(capture).toContain("Library/Application Support");
+    expect(capture).toContain("Library/LaunchAgents");
+    for (const dropped of [
+      ".cache",
+      "Library/Caches",
+      "Library/Containers",
+      "Library/HTTPStorages",
+      "Library/Logs",
+      "Library/Preferences",
+      "Library/Saved Application State",
+      "Library/WebKit",
+    ]) {
+      expect(capture).not.toContain(dropped);
+    }
+  });
+
   test("macOS preserves the pre-rewrite uninstall guards", () => {
     expect(MACOS_PLATFORM.sharedAbsolute).toEqual(LEGACY_SHARED_ABSOLUTE);
     expect(MACOS_PLATFORM.sharedInHome).toEqual(LEGACY_SHARED_IN_HOME);
