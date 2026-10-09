@@ -1,4 +1,5 @@
 import type { AbsolutePath, DeletedEntry, MutatedEntry, OwnedEntry } from "../../types";
+import type { BlobId } from "../storage";
 import type { Journal } from "./events";
 
 /**
@@ -36,6 +37,12 @@ export type NormalizeInput = {
   backups: BackupPolicy;
   /** Whether the record's filesystem is case-sensitive (D10). */
   caseSensitive: boolean;
+  /**
+   * Content addresses for which before-image bytes were actually captured (D2). A mutation or
+   * deletion is claimed restorable only when its before hash appears here, so normalization never
+   * invents a before-image that storage does not hold. Defaults to none.
+   */
+  availableBeforeImages?: ReadonlySet<BlobId>;
 };
 
 // Phase 3 implements the conversion in the `journal` module; re-exported here so the frozen
