@@ -92,6 +92,38 @@ describe("applyUninstallPlan removals", () => {
   });
 });
 
+describe("applyUninstallPlan detect-only", () => {
+  test("reports a non-restorable mutation without changing it or blocking", async () => {
+    const home = testHome();
+    const file = join(home, "churn");
+    writeFileSync(file, "churn");
+    const target = record({ mutated: [{ path: file, installedHash: sha256("churn") }] });
+
+    const plan = await planner.plan(target);
+    expect(plan.actions).toEqual([{ action: "detected", path: file, kind: "mutated" }]);
+
+    const result = await applyUninstallPlan(plan, { storage: storageReturning({}) });
+    expect(result.detected).toEqual([file]);
+    expect(result.removed).toEqual([]);
+    expect(result.incomplete).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe("churn");
+  });
+
+  test("reports a non-restorable deletion without recreating it or blocking", async () => {
+    const home = testHome();
+    const file = join(home, "gone");
+    const target = record({ deleted: [{ path: file }] });
+
+    const plan = await planner.plan(target);
+    expect(plan.actions).toEqual([{ action: "detected", path: file, kind: "deleted" }]);
+
+    const result = await applyUninstallPlan(plan, { storage: storageReturning({}) });
+    expect(result.detected).toEqual([file]);
+    expect(result.incomplete).toBe(false);
+    expect(existsSync(file)).toBe(false);
+  });
+});
+
 describe("applyUninstallPlan restores", () => {
   test("restores a verified mutation from its before-image, overwriting the installed bytes", async () => {
     const home = testHome();
@@ -199,6 +231,7 @@ describe("partial retries", () => {
       removed: [],
       restored: ["/h/rc", "/h/gone"],
       skipped: [],
+      detected: [],
       conflicts: [],
       failed: [],
       incomplete: false,

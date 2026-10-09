@@ -87,13 +87,19 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   }
 
   const result = await applyUninstallPlan(plan, { storage });
-  // Conflicts and already-absent paths were described in the plan above; only report the
-  // outcomes the plan did not announce (removals, restores, and anything that failed at apply).
+  // Conflicts, already-absent paths, and detect-only changes were described in the plan above; only
+  // report the outcomes the plan did not announce (removals, restores, and anything that failed at apply).
   const announced = new Set(
-    plan.actions.filter((action) => action.action === "conflict" || action.action === "skip").map((action) => action.path),
+    plan.actions
+      .filter((action) => action.action === "conflict" || action.action === "skip" || action.action === "detected")
+      .map((action) => action.path),
   );
   for (const outcome of result.outcomes) {
-    if ((outcome.outcome === "conflict" || outcome.outcome === "skipped") && announced.has(outcome.path)) continue;
+    if (
+      (outcome.outcome === "conflict" || outcome.outcome === "skipped" || outcome.outcome === "detected") &&
+      announced.has(outcome.path)
+    )
+      continue;
     log(`\t${describeOutcome(outcome)}`, true);
   }
 
@@ -104,13 +110,16 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   const cleanedShell = new Set(rc.cleaned.map((cleaned) => cleaned.file));
   const unresolved = shell.files.filter((file) => !cleanedShell.has(file));
   for (const file of unresolved) {
-    log(`\tkept ${file} (nothing safe to clean)`);
+    // A shell config with no before-image is detect-only: report it, but never let it block (D2).
+    log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
   }
   for (const file of rc.failed) {
     log(`\tcould not clean ${file}`);
   }
 
-  const incomplete = result.incomplete || rc.failed.length > 0 || unresolved.length > 0;
+  // Only actionable work blocks: file conflicts/failures plus a shell config Tret could not read or
+  // write. Detect-only leftovers (no before-image) never keep a record alive.
+  const incomplete = result.incomplete || rc.failed.length > 0;
   if (incomplete) {
     const reduced = reduceRecordForRetry(record, result, cleanedShell);
     await persistRetry(storage, reduced);
@@ -145,8 +154,9 @@ function printDryRun(name: string, plan: Awaited<ReturnType<VerifiedUninstallPla
 }
 
 /**
- * Prints the shell-config lines the cleaner would strip, and flags any attributed config where no
- * line can be safely matched; an unresolved config keeps the record for a retry instead of vanishing.
+ * Prints the shell-config lines the cleaner would strip, and reports any attributed config where no
+ * line can be safely matched. A config without a before-image is detect-only: it is reported but
+ * never keeps the record alive (D2).
  */
 function printUnresolvedShell(name: string, dirs: AbsolutePath[], files: AbsolutePath[], dryRun: boolean): void {
   const rc = removeRcLines(name, dirs, dryRun, files);
@@ -156,7 +166,7 @@ function printUnresolvedShell(name: string, dirs: AbsolutePath[], files: Absolut
   const cleanedFiles = new Set(rc.cleaned.map((cleaned) => cleaned.file));
   for (const file of files) {
     if (!cleanedFiles.has(file)) {
-      log(`\t${dryRun ? "conflict" : "keep"} ${file} (unresolved)`);
+      log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
     }
   }
 }

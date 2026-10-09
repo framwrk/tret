@@ -23,14 +23,24 @@ export type UninstallConflictReason =
   | "modified"
   | "shared-owner"
   | "diverged"
-  | "missing-blob"
   | "unreadable"
   /** A fingerprinted path recorded before the rewrite (`kind: "unknown"`) or without a hash; never removed (D4). */
   | "unverified"
   /** An owned directory that still holds entries this record does not own; never recursively deleted. */
   | "not-empty";
 
-/** One planned uninstall step: the planner only ever emits these four shapes. */
+/**
+ * Why a recorded change is detect-only: the install altered a pre-existing path but captured no
+ * before-image, so uninstall can report the change but never restore or reverse it (D2). These are
+ * informational and never block a clean uninstall.
+ */
+export type UninstallDetectedKind = "mutated" | "deleted";
+
+/**
+ * One planned uninstall step: `conflict` is actionable (it blocks completion until resolved or
+ * forced), while `detected` is informational (a non-restorable change that is reported but never
+ * blocks). `remove`, `restore`, and `skip` round out the shapes the planner emits.
+ */
 export type UninstallAction =
   | { action: "remove"; path: AbsolutePath; kind: OwnedKind }
   | {
@@ -44,6 +54,7 @@ export type UninstallAction =
       installedHash?: string;
     }
   | { action: "skip"; path: AbsolutePath; reason: UninstallSkipReason }
+  | { action: "detected"; path: AbsolutePath; kind: UninstallDetectedKind }
   | { action: "conflict"; path: AbsolutePath; reason: UninstallConflictReason };
 
 /** A conservative, side-effect-free uninstall plan; applying it lands in phase 7. */
@@ -53,7 +64,11 @@ export type UninstallPlan = {
   actions: UninstallAction[];
   /** True when any action needs sudo for a root-owned entry (D8). */
   requiresSudo: boolean;
-  /** True when a conflict blocks a fully clean uninstall. */
+  /**
+   * True when an actionable conflict blocks a fully clean uninstall. Detect-only (`detected`)
+   * changes are reported but never set this: with backups off, a non-restorable mutation or
+   * deletion must not keep a record alive forever (D2).
+   */
   incomplete: boolean;
 };
 
@@ -224,6 +239,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     }
 
     // Mutations restore only from a before-image that still matches the recorded installed state.
+    // Without a before-image the change is detect-only: report it, never block on it (D2).
     for (const entry of record.mutated) {
       const verification = inspect(entry.path);
       const action = planMutation(entry.path, entry.installedHash, entry.beforeBlob, verification, claimed, force);
@@ -231,7 +247,8 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
       if (action.action === "restore" && sudoNeeded(verification)) requiresSudo = true;
     }
 
-    // Deletions restore only while the path is still absent; a recreated path is the user's.
+    // Deletions restore only while the path is still absent; a recreated path is the user's. A
+    // deletion with no before-image is likewise detect-only.
     for (const entry of record.deleted) {
       const verification = inspect(entry.path);
       actions.push(planDeletion(entry.path, entry.beforeBlob, verification, claimed, force));
@@ -242,6 +259,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
       tool: record.name,
       actions,
       requiresSudo,
+      // Only actionable conflicts block; a `detected` (non-restorable) change never does.
       incomplete: actions.some((action) => action.action === "conflict"),
     };
   }
@@ -310,7 +328,11 @@ function planSymlink(entry: OwnedEntry, verification: UninstallVerification, for
   return { action: "remove", path: entry.path, kind: "symlink" };
 }
 
-/** Plans one mutation: restore only when the current bytes still equal the recorded installed hash. */
+/**
+ * Plans one mutation. A before-image is required to restore; without one the change is detect-only
+ * and reported rather than blocking. With a before-image, the current bytes must still equal the
+ * recorded installed hash (and a hash must exist) before uninstall will overwrite them.
+ */
 function planMutation(
   path: AbsolutePath,
   installedHash: string | undefined,
@@ -320,16 +342,18 @@ function planMutation(
   force: boolean,
 ): UninstallAction {
   if (claimed.has(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
+  // No before-image: nothing to restore from, so the install's edit is detectable but not
+  // reversible. Report it as informational instead of a permanent `missing-blob` conflict (D2).
+  if (beforeBlob === undefined) return { action: "detected", path, kind: "mutated" };
   if (!verification.exists) return { action: "conflict", path, reason: "diverged" };
   if (verification.hash === undefined) return { action: "conflict", path, reason: "unreadable" };
   if (installedHash !== undefined && verification.hash !== installedHash)
     return { action: "conflict", path, reason: "diverged" };
-  if (beforeBlob === undefined) return { action: "conflict", path, reason: "missing-blob" };
   if (installedHash === undefined) return { action: "conflict", path, reason: "unverified" };
   return { action: "restore", path, kind: verification.kind ?? "file", beforeBlob, expect: "installed", installedHash };
 }
 
-/** Plans one deletion: restore only while the path is still absent. */
+/** Plans one deletion: restore only while the path is still absent and a before-image exists. */
 function planDeletion(
   path: AbsolutePath,
   beforeBlob: BlobId | undefined,
@@ -338,8 +362,9 @@ function planDeletion(
   force: boolean,
 ): UninstallAction {
   if (claimed.has(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
+  // As with a mutation, a deletion without a before-image cannot be reversed; report it, don't block.
+  if (beforeBlob === undefined) return { action: "detected", path, kind: "deleted" };
   if (verification.exists) return { action: "conflict", path, reason: "diverged" };
-  if (beforeBlob === undefined) return { action: "conflict", path, reason: "missing-blob" };
   return { action: "restore", path, kind: "file", beforeBlob, expect: "absent" };
 }
 
@@ -356,6 +381,12 @@ export function formatUninstallPlan(plan: UninstallPlan, mode: "dry-run" | "appl
         return mode === "dry-run" ? `would restore ${action.path}` : `restore ${action.path}`;
       case "skip":
         return `skip ${action.path} (${action.reason})`;
+      case "detected":
+        // Detect-only: the install changed this path but captured no before-image, so there is no
+        // restore to plan. Say so plainly in both dry-run and apply mode.
+        return action.kind === "deleted"
+          ? `detected ${action.path} was removed during install (not restored; no before-image was captured)`
+          : `detected ${action.path} changed during install (not restored; no before-image was captured)`;
       case "conflict":
         return mode === "dry-run" ? `conflict ${action.path} (${action.reason})` : `keep ${action.path} (${action.reason})`;
     }

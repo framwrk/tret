@@ -110,7 +110,7 @@ describe("install --backup -> uninstall restores", () => {
     }
   });
 
-  test("with backups off, records the changes but uninstall conflicts and preserves current files", async () => {
+  test("with backups off, changes are detect-only and uninstall still completes", async () => {
     const home = makeHome();
     seedHome(home);
     const server = serve(INSTALL_SCRIPT);
@@ -124,11 +124,13 @@ describe("install --backup -> uninstall restores", () => {
       // The mutation is still detectable (installed hash recorded), it just cannot be restored.
       expect(record.mutated.find((entry) => entry.path === keepPath(home))?.installedHash).toBeDefined();
 
-      expect(await runCli(["uninstall", "mytool", "--yes"], home)).not.toBe(0);
+      // Detect-only changes are reported but never block: the owned binary goes and the record drops.
+      expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
+      expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
+      // The detect-only files are left exactly as the install left them.
       expect(readFileSync(keepPath(home), "utf8")).toBe("installed-config\n");
       expect(existsSync(gonePath(home))).toBe(false);
-      // The record survives for a safe retry.
-      expect(findRecord(readStore(home), "mytool")).toBeDefined();
+      expect(readStore(home).records).toHaveLength(0);
     } finally {
       await server.stop();
     }
