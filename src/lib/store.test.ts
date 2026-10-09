@@ -1,6 +1,16 @@
 import { BlobCorruptionError, BlobTooLargeError, FileStorage, InvalidRecordError, RecordsCorruptionError } from "./store";
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -309,9 +319,7 @@ describe("FileStorage garbage collection", () => {
     const storage = new FileStorage({ homeDir: home });
     const referenced = await storage.putBlob(bytes("before-image"));
     const unreferenced = await storage.putBlob(bytes("orphan"));
-    await storage.saveRecord(
-      v3Record({ mutated: [{ path: "/home/.zshrc", beforeBlob: referenced.id }] }),
-    );
+    await storage.saveRecord(v3Record({ mutated: [{ path: "/home/.zshrc", beforeBlob: referenced.id }] }));
 
     expect(await storage.gcUnreferenced()).toEqual([unreferenced.id]);
     expect(await storage.getBlob(referenced.id)).toBeDefined();
