@@ -1,16 +1,41 @@
 #!/usr/bin/env bash
 # Installs the latest tret release binary to ~/.tret/bin/tret and links it as
 # ~/.local/bin/tret. Shell rc files are never touched. Never asks for a
-# password.
+# password. Supports macOS and Linux on arm64 and x64.
 set -euo pipefail
 
 REPO="framwrk/tret"
-BINARY="tret-macos-arm64"
 INSTALL_DIR="$HOME/.tret/bin"
 
-# macOS on Apple Silicon only, matching the compiled binary.
-[ "$(uname -s)" = "Darwin" ] || { echo "tret supports macOS only." >&2; exit 1; }
-[ "$(uname -m)" = "arm64" ] || { echo "tret supports Apple Silicon only." >&2; exit 1; }
+# Map the running platform to its release artifact. `uname -s` is Darwin or
+# Linux; `uname -m` is arm64 or x86_64 on macOS and aarch64 or x86_64 on Linux.
+case "$(uname -s)" in
+  Darwin) OS="darwin" ;;
+  Linux) OS="linux" ;;
+  *)
+    echo "tret supports macOS and Linux only (found: $(uname -s))." >&2
+    exit 1
+    ;;
+esac
+case "$(uname -m)" in
+  arm64 | aarch64) ARCH="arm64" ;;
+  x86_64 | amd64) ARCH="x64" ;;
+  *)
+    echo "tret supports arm64 and x64 only (found: $(uname -m))." >&2
+    exit 1
+    ;;
+esac
+
+BINARY="tret-$OS-$ARCH"
+ARCHIVE="$BINARY.tar.gz"
+
+# $HASH prints a file's SHA-256 with the tool available on this platform:
+# sha256sum ships on Linux, shasum on macOS. Both print `<hash>  <file>`.
+if command -v sha256sum >/dev/null 2>&1; then
+  HASH() { sha256sum "$@"; }
+else
+  HASH() { shasum -a 256 "$@"; }
+fi
 
 NAME="tret"
 DEST="$INSTALL_DIR/$NAME"
@@ -79,8 +104,8 @@ TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" | { grep -o '"ta
 BASE="https://github.com/$REPO/releases/download/$TAG"
 curl -fsSL "$BASE/checksums.txt" -o "$TMP/checksums.txt"
 
-# The release checksum for $BINARY. An empty result means no entry for the
-# binary, and the install fails here instead of skipping verification.
+# The release checksum for the raw binary. An empty result means no entry for
+# this platform, and the install fails here instead of skipping verification.
 EXPECTED="$(grep " $BINARY\$" "$TMP/checksums.txt" | cut -d' ' -f1)" ||
   { echo "No checksum entry for $BINARY in $TAG's checksums.txt." >&2; exit 1; }
 
@@ -99,21 +124,25 @@ fi
 ensure_link || exit 1
 
 if [ -f "$DEST" ] && [ -x "$DEST" ]; then
-  INSTALLED="$(shasum -a 256 "$DEST" 2>/dev/null | cut -d' ' -f1 || true)"
+  INSTALLED="$(HASH "$DEST" 2>/dev/null | cut -d' ' -f1 || true)"
   if [ "$INSTALLED" = "$EXPECTED" ]; then
     echo "tret is already up to date at $DEST (release $TAG)."
     exit 0
   fi
 fi
 
-curl -fsSL "$BASE/$BINARY" -o "$TMP/$BINARY"
+curl -fsSL "$BASE/$ARCHIVE" -o "$TMP/$ARCHIVE"
 
-# Fail closed on a corrupted download.
-(cd "$TMP" && grep " $BINARY\$" checksums.txt | shasum -a 256 -c -)
+# Fail closed on a corrupted download: verify only this platform's archive
+# line, so a manifest that also lists the other targets still checks cleanly.
+(cd "$TMP" && grep " $ARCHIVE\$" checksums.txt | HASH -c -)
 
-# Write to a temp name in the target directory, then rename, so an
-# interrupted install never leaves a truncated binary at $DEST.
-install -m 755 "$TMP/$BINARY" "$DEST.tmp" && mv -f "$DEST.tmp" "$DEST"
+# Extract the archive, then write the binary to a temp name in the target
+# directory and rename, so an interrupted install never leaves a truncated
+# binary at $DEST.
+mkdir -p "$TMP/extract"
+tar -xzf "$TMP/$ARCHIVE" -C "$TMP/extract"
+install -m 755 "$TMP/extract/$NAME" "$DEST.tmp" && mv -f "$DEST.tmp" "$DEST"
 
 # Say what '$NAME' actually resolves to now, so the closing hints are truthful.
 RESOLVED="$(command -v "$NAME" || true)"
