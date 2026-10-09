@@ -50,6 +50,30 @@ describe("detectManagedPackage", () => {
     expect(detectManagedPackage(executable, owned, home)).toEqual({ manager: "npm", package: "eslint" });
   });
 
+  test("recognizes an npm global under a custom prefix and records the prefix's shared root", () => {
+    const home = testHome();
+    const executable = join(home, ".local", "bin", "pi");
+    const owned: OwnedEntry[] = [
+      { path: executable, kind: "symlink", linkTarget: "../lib/node_modules/@acme/tool/dist/cli.js" },
+    ];
+
+    expect(detectManagedPackage(executable, owned, home)).toEqual({
+      manager: "npm",
+      package: "@acme/tool",
+      globalRoot: join(home, ".local", "lib"),
+    });
+  });
+
+  test("ignores a shim whose target names node_modules but sits outside the prefix", () => {
+    const home = testHome();
+    const executable = join(home, "bin", "tool");
+    const owned: OwnedEntry[] = [
+      { path: executable, kind: "symlink", linkTarget: `${home}/.local/lib/node_modules/@acme/tool/cli.js` },
+    ];
+
+    expect(detectManagedPackage(executable, owned, home)).toBeUndefined();
+  });
+
   test("falls back to the symlink on disk when the record has no matching entry", () => {
     const home = testHome();
     mkdirSync(join(home, ".bun", "install", "global", "node_modules", "acme"), { recursive: true });
@@ -103,6 +127,24 @@ describe("removeManagedPackage", () => {
     expect(calls).toEqual([{ command: "bun", args: ["remove", "-g", "@acme/tool"] }]);
   });
 
+  test("removes an npm global under its recorded prefix with --prefix", async () => {
+    const home = testHome();
+    const prefix = join(home, ".local");
+    const dir = join(prefix, "lib", "node_modules", "@acme", "tool");
+    mkdirSync(dir, { recursive: true });
+    const calls: { command: string; args: string[] }[] = [];
+    const runner: PackageCommandRunner = async (command, args) => {
+      calls.push({ command, args });
+      rmSync(dir, { recursive: true, force: true });
+      return { code: 0, stdout: "", stderr: "" };
+    };
+
+    const npmPkg = { manager: "npm", package: "@acme/tool", globalRoot: join(prefix, "lib") } as const;
+    const removal = await removeManagedPackage(npmPkg, { home, runner });
+    expect(removal).toEqual({ ok: true, skipped: false, detail: "npm removed @acme/tool" });
+    expect(calls).toEqual([{ command: "npm", args: ["uninstall", "-g", "--prefix", prefix, "@acme/tool"] }]);
+  });
+
   test("accepts a non-zero exit when the package directory is gone afterwards", async () => {
     const home = testHome();
     mkdirSync(packageDir(home), { recursive: true });
@@ -149,6 +191,17 @@ describe("managed global state", () => {
     expect(isManagedGlobalPath(root, pkg, home)).toBe(true);
     expect(isManagedGlobalPath(join(root, "package.json"), pkg, home)).toBe(true);
     expect(isManagedGlobalPath(join(home, ".bun", "bin", "acmetool"), pkg, home)).toBe(false);
+  });
+
+  test("prefers a recorded npm prefix over the home-relative default", () => {
+    const home = testHome();
+    const root = join(home, ".local", "lib");
+    const pkg = { manager: "npm", package: "@acme/tool", globalRoot: root } as const;
+
+    expect(managedGlobalRoot(pkg, home)).toBe(root);
+    expect(isManagedGlobalPath(join(root, "node_modules"), pkg, home)).toBe(true);
+    // The shim lives in the prefix's `bin`, not the shared `lib` tree, so it stays owned.
+    expect(isManagedGlobalPath(join(home, ".local", "bin", "acmetool"), pkg, home)).toBe(false);
   });
 });
 

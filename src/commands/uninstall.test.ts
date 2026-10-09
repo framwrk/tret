@@ -202,6 +202,96 @@ describe("uninstall record lifecycle", () => {
     expect(readRecords(home).records).toHaveLength(0);
   });
 
+  test("a managed npm global is removed through its recorded prefix", async () => {
+    const home = makeHome();
+    const prefix = join(home, ".local");
+    const shim = join(prefix, "bin", "acmetool");
+    const packageDir = join(prefix, "lib", "node_modules", "@acme", "tool");
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    mkdirSync(packageDir, { recursive: true });
+    symlinkSync("../lib/node_modules/@acme/tool/cli.js", shim);
+
+    // A fake `npm` records its arguments and does what `npm uninstall -g --prefix` would do.
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeNpm = join(fakebin, "npm");
+    writeFileSync(
+      fakeNpm,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "$HOME/fake-npm-args.txt"\nrm -rf "$HOME/.local/lib/node_modules/@acme/tool"\nexit 0\n`,
+    );
+    chmodSync(fakeNpm, 0o755);
+
+    writeRecords(home, [
+      record({
+        name: "acmetool",
+        executable: shim,
+        owned: [{ path: shim, kind: "symlink", linkTarget: "../lib/node_modules/@acme/tool/cli.js" }],
+        managedBy: { manager: "npm", package: "@acme/tool", globalRoot: join(prefix, "lib") },
+      }),
+    ]);
+
+    const path = `${fakebin}:${process.env.PATH ?? ""}`;
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
+
+    expect(linkExists(shim)).toBe(false);
+    expect(existsSync(packageDir)).toBe(false);
+    expect(readFileSync(join(home, "fake-npm-args.txt"), "utf8").trim().split("\n")).toEqual([
+      "uninstall",
+      "-g",
+      "--prefix",
+      prefix,
+      "@acme/tool",
+    ]);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("recognizes an npm global on a record written before managedBy existed", async () => {
+    const home = makeHome();
+    const shim = join(home, ".npm-global", "bin", "eslint");
+    const libDir = join(home, ".npm-global", "lib");
+    const packageDir = join(libDir, "node_modules", "eslint");
+    mkdirSync(join(home, ".npm-global", "bin"), { recursive: true });
+    mkdirSync(packageDir, { recursive: true });
+    symlinkSync("../lib/node_modules/eslint/bin/eslint.js", shim);
+
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeNpm = join(fakebin, "npm");
+    writeFileSync(
+      fakeNpm,
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "$HOME/fake-npm-args.txt"\nrm -rf "$HOME/.npm-global/lib/node_modules/eslint"\nexit 0\n`,
+    );
+    chmodSync(fakeNpm, 0o755);
+
+    // A record from before `managedBy`: it owns the shared `lib` directory too. That shared tree is
+    // dropped from the plan, while the shim still comes off and npm removes the package by prefix.
+    writeRecords(home, [
+      record({
+        name: "eslint",
+        executable: shim,
+        owned: [
+          { path: shim, kind: "symlink", linkTarget: "../lib/node_modules/eslint/bin/eslint.js" },
+          { path: libDir, kind: "directory" },
+        ],
+      }),
+    ]);
+
+    const path = `${fakebin}:${process.env.PATH ?? ""}`;
+    expect(await runCli(["uninstall", "eslint", "--yes"], home, { PATH: path })).toBe(0);
+
+    expect(existsSync(libDir)).toBe(true);
+    expect(linkExists(shim)).toBe(false);
+    expect(existsSync(packageDir)).toBe(false);
+    expect(readFileSync(join(home, "fake-npm-args.txt"), "utf8").trim().split("\n")).toEqual([
+      "uninstall",
+      "-g",
+      "--prefix",
+      join(home, ".npm-global"),
+      "eslint",
+    ]);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
   test("a managed package the manager cannot remove keeps the record for a retry", async () => {
     const home = makeHome();
     const shim = join(home, ".bun", "bin", "acmetool");

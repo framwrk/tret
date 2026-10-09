@@ -251,6 +251,9 @@ export function isV3Record(value: unknown): value is RecordV3 {
 function isManagedPackage(value: unknown): boolean {
   if (!isObject(value)) return false;
   if (typeof value.package !== "string" || value.package.length === 0) return false;
+  if (value.globalRoot !== undefined && (typeof value.globalRoot !== "string" || value.globalRoot.length === 0)) {
+    return false;
+  }
   return value.manager === "bun" || value.manager === "npm" || value.manager === "pnpm" || value.manager === "yarn";
 }
 

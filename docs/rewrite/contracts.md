@@ -92,11 +92,14 @@ fields:
   (`DeletedEntry`: before hash, optional `beforeBlob`). `kind` is `"file" | "directory" |
 "symlink"`, plus `"unknown"` reserved for migrated v2 records, which stored paths without a kind;
   a capture backend never emits `"unknown"`, and uninstall treats it as non-removable.
-- optional `managedBy` (`ManagedPackage`: `manager`, `package`) marks an executable installed
-  through a package manager's global mode. Its shared `node_modules`, lockfile, and manifest stay
-  out of `owned`; uninstall delegates the package to the manager first (`bun remove -g`,
-  `npm uninstall -g`) and only then removes the remaining paths, so a failed package removal leaves
-  the record and its files untouched for a retry.
+- optional `managedBy` (`ManagedPackage`: `manager`, `package`, optional `globalRoot`) marks an
+  executable installed through a package manager's global mode. Its shared `node_modules`, lockfile,
+  and manifest stay out of `owned`; uninstall delegates the package to the manager first
+  (`bun remove -g`, `npm uninstall -g --prefix <prefix>`) and only then removes the remaining paths,
+  so a failed package removal leaves the record and its files untouched for a retry. `globalRoot` is
+  the shared root the package lives under (the directory containing the shared `node_modules`) when
+  it is not the manager's fixed home-relative default; npm records it because its prefix varies per
+  machine, while bun's fixed `.bun/install/global` needs no override.
 
 `RecordFileV3` wraps `RecordV3[]` with `version: 3`. Multiple records may claim one path; conflicts
 are resolved by uninstall planning, never by silently transferring ownership (D4).

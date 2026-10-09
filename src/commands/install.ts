@@ -4,7 +4,12 @@ import type { BoundedSessionResult, SessionCoverage } from "../lib/session";
 import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { caseSensitiveFor, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
-import { describeManagedPackage, detectManagedPackage, removeManagedPackage } from "../lib/package-manager";
+import {
+  describeManagedPackage,
+  detectManagedPackage,
+  removeManagedPackage,
+  withoutManagedGlobalPaths,
+} from "../lib/package-manager";
 import { extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
 import { formatCoverage, runBoundedSession } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
@@ -119,9 +124,6 @@ export async function install(
   );
 
   const effects = buildEffects(window, caseSensitive, backups);
-  // Store the before-image bytes the window captured, then drop any restore claim storage did not
-  // actually land, so the record never advertises a blob `getBlob` cannot return (D2).
-  await storeBeforeImages(effects, window.journal, storage, backups);
 
   // The tool name comes from the executable the install actually put on disk, not the URL or a
   // prompt; when the URL is already tracked, keep the name that install used rather than re-deriving.
@@ -136,7 +138,20 @@ export async function install(
   const failed = window.exitCode !== 0;
   // A global package-manager install keeps its executable as a bin shim into shared state; record
   // that so uninstall delegates to the manager instead of touching the shared node_modules/manifest.
+  // The shared tree itself is never owned: npm's prefix `lib` and bun's global root are shared by
+  // every global install, so the capture drops what sits under the detected root.
   const managedBy = detectManagedPackage(executable, effects.owned);
+  if (managedBy !== undefined) {
+    effects.owned = withoutManagedGlobalPaths(effects.owned, managedBy, Bun.env.HOME);
+    effects.mutated = withoutManagedGlobalPaths(effects.mutated, managedBy, Bun.env.HOME);
+    effects.deleted = withoutManagedGlobalPaths(effects.deleted, managedBy, Bun.env.HOME);
+  }
+
+  // Store the before-image bytes the window captured, then drop any restore claim storage did not
+  // actually land, so the record never advertises a blob `getBlob` cannot return (D2). Runs after the
+  // shared-state filter so a dropped path's before-image is never stored as an orphan blob.
+  await storeBeforeImages(effects, window.journal, storage, backups);
+
   const record: RecordV3 = {
     id: randomUUID(),
     name,
@@ -330,7 +345,18 @@ function buildCapture(window: InstallWindow, failed: boolean, clock: () => numbe
 async function removePrevious(storage: FileStorage, existing: RecordV3, records: RecordV3[]): Promise<void> {
   log(`reinstalling ${existing.name}: removing the previous install first`);
   const planner = new VerifiedUninstallPlanner();
-  const plan = await planner.plan(existing, { otherRecords: records, force: true });
+  // A managed package's shared global tree is never planned for removal, matching `uninstall`: the
+  // manager removes the package, and Tret only removes the shim and other owned paths.
+  const target =
+    existing.managedBy === undefined
+      ? existing
+      : {
+          ...existing,
+          owned: withoutManagedGlobalPaths(existing.owned, existing.managedBy, Bun.env.HOME),
+          mutated: withoutManagedGlobalPaths(existing.mutated, existing.managedBy, Bun.env.HOME),
+          deleted: withoutManagedGlobalPaths(existing.deleted, existing.managedBy, Bun.env.HOME),
+        };
+  const plan = await planner.plan(target, { otherRecords: records, force: true });
 
   // The package manager goes first, mirroring `uninstall`: only once it reports the package gone
   // does Tret remove the rest. A failed removal aborts the reinstall with nothing else touched, so

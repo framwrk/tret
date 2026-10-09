@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -81,12 +81,23 @@ chmod +x "$HOME/.bun/install/global/node_modules/@acme/tool/cli.js"
 ln -s ../install/global/node_modules/@acme/tool/cli.js "$HOME/.bun/bin/acmetool"
 `;
 
+// An `npm install -g --prefix "$HOME/.local"` shape (the fallback the Pi installer uses): the package
+// files live under the prefix's `lib/node_modules` (skipped) and the bin shim in the prefix's `bin`.
+// Detection must resolve the prefix from the shim and record it, since npm's prefix is not fixed.
+const NPM_GLOBAL_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.local/lib/node_modules/@acme/tool" "$HOME/.local/bin"
+printf '#!/usr/bin/env node\\nconsole.log(1)\\n' > "$HOME/.local/lib/node_modules/@acme/tool/cli.js"
+chmod +x "$HOME/.local/lib/node_modules/@acme/tool/cli.js"
+ln -s ../lib/node_modules/@acme/tool/cli.js "$HOME/.local/bin/acmetool"
+`;
+
 type StoredRecord = {
   name: string;
   source: string;
   capture: { completeness: string; segments: { kind: string; partialReason?: string }[] };
   owned: { path: string; kind?: string; installedHash?: string }[];
-  managedBy?: { manager: string; package: string };
+  managedBy?: { manager: string; package: string; globalRoot?: string };
 };
 
 function readStore(home: string): { version: number; records: StoredRecord[] } {
@@ -203,6 +214,97 @@ describe("install -> list -> uninstall", () => {
       const ownedPaths = record?.owned.map((entry) => entry.path) ?? [];
       expect(ownedPaths.some((path) => path.includes(".bun/install/global"))).toBe(false);
       expect(record?.managedBy).toEqual({ manager: "bun", package: "@acme/tool" });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("recognizes an npm global under a custom prefix and records that prefix", async () => {
+    const home = makeHome();
+    // The prefix and its `lib` already exist; only the package tree and shim are new, so the shared
+    // `lib` directory is not owned.
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    mkdirSync(join(home, ".local", "lib"), { recursive: true });
+    const server = serve(NPM_GLOBAL_SCRIPT);
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "acmetool");
+      expect(record).toBeDefined();
+      expect(record?.owned.some((entry) => entry.path === join(home, ".local", "bin", "acmetool"))).toBe(true);
+      // The shared package tree under the prefix's `lib/node_modules` is never owned.
+      const ownedPaths = record?.owned.map((entry) => entry.path) ?? [];
+      expect(ownedPaths.some((path) => path.includes("lib/node_modules"))).toBe(false);
+      expect(record?.managedBy).toEqual({
+        manager: "npm",
+        package: "@acme/tool",
+        globalRoot: join(home, ".local", "lib"),
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--force reinstalls a managed npm global without deleting the shared tree", async () => {
+    const home = makeHome();
+    const prefix = join(home, ".local");
+    const shim = join(prefix, "bin", "acmetool");
+    const packageDir = join(prefix, "lib", "node_modules", "@acme", "tool");
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    mkdirSync(packageDir, { recursive: true });
+    symlinkSync("../lib/node_modules/@acme/tool/cli.js", shim);
+
+    // A fake `npm` stands in for the real remove command, which needs network/registry access.
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeNpm = join(fakebin, "npm");
+    writeFileSync(fakeNpm, `#!/bin/sh\nrm -rf "$HOME/.local/lib/node_modules/@acme/tool"\nexit 0\n`);
+    chmodSync(fakeNpm, 0o755);
+
+    const server = serve(NPM_GLOBAL_SCRIPT);
+    // Seed a managed record for the same URL so `--force` exercises the reinstall path.
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    writeFileSync(
+      join(home, ".tret", "records.json"),
+      JSON.stringify({
+        version: 3,
+        records: [
+          {
+            id: "rec-1",
+            name: "acmetool",
+            source: "install",
+            url: server.url,
+            installedAt: "2026-10-09T00:00:00.000Z",
+            executable: shim,
+            scriptSha256: "a".repeat(64),
+            capture: {
+              backend: "macos-heuristic",
+              completeness: "heuristic",
+              segments: [{ kind: "install", startedAt: "2026-10-09T00:00:00.000Z" }],
+            },
+            privilege: "user",
+            caseSensitive: true,
+            owned: [{ path: shim, kind: "symlink", linkTarget: "../lib/node_modules/@acme/tool/cli.js" }],
+            mutated: [],
+            deleted: [],
+            managedBy: { manager: "npm", package: "@acme/tool", globalRoot: join(prefix, "lib") },
+          },
+        ],
+      }),
+    );
+
+    try {
+      const path = `${fakebin}:${process.env.PATH ?? ""}`;
+      expect(await runCli(["install", server.url, "--force"], home, { PATH: path })).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "acmetool");
+      expect(record).toBeDefined();
+      expect(record?.managedBy).toEqual({
+        manager: "npm",
+        package: "@acme/tool",
+        globalRoot: join(prefix, "lib"),
+      });
+      expect(record?.owned.some((entry) => entry.path.includes("lib/node_modules"))).toBe(false);
     } finally {
       await server.stop();
     }
