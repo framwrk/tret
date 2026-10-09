@@ -135,6 +135,20 @@ export async function hashFile(path: AbsolutePath): Promise<string | undefined> 
   }
 }
 
+/** sha256 hex of `bytes`, the content address used for before-images and record hashes (D2). */
+export function hashBytes(bytes: Uint8Array): string {
+  return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+}
+
+/** Reads a whole file as bytes, or undefined when it cannot be read. Callers bound the size first. */
+export async function readFileBytes(path: AbsolutePath): Promise<Uint8Array | undefined> {
+  try {
+    return new Uint8Array(await Bun.file(path).arrayBuffer());
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Turns two scoped snapshots into journal events. The events carry no `pid`: the fallback cannot
  * attribute a change to a process, which is exactly why its completeness is "heuristic".

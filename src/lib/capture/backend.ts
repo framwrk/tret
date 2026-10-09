@@ -1,4 +1,5 @@
 import type { AbsolutePath, CaptureCompleteness, Privilege } from "../../types";
+import type { BackupPolicy } from "./normalize";
 import type { Journal } from "./events";
 
 /** Inputs for one bounded capture window. */
@@ -9,6 +10,11 @@ export type CaptureStartOptions = {
   privilege: Privilege;
   /** Absolute roots to observe, already expanded from the active Platform table. */
   roots: AbsolutePath[];
+  /**
+   * Before-image backup policy (D2). Off by default, so a backend captures no file content unless
+   * the caller opts in; when on, a backend captures pre-existing bytes within the size limit.
+   */
+  backups?: BackupPolicy;
 };
 
 /** An active observation window; `stop` closes it and returns the collected journal. */
