@@ -1,9 +1,9 @@
 import type { Journal, JournalEvent, JournalEventInput } from "../events";
 import type { ScopedNode, ScopedSnapshot } from "./scoped";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
-import { diffScopedSnapshots, filesToHash, scopedPathKey } from "./scoped";
+import { diffScopedSnapshots, filesToHash, scanScopedRoots, scopedPathKey } from "./scoped";
 import { isVolatileChurnPath, macosHeuristicRoots } from "./scope";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { MACOS_PLATFORM } from "../../platform";
 import { MacosHeuristicCaptureBackend } from "./backend";
 import { join } from "node:path";
@@ -96,7 +96,7 @@ describe("macOS scope roots", () => {
 });
 
 describe("macOS volatile churn skip (defect #2)", () => {
-  test("recognizes sidecar and journal churn while leaving real files alone", () => {
+  test("recognizes sidecar, runtime-log, and browser-storage churn while leaving real files alone", () => {
     for (const path of [
       "/Users/t/Library/Application Support/com.raycast.macos/main.db-wal",
       "/Users/t/Library/Application Support/com.raycast.macos/main.db-shm",
@@ -104,6 +104,12 @@ describe("macOS volatile churn skip (defect #2)", () => {
       "/Users/t/Library/HTTPStorages/com.x/sqlite-shm",
       "/Users/t/Library/Application Support/acme/WebStorage/QuotaManager-journal",
       "/Users/t/Library/Application Support/acme/IndexedDB/store/000024.log",
+      // Runtime logs an app appends to (the false mutations seen in the dev-branch walkthrough).
+      "/Users/t/.local/share/opencode/log/opencode.log",
+      "/Users/t/.t3/userdata/logs/desktop.trace.ndjson",
+      "/Users/t/.t3/userdata/logs/renderer-history.ndjson",
+      // WebKit rewrites its quota database continuously.
+      "/Users/t/Library/Application Support/t3code-v2/WebStorage/QuotaManager",
     ]) {
       expect(isVolatileChurnPath(path)).toBe(true);
     }
@@ -111,6 +117,10 @@ describe("macOS volatile churn skip (defect #2)", () => {
     expect(isVolatileChurnPath("/Users/t/Library/Application Support/acme/main.db")).toBe(false);
     expect(isVolatileChurnPath("/Users/t/Library/Application Support/acme/IndexedDB/store/MANIFEST-000001")).toBe(false);
     expect(isVolatileChurnPath("/Users/t/Library/LaunchAgents/com.acme.plist")).toBe(false);
+    // The rules are shape-based, not "anything with a log-ish suffix": a log outside a `log(s)/`
+    // directory is still tracked, so an installer's own `.log`/`.ndjson` output is not dropped.
+    expect(isVolatileChurnPath("/Users/t/.config/acme/acme.log")).toBe(false);
+    expect(isVolatileChurnPath("/Users/t/.local/share/acme/export.ndjson")).toBe(false);
   });
 
   test("churn created during the window is not emitted as an event", async () => {
@@ -118,15 +128,21 @@ describe("macOS volatile churn skip (defect #2)", () => {
     try {
       const appSupport = join(root, "Library/Application Support/acme");
       mkdirSync(join(appSupport, "IndexedDB/store"), { recursive: true });
+      mkdirSync(join(appSupport, "logs"), { recursive: true });
+      mkdirSync(join(appSupport, "WebStorage"), { recursive: true });
+      mkdirSync(join(root, ".local/share/acme/log"), { recursive: true });
       const backend = new MacosHeuristicCaptureBackend();
       const session = await backend.start({
         pid: process.pid,
         privilege: "user",
-        roots: [join(root, "Library/Application Support")],
+        roots: [join(root, "Library/Application Support"), join(root, ".local/share/acme")],
       });
       writeFileSync(join(appSupport, "main.db-wal"), "churn");
       writeFileSync(join(appSupport, "WebStorage-journal"), "churn");
       writeFileSync(join(appSupport, "IndexedDB/store/000024.log"), "churn");
+      writeFileSync(join(appSupport, "logs/desktop.trace.ndjson"), "churn");
+      writeFileSync(join(appSupport, "WebStorage/QuotaManager"), "churn");
+      writeFileSync(join(root, ".local/share/acme/log/opencode.log"), "churn");
       const journal = await session.stop();
       expect(journal.events).toEqual([]);
     } finally {
@@ -158,6 +174,36 @@ describe("macOS volatile churn skip (defect #2)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+describe("macOS unreadable scope (defect #3 follow-up)", () => {
+  // Root runs can read a 0o000 directory, so the assertion only holds for an unprivileged process.
+  test.skipIf(process.getuid?.() === 0)(
+    "a permission-denied subdirectory is pruned quietly, but an unreadable root is reported",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "tret-perm-"));
+      const locked = join(root, "locked");
+      try {
+        mkdirSync(locked, { recursive: true });
+        writeFileSync(join(root, "kept"), "kept\n");
+        chmodSync(locked, 0o000);
+
+        const scoped = scanScopedRoots([root], { caseSensitive: true });
+        // The locked directory itself is still recorded (its own lstat succeeded), and no error is
+        // reported for a subdirectory an unprivileged installer could not have written either.
+        expect(scoped.errors).toEqual([]);
+        expect(scoped.entries.has(scopedPathKey(locked, true))).toBe(true);
+
+        // The same directory used as an observed root is real lost coverage, so it stays reported.
+        const asRoot = scanScopedRoots([locked], { caseSensitive: true });
+        expect(asRoot.errors).toHaveLength(1);
+        expect(asRoot.errors[0]).toContain("locked");
+      } finally {
+        chmodSync(locked, 0o700);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("macOS scoped snapshot diff", () => {

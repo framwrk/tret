@@ -113,6 +113,14 @@ function scanNode(
   try {
     names = readdirSync(path).sort();
   } catch (error) {
+    // A subdirectory the scanner cannot read cannot hold installer output either: the installer runs
+    // as this same unprivileged user, so a TCC/permission-protected directory (the system's
+    // `~/Library/Application Support/AddressBook`, for example) is neither an install target nor a
+    // coverage gap we could act on. Pruning it quietly keeps the scan's `partialReason` meaningful
+    // instead of listing a dozen Apple-owned directories that never change. A root we were explicitly
+    // asked to observe is the exception: an unreadable root really is lost coverage, so it stays
+    // reported.
+    if (!isRoot && isPermissionDenied(error)) return;
     errors.push(`${path}: ${describe(error)}`);
     return;
   }
@@ -300,4 +308,10 @@ function comparePaths(a: AbsolutePath, b: AbsolutePath): number {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** True for the permission errors an unprivileged scanner hits on TCC/system-protected directories. */
+function isPermissionDenied(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "EACCES" || code === "EPERM";
 }
