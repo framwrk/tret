@@ -49,14 +49,31 @@ bounded roots.
 `macosHeuristicRoots()` derives roots from the platform table rather than a hand-maintained list:
 
 - `scopeRoots` — absolute roots outside `$HOME` (`/opt/homebrew/bin`, `/usr/local/bin` on macOS);
-- `searchRootsInHome` — tool dot-directories, `.config`, `.local/*`, and the selected
-  `~/Library/*` subdirectories;
+- `captureRootsInHome` — the tool dot-directories an installer targets: `.config`,
+  `.local/{bin,lib,share,state}`, `Library/LaunchAgents`, and `Library/Application Support`;
 - home shell config files (`shellConfigs`).
 
-Callers may add or drop roots with `include`/`exclude`. There is **no exclusion list in the
-backend**: the platform table is the bound. This is the D3 default and is expected to be revisited
-with fixtures and real installer examples; because the scope includes cache-shaped directories, the
-docs and CLI must keep labeling the result heuristic rather than implying the scope is complete.
+Capture roots are curated **separately** from `tret find`'s `searchRootsInHome`. Those search roots
+stay broad (they include `~/Library` subtrees) so `find` can adopt a tool's files by hand; capture
+observes only install surfaces. The pre-rewrite snapshot skipped `~/Library` entirely via
+`EXCLUDED_PATHS`, but the first rewrite reused the whole search list for capture, which let background
+churn inside `~/Library` be attributed to the installer. D3 is revisited here with that real installer
+evidence:
+
+- **Dropped as pure churn** (no installer target, continuously rewritten by background daemons):
+  `.cache`, `Library/Caches`, `Library/Containers`, `Library/HTTPStorages`, `Library/Logs`,
+  `Library/Saved Application State`, `Library/WebKit`.
+- **Dropped `Library/Preferences`:** `cfprefsd` rewrites `*.plist` continuously and no filename rule
+  separates that churn from a real install write. `tret find` still searches it for manual adoption.
+- **Kept `Library/Application Support`** (it holds real tool state) behind a volatility skip: while
+  scanning, `isVolatileChurnPath` (`src/lib/capture/macos/scope.ts`) skips known churn shapes — SQLite
+  `*.db-wal`/`*.db-shm`/`sqlite-wal`/`sqlite-shm`, any `*-journal`, and LevelDB `*.log` under
+  `IndexedDB` — so a background database never reads as an install mutation.
+
+Callers may add or drop roots with `include`/`exclude`. The skip is a small shape-based rule, not a
+per-app exclusion list: cache-shaped _roots_ are dropped by `installObservationRoots`, and the
+remaining volatile _files_ are matched structurally. Outside these rules the platform table is the
+bound, and the result stays labeled heuristic.
 
 ### Hashing policy
 
@@ -78,6 +95,7 @@ The backend reports these limits in its completeness label; they are not silentl
 | Area                   | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Process attribution    | **None.** Any process that writes inside the scope during the window is attributed, installer or not. Concurrent unrelated churn is indistinguishable from installer activity.                                                                                                                                                                                                                                                          |
+| Volatile scope         | Churn-only `~/Library` roots are out of the capture scope, and known database/journal sidecar shapes inside a kept root are skipped while scanning (`isVolatileChurnPath`). This narrows the blast radius; it does not add attribution, so other background writes inside scope are still attributed.                                                                                                                                   |
 | Missed content change  | A content edit that leaves size, mtime, and inode unchanged is not detected, because change detection is stamp-first.                                                                                                                                                                                                                                                                                                                   |
 | Renames                | Not paired. A rename surfaces as a removal plus a creation and normalizes to a deletion plus a creation/mutation, with no source→destination relationship.                                                                                                                                                                                                                                                                              |
 | Before-images          | Captured only when backups are enabled (`--backup`). At `start` the fallback reads each pre-existing regular file within the size limit and keeps its bytes in the journal (`beforeImages`, keyed by content address); with backups off the start snapshot stores stamps only, so a mutation or deletion of a pre-existing file has no `beforeHash`/`beforeBlob` and is **not restorable**. Over-limit or unreadable files are skipped. |
@@ -94,10 +112,11 @@ deletion — provided the current state still matches the record (D2).
 
 ## Tests
 
-- `src/lib/capture/macos/macos.test.ts` — scope expansion from the platform table (include/exclude),
-  pure snapshot→event diffs (create, write, unlink, kind change, chmod, symlink, nested `mkdir`),
-  the hash-queue rule, case-insensitive vs case-sensitive collapse, and heuristic completeness
-  labeling through normalization.
+- `src/lib/capture/macos/macos.test.ts` — scope expansion from the platform table (include/exclude) and
+  the trimmed capture root set, the volatility skip (`isVolatileChurnPath` plus a window where churn
+  files are not emitted while creations in kept targets are owned), pure snapshot→event diffs (create,
+  write, unlink, kind change, chmod, symlink, nested `mkdir`), the hash-queue rule, case-insensitive vs
+  case-sensitive collapse, and heuristic completeness labeling through normalization.
 - `src/lib/capture/macos/macos.integration.test.ts` with `fixtures.ts` — builds a real pre-existing
   scope in a temp directory, runs a scripted install (edit, delete, chmod, nested create, create,
   symlink), and asserts the exact event sequence and normalized owned/mutated/deleted effects and

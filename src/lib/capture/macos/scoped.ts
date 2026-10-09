@@ -38,6 +38,12 @@ export type ScopedSnapshot = {
 export type ScopedScanOptions = {
   /** Whether path comparison is case-sensitive (D10). */
   caseSensitive: boolean;
+  /**
+   * Optional path predicate; a matching node is neither recorded nor descended. The macOS backend
+   * supplies `isVolatileChurnPath` so known churn shapes inside a kept root are invisible. The
+   * default (no predicate) still has no exclusion list: the roots are the bound.
+   */
+  skip?: (path: AbsolutePath) => boolean;
 };
 
 /** The comparison key for a path; mirrors journal normalization so both agree on identity (D10). */
@@ -48,7 +54,8 @@ export function scopedPathKey(path: AbsolutePath, caseSensitive: boolean): strin
 /**
  * Walks every root and records each node's stamp without following symlinks. A root that does not
  * exist is not an error (an installer may create it); a root that exists but cannot be read is. The
- * roots are the only bound: there is no exclusion list here, by design (plan section 2).
+ * roots are the only bound: there is no exclusion list here by default (plan section 2), beyond the
+ * caller-supplied `skip` used to drop known churn shapes.
  */
 export function scanScopedRoots(roots: Iterable<AbsolutePath>, options: ScopedScanOptions): ScopedSnapshot {
   const entries = new Map<string, ScopedNode>();
@@ -64,6 +71,8 @@ function scanNode(
   options: ScopedScanOptions,
   isRoot: boolean,
 ): void {
+  if (options.skip?.(path)) return;
+
   let stat: Stats;
   try {
     stat = lstatSync(path);

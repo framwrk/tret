@@ -27,6 +27,7 @@ should be one table plus one capture backend, not edits scattered across command
 | --------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | `scopeRoots`                      | Absolute roots outside `$HOME` included in a scoped capture/snapshot                                  | `SNAPSHOT_ROOTS`                     |
 | `searchRootsInHome`               | Home-relative tool directories searched by `tret find`                                                | `SEARCH_DIRS_IN_HOME`                |
+| `captureRootsInHome`              | Home-relative install surfaces a scoped capture observes (curated, narrower than the search roots)    | new in the D3 revision (defect #2)   |
 | `searchRootsAbsolute`             | Absolute directories searched by `tret find`                                                          | `SNAPSHOT_ROOTS`                     |
 | `sharedAbsolute` / `sharedInHome` | Directories uninstall refuses to delete whole                                                         | `SHARED_ABSOLUTE` / `SHARED_IN_HOME` |
 | `shellConfigs`                    | Per-shell config files (or directories) uninstall cleans                                              | `RC_FILES`                           |

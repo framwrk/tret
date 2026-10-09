@@ -4,6 +4,7 @@ import type { Journal, JournalEvent, JournalEventInput } from "../events";
 import { diffScopedSnapshots, filesToHash, hashBytes, hashFile, readFileBytes, scanScopedRoots, scopedPathKey } from "./scoped";
 import { MACOS_PLATFORM } from "../../platform";
 import type { ScopedSnapshot } from "./scoped";
+import { isVolatileChurnPath } from "./scope";
 
 /** Identifier stored in `record.capture.backend` for the macOS heuristic fallback (D1). */
 export const MACOS_HEURISTIC_BACKEND = "macos-heuristic";
@@ -47,7 +48,8 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
   async start(options: CaptureStartOptions): Promise<CaptureSession> {
     const roots = options.roots.length > 0 ? options.roots : (this.roots ?? []);
     const caseSensitive = this.caseSensitive;
-    const before: ScopedSnapshot | undefined = roots.length > 0 ? scanScopedRoots(roots, { caseSensitive }) : undefined;
+    const before: ScopedSnapshot | undefined =
+      roots.length > 0 ? scanScopedRoots(roots, { caseSensitive, skip: isVolatileChurnPath }) : undefined;
     // When backups are enabled the start snapshot keeps each pre-existing file's bytes (within the
     // size limit) alongside its hash, so an overwrite or deletion later still has something to
     // restore. This is the one place content is read before the installer runs; off by default (D2).
@@ -65,7 +67,7 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
           };
         }
 
-        const after = scanScopedRoots(roots, { caseSensitive });
+        const after = scanScopedRoots(roots, { caseSensitive, skip: isVolatileChurnPath });
         const hashErrors: AbsolutePath[] = [];
         for (const path of filesToHash(before, after)) {
           const hash = await this.hash(path);

@@ -2,10 +2,13 @@ import type { Journal, JournalEvent, JournalEventInput } from "../events";
 import type { ScopedNode, ScopedSnapshot } from "./scoped";
 import { describe, expect, test } from "bun:test";
 import { diffScopedSnapshots, filesToHash, scopedPathKey } from "./scoped";
+import { isVolatileChurnPath, macosHeuristicRoots } from "./scope";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { MACOS_PLATFORM } from "../../platform";
 import { MacosHeuristicCaptureBackend } from "./backend";
-import { macosHeuristicRoots } from "./scope";
+import { join } from "node:path";
 import { normalizeJournal } from "../../journal/normalize";
+import { tmpdir } from "node:os";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -53,6 +56,105 @@ describe("macOS scope roots", () => {
     });
     expect(roots).toContain("/Users/tester/.mytool");
     expect(roots).not.toContain("/Users/tester/.cache");
+  });
+
+  test("the trimmed capture root set keeps real install surfaces and drops volatile Library subtrees (D3 revision)", () => {
+    const roots = macosHeuristicRoots({ home: "/Users/tester" });
+    const expected = [
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/Users/tester/.bashrc",
+      "/Users/tester/.bash_profile",
+      "/Users/tester/.config",
+      "/Users/tester/.local/bin",
+      "/Users/tester/.local/lib",
+      "/Users/tester/.local/share",
+      "/Users/tester/.local/state",
+      "/Users/tester/.profile",
+      "/Users/tester/.zshenv",
+      "/Users/tester/.zprofile",
+      "/Users/tester/.zshrc",
+      "/Users/tester/Library/Application Support",
+      "/Users/tester/Library/LaunchAgents",
+    ];
+    expect(roots).toEqual(expected.sort());
+    for (const dropped of [
+      "/Users/tester/.cache",
+      "/Users/tester/Library/Caches",
+      "/Users/tester/Library/Containers",
+      "/Users/tester/Library/HTTPStorages",
+      "/Users/tester/Library/Logs",
+      "/Users/tester/Library/Preferences",
+      "/Users/tester/Library/Saved Application State",
+      "/Users/tester/Library/WebKit",
+    ]) {
+      expect(roots).not.toContain(dropped);
+    }
+  });
+});
+
+describe("macOS volatile churn skip (defect #2)", () => {
+  test("recognizes sidecar and journal churn while leaving real files alone", () => {
+    for (const path of [
+      "/Users/t/Library/Application Support/com.raycast.macos/main.db-wal",
+      "/Users/t/Library/Application Support/com.raycast.macos/main.db-shm",
+      "/Users/t/Library/HTTPStorages/com.x/sqlite-wal",
+      "/Users/t/Library/HTTPStorages/com.x/sqlite-shm",
+      "/Users/t/Library/Application Support/acme/WebStorage/QuotaManager-journal",
+      "/Users/t/Library/Application Support/acme/IndexedDB/store/000024.log",
+    ]) {
+      expect(isVolatileChurnPath(path)).toBe(true);
+    }
+    expect(isVolatileChurnPath("/Users/t/Library/Application Support/acme/config.json")).toBe(false);
+    expect(isVolatileChurnPath("/Users/t/Library/Application Support/acme/main.db")).toBe(false);
+    expect(isVolatileChurnPath("/Users/t/Library/Application Support/acme/IndexedDB/store/MANIFEST-000001")).toBe(false);
+    expect(isVolatileChurnPath("/Users/t/Library/LaunchAgents/com.acme.plist")).toBe(false);
+  });
+
+  test("churn created during the window is not emitted as an event", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tret-churn-"));
+    try {
+      const appSupport = join(root, "Library/Application Support/acme");
+      mkdirSync(join(appSupport, "IndexedDB/store"), { recursive: true });
+      const backend = new MacosHeuristicCaptureBackend();
+      const session = await backend.start({
+        pid: process.pid,
+        privilege: "user",
+        roots: [join(root, "Library/Application Support")],
+      });
+      writeFileSync(join(appSupport, "main.db-wal"), "churn");
+      writeFileSync(join(appSupport, "WebStorage-journal"), "churn");
+      writeFileSync(join(appSupport, "IndexedDB/store/000024.log"), "churn");
+      const journal = await session.stop();
+      expect(journal.events).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("creations in kept real targets are recorded as owned", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tret-keep-"));
+    try {
+      for (const dir of [".local/bin", ".config", "Library/LaunchAgents"]) mkdirSync(join(root, dir), { recursive: true });
+      const backend = new MacosHeuristicCaptureBackend();
+      const session = await backend.start({
+        pid: process.pid,
+        privilege: "user",
+        roots: [join(root, ".local/bin"), join(root, ".config"), join(root, "Library/LaunchAgents")],
+      });
+      writeFileSync(join(root, ".local/bin/acme"), "bin");
+      writeFileSync(join(root, ".config/acme"), "conf");
+      writeFileSync(join(root, "Library/LaunchAgents/com.acme.plist"), "plist");
+      const journal = await session.stop();
+      const owned = normalizeJournal({ journal, backups: NO_BACKUPS, caseSensitive: backend.caseSensitive }).owned.map(
+        (entry) => entry.path,
+      );
+      expect(owned).toContain(join(root, ".local/bin/acme"));
+      expect(owned).toContain(join(root, ".config/acme"));
+      expect(owned).toContain(join(root, "Library/LaunchAgents/com.acme.plist"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
