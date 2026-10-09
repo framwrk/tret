@@ -92,12 +92,29 @@ chmod +x "$HOME/.local/lib/node_modules/@acme/tool/cli.js"
 ln -s ../lib/node_modules/@acme/tool/cli.js "$HOME/.local/bin/acmetool"
 `;
 
+// A first-party managed install (`kind: pi-managed-install`, `layout: releases-v1`): a marker and a
+// versioned release tree under `~/.pi/agent/install`, a launcher under `~/.pi/agent/bin/pi`, and a
+// `node_modules` payload capture skips. The untracked payload is what stranded the record: every
+// ancestor stayed `not-empty` after the wrapper files were removed.
+const PI_MANAGED_SCRIPT = `#!/bin/bash
+set -e
+ROOT="$HOME/.pi/agent/install"
+mkdir -p "$ROOT/releases/1.0.0/node_modules/acme" "$HOME/.pi/agent/bin"
+printf '{"kind":"pi-managed-install","schemaVersion":1,"layout":"releases-v1"}\\n' > "$ROOT/managed-install.json"
+printf '1.0.0\\n' > "$ROOT/current-version"
+printf '{"name":"pi"}\\n' > "$ROOT/releases/1.0.0/package.json"
+printf 'module.exports = 1;\\n' > "$ROOT/releases/1.0.0/node_modules/acme/index.js"
+printf '#!/bin/sh\\necho pi\\n' > "$HOME/.pi/agent/bin/pi"
+chmod +x "$HOME/.pi/agent/bin/pi"
+`;
+
 type StoredRecord = {
   name: string;
   source: string;
   capture: { completeness: string; segments: { kind: string; partialReason?: string }[] };
   owned: { path: string; kind?: string; installedHash?: string }[];
   managedBy?: { manager: string; package: string; globalRoot?: string };
+  managedInstall?: { kind: string; layout: string; root: string };
 };
 
 function readStore(home: string): { version: number; records: StoredRecord[] } {
@@ -305,6 +322,87 @@ describe("install -> list -> uninstall", () => {
         globalRoot: join(prefix, "lib"),
       });
       expect(record?.owned.some((entry) => entry.path.includes("lib/node_modules"))).toBe(false);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("recognizes a pi managed install, never owns the payload, and delegates its removal", async () => {
+    const home = makeHome();
+    const server = serve(PI_MANAGED_SCRIPT);
+    const root = join(home, ".pi", "agent", "install");
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "pi");
+      expect(record).toBeDefined();
+      expect(record?.managedInstall).toEqual({ kind: "pi-managed-install", layout: "releases-v1", root });
+      // The launcher outside the root stays owned; nothing at or under the root is.
+      const ownedPaths = record?.owned.map((entry) => entry.path) ?? [];
+      expect(ownedPaths).toContain(join(home, ".pi", "agent", "bin", "pi"));
+      expect(ownedPaths.some((path) => path === root || path.startsWith(`${root}/`))).toBe(false);
+
+      expect(await runCli(["list"], home)).toBe(0);
+
+      // A dry run plans the delegated removal and touches nothing.
+      expect(await runCli(["uninstall", "pi", "--dry-run"], home)).toBe(0);
+      expect(existsSync(join(root, "releases", "1.0.0", "node_modules"))).toBe(true);
+
+      expect(await runCli(["uninstall", "pi", "--yes"], home)).toBe(0);
+      // The managed tree, including the payload capture never owned, is gone; the record drops.
+      expect(existsSync(join(home, ".pi"))).toBe(false);
+      expect(readStore(home).records).toHaveLength(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--force reinstalls a managed install by clearing the previous root first", async () => {
+    const home = makeHome();
+    const server = serve(PI_MANAGED_SCRIPT);
+    const stale = join(home, ".pi", "agent", "install", "releases", "1.0.0", "stale.txt");
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+      // A file inside the old root the installer will not recreate: only the delegated removal clears it.
+      writeFileSync(stale, "stale");
+
+      expect(await runCli(["install", server.url, "--force"], home)).toBe(0);
+      expect(existsSync(stale)).toBe(false);
+      const records = readStore(home).records;
+      expect(records).toHaveLength(1);
+      expect(records[0]?.managedInstall).toEqual({
+        kind: "pi-managed-install",
+        layout: "releases-v1",
+        root: join(home, ".pi", "agent", "install"),
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe("managed install removal failure", () => {
+  test("a delegated removal that cannot clear the root keeps the record for a retry", async () => {
+    const home = makeHome();
+    const server = serve(PI_MANAGED_SCRIPT);
+    const root = join(home, ".pi", "agent", "install");
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeRm = join(fakebin, "rm");
+    writeFileSync(fakeRm, `#!/bin/sh\necho 'rm denied' >&2\nexit 1\n`);
+    chmodSync(fakeRm, 0o755);
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      const path = `${fakebin}:${process.env.PATH ?? ""}`;
+      expect(await runCli(["uninstall", "pi", "--yes"], home, { PATH: path })).not.toBe(0);
+
+      // The failed delegation left everything untouched and the record in place for a retry.
+      expect(existsSync(join(root, "releases", "1.0.0", "node_modules"))).toBe(true);
+      expect(existsSync(join(home, ".pi", "agent", "bin", "pi"))).toBe(true);
+      const records = readStore(home).records;
+      expect(records).toHaveLength(1);
+      expect(records[0]?.managedInstall).toBeDefined();
     } finally {
       await server.stop();
     }

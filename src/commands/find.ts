@@ -1,5 +1,6 @@
 import type { AbsolutePath, OwnedEntry, RecordV3 } from "../types";
 import { caseSensitiveFor, currentPlatform, processPrivilege } from "../lib/platform";
+import { detectManagedInstall, withoutManagedInstallPaths } from "../lib/managed-install";
 import { FileStorage } from "../lib/store";
 import { detectManagedPackage } from "../lib/package-manager";
 import { findRelated } from "../lib/related";
@@ -51,10 +52,14 @@ export async function find(name: string | undefined): Promise<void> {
 
   const platform = currentPlatform();
   const installedAt = new Date().toISOString();
-  const owned = paths.map(ownedEntry);
+  const found = paths.map(ownedEntry);
   // Adoption can also recognize a package-manager global shim, so a found tool uninstalls through
   // the manager rather than by deleting shared global state.
-  const managedBy = detectManagedPackage(executable, owned);
+  const managedBy = detectManagedPackage(executable, found);
+  // A first-party managed install is recognized the same way, so its unowned `node_modules` payload
+  // is delegated rather than adopted into the record and stranded as a `not-empty` conflict.
+  const managedInstall = detectManagedInstall(executable, found);
+  const owned = managedInstall === undefined ? found : withoutManagedInstallPaths(found, managedInstall);
   // No URL or script hash: the tool was not installed through Tret, so those fields stay empty.
   const record: RecordV3 = {
     id: randomUUID(),
@@ -75,6 +80,7 @@ export async function find(name: string | undefined): Promise<void> {
     mutated: [],
     deleted: [],
     ...(managedBy === undefined ? {} : { managedBy }),
+    ...(managedInstall === undefined ? {} : { managedInstall }),
   };
 
   await storage.saveRecord(record);

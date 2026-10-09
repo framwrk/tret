@@ -5,6 +5,12 @@ import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { caseSensitiveFor, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
 import {
+  describeManagedInstall,
+  detectManagedInstall,
+  removeManagedInstall,
+  withoutManagedInstallPaths,
+} from "../lib/managed-install";
+import {
   describeManagedPackage,
   detectManagedPackage,
   removeManagedPackage,
@@ -147,6 +153,16 @@ export async function install(
     effects.deleted = withoutManagedGlobalPaths(effects.deleted, managedBy, Bun.env.HOME);
   }
 
+  // A first-party managed install (a marker file under an install root) keeps a `node_modules`
+  // payload capture skips everywhere; own the launcher and the root's ancestors, but leave the root
+  // and its payload to a delegated recursive removal so uninstall cannot strand the record on it.
+  const managedInstall = detectManagedInstall(executable, effects.owned);
+  if (managedInstall !== undefined) {
+    effects.owned = withoutManagedInstallPaths(effects.owned, managedInstall);
+    effects.mutated = withoutManagedInstallPaths(effects.mutated, managedInstall);
+    effects.deleted = withoutManagedInstallPaths(effects.deleted, managedInstall);
+  }
+
   // Store the before-image bytes the window captured, then drop any restore claim storage did not
   // actually land, so the record never advertises a blob `getBlob` cannot return (D2). Runs after the
   // shared-state filter so a dropped path's before-image is never stored as an orphan blob.
@@ -167,6 +183,7 @@ export async function install(
     mutated: effects.mutated,
     deleted: effects.deleted,
     ...(managedBy === undefined ? {} : { managedBy }),
+    ...(managedInstall === undefined ? {} : { managedInstall }),
   };
   await storage.saveRecord(record);
 
@@ -184,6 +201,8 @@ export async function install(
   log(`\tdeleted ${effects.deleted.length}`);
   if (managedBy !== undefined)
     log(`\tglobal package ${describeManagedPackage(managedBy)} will be removed through ${managedBy.manager}`);
+  if (managedInstall !== undefined)
+    log(`\tmanaged install ${describeManagedInstall(managedInstall)} will be removed recursively first`);
 }
 
 /** What one install window produced: the exit code, its capture, and a fallback diff when no journal exists. */
@@ -345,26 +364,59 @@ function buildCapture(window: InstallWindow, failed: boolean, clock: () => numbe
 async function removePrevious(storage: FileStorage, existing: RecordV3, records: RecordV3[]): Promise<void> {
   log(`reinstalling ${existing.name}: removing the previous install first`);
   const planner = new VerifiedUninstallPlanner();
-  // A managed package's shared global tree is never planned for removal, matching `uninstall`: the
-  // manager removes the package, and Tret only removes the shim and other owned paths.
-  const target =
-    existing.managedBy === undefined
-      ? existing
-      : {
-          ...existing,
-          owned: withoutManagedGlobalPaths(existing.owned, existing.managedBy, Bun.env.HOME),
-          mutated: withoutManagedGlobalPaths(existing.mutated, existing.managedBy, Bun.env.HOME),
-          deleted: withoutManagedGlobalPaths(existing.deleted, existing.managedBy, Bun.env.HOME),
-        };
-  const plan = await planner.plan(target, { otherRecords: records, force: true });
+  // A record written before `managedBy`/`managedInstall` existed is still recognized from its
+  // executable, so a --force reinstall never deletes shared global state or strands a managed root.
+  const managedBy = existing.managedBy ?? detectManagedPackage(existing.executable, existing.owned);
+  const managedInstall = existing.managedInstall ?? detectManagedInstall(existing.executable, existing.owned);
+
+  // A managed package's shared global tree and a managed install's root subtree are never planned
+  // for removal: the manager removes the package and the delegated removal clears the root, while
+  // Tret only removes the shim, launcher, and other owned paths.
+  let target = existing;
+  if (managedBy !== undefined) {
+    target = {
+      ...target,
+      managedBy: target.managedBy ?? managedBy,
+      owned: withoutManagedGlobalPaths(target.owned, managedBy, Bun.env.HOME),
+      mutated: withoutManagedGlobalPaths(target.mutated, managedBy, Bun.env.HOME),
+      deleted: withoutManagedGlobalPaths(target.deleted, managedBy, Bun.env.HOME),
+    };
+  }
+  if (managedInstall !== undefined) {
+    target = {
+      ...target,
+      managedInstall: target.managedInstall ?? managedInstall,
+      owned: withoutManagedInstallPaths(target.owned, managedInstall),
+      mutated: withoutManagedInstallPaths(target.mutated, managedInstall),
+      deleted: withoutManagedInstallPaths(target.deleted, managedInstall),
+    };
+  }
+
+  const plan = await planner.plan(target, {
+    otherRecords: records,
+    force: true,
+    ...(managedInstall === undefined ? {} : { delegatedRoots: [managedInstall.root] }),
+  });
 
   // The package manager goes first, mirroring `uninstall`: only once it reports the package gone
   // does Tret remove the rest. A failed removal aborts the reinstall with nothing else touched, so
   // a `--force` never stacks a second global package on top of a half-removed first.
-  if (existing.managedBy !== undefined) {
-    const removal = await removeManagedPackage(existing.managedBy, { home: Bun.env.HOME });
+  if (managedBy !== undefined) {
+    const removal = await removeManagedPackage(managedBy, { home: Bun.env.HOME });
+    log(`\t${removal.ok ? "removed" : "could not remove"} package ${describeManagedPackage(managedBy)} (${removal.detail})`);
+    if (!removal.ok) {
+      log("Error");
+      log("\tprevious install could not be fully removed; run tret uninstall <name>, then tret install <URL> --force");
+      process.exit(1);
+    }
+  }
+
+  // A managed root goes before the plan: the plan may remove the root's ancestors, which are only
+  // empty once the delegated recursive removal has cleared the untracked payload.
+  if (managedInstall !== undefined) {
+    const removal = await removeManagedInstall(managedInstall);
     log(
-      `\t${removal.ok ? "removed" : "could not remove"} package ${describeManagedPackage(existing.managedBy)} (${removal.detail})`,
+      `\t${removal.ok ? "removed" : "could not remove"} managed install ${describeManagedInstall(managedInstall)} (${removal.detail})`,
     );
     if (!removal.ok) {
       log("Error");
@@ -390,8 +442,8 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   }
 
   const rc = removeRcLines(
-    existing.name,
-    existing.owned.map((entry) => entry.path),
+    target.name,
+    target.owned.map((entry) => entry.path),
     false,
   );
   for (const cleaned of rc.cleaned) {
@@ -400,7 +452,7 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
 
   if (result.incomplete) {
     const reduced = reduceRecordForRetry(
-      existing,
+      target,
       result,
       rc.cleaned.map((cleaned) => cleaned.file),
     );

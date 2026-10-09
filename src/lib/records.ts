@@ -237,6 +237,7 @@ export function isV3Record(value: unknown): value is RecordV3 {
   }
 
   if (value.managedBy !== undefined && !isManagedPackage(value.managedBy)) return false;
+  if (value.managedInstall !== undefined && !isManagedInstall(value.managedInstall)) return false;
 
   const capture = value.capture;
   if (!isObject(capture)) return false;
@@ -255,6 +256,14 @@ function isManagedPackage(value: unknown): boolean {
     return false;
   }
   return value.manager === "bun" || value.manager === "npm" || value.manager === "pnpm" || value.manager === "yarn";
+}
+
+/** Validates the optional `managedInstall` field: a marker kind, layout, and absolute root. */
+function isManagedInstall(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (typeof value.kind !== "string" || value.kind.length === 0) return false;
+  if (typeof value.layout !== "string" || value.layout.length === 0) return false;
+  return typeof value.root === "string" && value.root.length > 0;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

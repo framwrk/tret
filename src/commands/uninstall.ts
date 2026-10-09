@@ -1,7 +1,13 @@
-import type { AbsolutePath, ManagedPackage, RecordV3 } from "../types";
+import type { AbsolutePath, ManagedInstall, ManagedPackage, RecordV3 } from "../types";
 import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { confirm, log } from "../lib/utilities";
+import {
+  describeManagedInstall,
+  detectManagedInstall,
+  removeManagedInstall,
+  withoutManagedInstallPaths,
+} from "../lib/managed-install";
 import {
   describeManagedPackage,
   detectManagedPackage,
@@ -52,8 +58,14 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   // A bin shim that points into a package manager's shared global state is removed through the
   // manager, not by deleting that state. The recorded `managedBy` is preferred; a record written
   // before that field existed is recognized from its executable so it is still handled safely.
-  const managed = record.managedBy ?? detectManagedPackage(record.executable, record.owned);
-  const target = managed === undefined ? record : withoutManagedGlobalState(record, managed);
+  const managedPkg = record.managedBy ?? detectManagedPackage(record.executable, record.owned);
+  // A first-party managed install keeps a `node_modules` payload capture never owns; the recorded
+  // `managedInstall` is preferred, and a record written before the field existed is recognized from
+  // its executable's marker so the root is still delegated rather than stranded `not-empty`.
+  const managedInstall = record.managedInstall ?? detectManagedInstall(record.executable, record.owned);
+  let target = record;
+  if (managedPkg !== undefined) target = withoutManagedGlobalState(target, managedPkg);
+  if (managedInstall !== undefined) target = withoutManagedInstallState(target, managedInstall);
 
   // Shell configs with no before-image are handled by the narrow line cleaner, not the file planner,
   // so the two never double-handle a path. Shell configs that do have a before-image are restored by
@@ -63,18 +75,23 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   const lineClean = new Set(shell.files);
   const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
   const planner = new VerifiedUninstallPlanner();
-  const plan = await planner.plan(fileRecord, { otherRecords: records, force });
+  const plan = await planner.plan(fileRecord, {
+    otherRecords: records,
+    force,
+    ...(managedInstall === undefined ? {} : { delegatedRoots: [managedInstall.root] }),
+  });
 
   if (dryRun) {
-    printDryRun(name, plan, shell, target.managedBy);
+    printDryRun(name, plan, shell, target.managedBy, managedInstall);
     return;
   }
 
   const hasFileWork = plan.actions.length > 0;
   const hasShellWork = shell.files.length > 0;
   const hasPackageWork = target.managedBy !== undefined;
+  const hasManagedInstallWork = managedInstall !== undefined;
 
-  if (!hasFileWork && !hasShellWork && !hasPackageWork) {
+  if (!hasFileWork && !hasShellWork && !hasPackageWork && !hasManagedInstallWork) {
     await storage.removeRecord(record.id);
     log(`removed the ${name} record; it had no tracked files`);
     return;
@@ -83,6 +100,9 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   log(`uninstall ${name}?`);
   if (target.managedBy !== undefined) {
     log(`\tremove package ${describeManagedPackage(target.managedBy)} through ${target.managedBy.manager}`);
+  }
+  if (managedInstall !== undefined) {
+    log(`\tremove managed install ${describeManagedInstall(managedInstall)} recursively`);
   }
   for (const line of formatUninstallPlan(plan, "apply")) {
     log(`\t${line}`);
@@ -115,6 +135,21 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
       process.exit(1);
     }
     log(`\tpackage ${label}: ${removal.detail}`);
+  }
+
+  // A managed root goes before the plan: the plan may remove the root's ancestors, which are only
+  // empty once the delegated recursive removal has cleared the payload Tret does not own. The root's
+  // marker is re-verified first, and a failed removal leaves every tracked path untouched.
+  if (managedInstall !== undefined) {
+    const removal = await removeManagedInstall(managedInstall);
+    const label = describeManagedInstall(managedInstall);
+    if (!removal.ok) {
+      log(`\tcould not remove managed install ${label}: ${removal.detail}`);
+      log("Error");
+      log(`\t${name} is unchanged; run tret uninstall again to retry`);
+      process.exit(1);
+    }
+    log(`\tmanaged install ${label}: ${removal.detail}`);
   }
 
   const result = await applyUninstallPlan(plan, { storage });
@@ -173,15 +208,19 @@ function printDryRun(
   plan: Awaited<ReturnType<VerifiedUninstallPlanner["plan"]>>,
   shell: ShellCleanup,
   managed?: ManagedPackage,
+  managedInstall?: ManagedInstall,
 ): void {
   const lines = formatUninstallPlan(plan, "dry-run");
-  if (lines.length === 0 && shell.files.length === 0 && managed === undefined) {
+  if (lines.length === 0 && shell.files.length === 0 && managed === undefined && managedInstall === undefined) {
     log(`nothing tracked to remove for ${name}`);
     return;
   }
 
   if (managed !== undefined) {
     log(`\twould remove package ${describeManagedPackage(managed)} through ${managed.manager}`);
+  }
+  if (managedInstall !== undefined) {
+    log(`\twould remove managed install ${describeManagedInstall(managedInstall)} recursively`);
   }
   for (const line of lines) {
     log(`\t${line}`);
@@ -225,6 +264,22 @@ function withoutManagedGlobalState(record: RecordV3, managed: ManagedPackage): R
     owned: withoutManagedGlobalPaths(record.owned, managed, home),
     mutated: withoutManagedGlobalPaths(record.mutated, managed, home),
     deleted: withoutManagedGlobalPaths(record.deleted, managed, home),
+  };
+}
+
+/**
+ * Drops a managed install's root subtree from a record so uninstall never plans to delete the
+ * payload capture does not own. The launcher and PATH entrypoint outside the root stay owned and
+ * are still removed; the root is cleared by the delegated recursive removal. A record that predates
+ * `managedInstall` gets the detected value stamped on so a retry keeps delegating.
+ */
+function withoutManagedInstallState(record: RecordV3, managed: ManagedInstall): RecordV3 {
+  return {
+    ...record,
+    managedInstall: record.managedInstall ?? managed,
+    owned: withoutManagedInstallPaths(record.owned, managed),
+    mutated: withoutManagedInstallPaths(record.mutated, managed),
+    deleted: withoutManagedInstallPaths(record.deleted, managed),
   };
 }
 
