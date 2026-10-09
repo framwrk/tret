@@ -1,13 +1,14 @@
 import {
   LEGACY_BACKEND,
+  LegacyRecordWriteError,
   RecordMigrationError,
-  loadRecords,
   migrateRecordFileV2ToV3,
   migrateRecordV2ToV3,
   saveRecord,
 } from "./records";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { FileStorage } from "./store";
 import type { ToolRecord } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -31,57 +32,23 @@ afterEach(() => {
   process.env.HOME = HOME_BACKUP;
 });
 
-describe("records", () => {
-  test("saves a record to the records file", () => {
-    process.env.HOME = mkdtempSync(join(tmpdir(), "tret-test-"));
+describe("legacy v2 writers are disabled (B3/S6)", () => {
+  test("a legacy write after a v3 migration cannot downgrade or corrupt the file", async () => {
+    const home = mkdtempSync(join(tmpdir(), "tret-test-"));
+    process.env.HOME = home;
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    writeFileSync(join(home, ".tret", "records.json"), JSON.stringify({ version: 2, records: [record("ripgrep")] }));
 
-    saveRecord(record("ripgrep"));
+    // The first read migrates the file to v3 in place.
+    const storage = new FileStorage({ homeDir: home });
+    await storage.loadRecords();
 
-    const file = JSON.parse(readFileSync(join(process.env.HOME!, ".tret", "records.json"), "utf8"));
-    expect(file).toEqual({ version: 2, records: [record("ripgrep")] });
-  });
+    expect(() => saveRecord(record("other"))).toThrow(LegacyRecordWriteError);
 
-  test("loads saved records", () => {
-    process.env.HOME = mkdtempSync(join(tmpdir(), "tret-test-"));
-
-    saveRecord(record("ripgrep"));
-
-    expect(loadRecords()).toEqual({ version: 2, records: [record("ripgrep")] });
-  });
-
-  test("replaces an earlier record for the same tool name", () => {
-    process.env.HOME = mkdtempSync(join(tmpdir(), "tret-test-"));
-
-    saveRecord(record("ripgrep"));
-    saveRecord({ ...record("ripgrep"), installedAt: "2026-10-03T01:00:00.000Z" });
-
-    expect(loadRecords().records).toEqual([{ ...record("ripgrep"), installedAt: "2026-10-03T01:00:00.000Z" }]);
-  });
-
-  test("keeps other tools' records", () => {
-    process.env.HOME = mkdtempSync(join(tmpdir(), "tret-test-"));
-
-    saveRecord(record("ripgrep"));
-    saveRecord(record("fd"));
-
-    expect(loadRecords().records).toEqual([record("ripgrep"), record("fd")]);
-  });
-
-  test("counts a missing records file as no records", () => {
-    process.env.HOME = mkdtempSync(join(tmpdir(), "tret-test-"));
-
-    expect(loadRecords()).toEqual({ version: 2, records: [] });
-  });
-
-  test("defaults the source of a record saved before source existed to install", () => {
-    process.env.HOME = mkdtempSync(join(tmpdir(), "tret-test-"));
-    mkdirSync(join(process.env.HOME!, ".tret"), { recursive: true });
-    writeFileSync(
-      join(process.env.HOME!, ".tret", "records.json"),
-      JSON.stringify({ version: 2, records: [{ ...record("ripgrep"), source: undefined }] }),
-    );
-
-    expect(loadRecords().records).toEqual([record("ripgrep")]);
+    const raw = JSON.parse(readFileSync(join(home, ".tret", "records.json"), "utf8"));
+    expect(raw.version).toBe(3);
+    expect(raw.records).toHaveLength(1);
+    expect(await storage.loadRecords()).toHaveLength(1);
   });
 });
 

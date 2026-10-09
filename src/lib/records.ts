@@ -1,60 +1,37 @@
-import type { AbsolutePath, MutatedEntry, OwnedEntry, RecordFile, RecordFileV3, RecordV3, ToolRecord } from "../types";
-import { PRIVATE_FILE_MODE, writeFileAtomic } from "./atomic";
-import { RECORDS_PATH, RECORDS_VERSION } from "../constants";
-import { join } from "node:path";
-import { readFileSync } from "node:fs";
-
-/** Saves one install record, replacing any earlier record for the same tool name. */
-export function saveRecord(record: ToolRecord): void {
-  const stored = loadRecords();
-  const records = stored.records.filter((existing) => existing.name !== record.name);
-  records.push(record);
-  writeAtomic(join(home(), RECORDS_PATH), { version: RECORDS_VERSION, records });
-}
-
-/** Drops the record for a tool name; an unknown name leaves the file untouched. */
-export function removeRecord(name: string): void {
-  const stored = loadRecords();
-  const records = stored.records.filter((existing) => existing.name !== name);
-  if (records.length === stored.records.length) {
-    return;
-  }
-
-  writeAtomic(join(home(), RECORDS_PATH), { version: RECORDS_VERSION, records });
-}
-
-/** Finds the record for an install URL, or undefined when Tret never installed that URL. */
-export function findRecordByUrl(url: string): ToolRecord | undefined {
-  return loadRecords().records.find((record) => record.url === url);
-}
-
-/** Loads every saved install record; missing or unreadable files count as no records. */
-export function loadRecords(): RecordFile {
-  try {
-    const file = JSON.parse(readFileSync(join(home(), RECORDS_PATH), "utf8")) as RecordFile;
-    // Records saved before source existed were all installs.
-    const records = (file.records ?? []).map((record) => (record.source ? record : { ...record, source: "install" as const }));
-    return { version: RECORDS_VERSION, records };
-  } catch {
-    return { version: RECORDS_VERSION, records: [] };
-  }
-}
-
-function home(): AbsolutePath {
-  const dir = Bun.env.HOME;
-  if (!dir) throw new Error("HOME is not set");
-  return dir;
-}
-
-function writeAtomic(path: AbsolutePath, file: RecordFile): void {
-  writeFileAtomic(path, JSON.stringify(file, null, 2), PRIVATE_FILE_MODE);
-}
+import type { MutatedEntry, OwnedEntry, RecordFileV3, RecordV3, ToolRecord } from "../types";
 
 // Records v3 and the explicit v2 -> v3 migration (plan section 7).
+//
+// The pre-rewrite v2 writers (`saveRecord`/`removeRecord`) are **disabled**: version 3 is the only
+// format any code path may write, so a late legacy call can never drop a migrated file back to v2
+// and mix record shapes (B3/S6). Every persisted record goes through `FileStorage`. The pure
+// migration functions below are retained, because `FileStorage` reads v2 files through them.
 //
 // Migration is a pure transformation: it reads no files and writes nothing. Callers persist the
 // result, so a malformed file throws instead of producing an empty one, and no entry is dropped or
 // given restore capability the v2 record never had.
+
+/** Raised when a retired pre-rewrite v2 writer is invoked; nothing may write v2 any more (B3). */
+export class LegacyRecordWriteError extends Error {
+  constructor(name: string) {
+    super(`refusing to write the legacy v2 record for ${name}; tret persists version 3 records only`);
+    this.name = "LegacyRecordWriteError";
+  }
+}
+
+/**
+ * Disabled pre-rewrite v2 writer. It is kept (rather than deleted) so any forgotten caller fails
+ * loudly instead of silently downgrading a migrated records file; `FileStorage.saveRecord` is the
+ * only supported write path.
+ */
+export function saveRecord(record: ToolRecord): never {
+  throw new LegacyRecordWriteError(record.name);
+}
+
+/** Disabled pre-rewrite v2 writer; removal by name is now `FileStorage.removeRecord(id)` (B3). */
+export function removeRecord(name: string): never {
+  throw new LegacyRecordWriteError(name);
+}
 
 /** How a migrated v2 record should be interpreted where the v2 format stored no answer. */
 export type LegacyMigrationOptions = {
