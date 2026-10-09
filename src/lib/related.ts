@@ -1,25 +1,7 @@
 import type { AbsolutePath } from "../types";
-import { SNAPSHOT_ROOTS } from "../constants";
+import { MACOS_PLATFORM } from "./platform";
 import { join } from "node:path";
 import { readdirSync } from "node:fs";
-
-// Directories where tools keep their own files and folders, home-relative like EXCLUDED_PATHS.
-const SEARCH_DIRS_IN_HOME = [
-  ".cache",
-  ".config",
-  ".local/bin",
-  ".local/share",
-  ".local/state",
-  "Library/Application Support",
-  "Library/Caches",
-  "Library/Containers",
-  "Library/HTTPStorages",
-  "Library/LaunchAgents",
-  "Library/Logs",
-  "Library/Preferences",
-  "Library/Saved Application State",
-  "Library/WebKit",
-];
 
 /**
  * Finds every file and folder that belongs to a tool: the executable it runs as, its dot folder
@@ -32,8 +14,8 @@ export function findRelated(name: string, executable: AbsolutePath): AbsolutePat
 
   const found = new Set<AbsolutePath>([executable]);
   addToolEntries(home, name, found);
-  for (const dir of SEARCH_DIRS_IN_HOME) addToolEntries(join(home, dir), name, found);
-  for (const dir of SNAPSHOT_ROOTS) addToolEntries(dir, name, found);
+  for (const dir of MACOS_PLATFORM.searchRootsInHome) addToolEntries(join(home, dir), name, found);
+  for (const dir of MACOS_PLATFORM.searchRootsAbsolute) addToolEntries(dir, name, found);
   return topMost([...found].sort());
 }
 

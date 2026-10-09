@@ -1,4 +1,3 @@
-import type { AbsolutePath } from "./types";
 import type { GlobScanOptions } from "bun";
 
 // Identity
@@ -45,12 +44,9 @@ export const RECORDS_PATH = ".tret/records.json";
 // Snapshot walk
 
 /**
- * Extra roots to walk alongside `$HOME` when taking a snapshot.
- * `snapshot()` resolves `$HOME` itself and throws if the variable is unset, so it is not listed here.
+ * How each directory is scanned: record files and folders, don't follow symlinks, include dot-prefixed entries.
+ * The extra roots walked alongside `$HOME` now live in the platform seam (`scopeRoots` in `src/lib/platform`).
  */
-export const SNAPSHOT_ROOTS: AbsolutePath[] = ["/opt/homebrew/bin", "/usr/local/bin"];
-
-/** How each directory is scanned: record files and folders, don't follow symlinks, include dot-prefixed entries. */
 export const SCAN_OPTIONS: GlobScanOptions = { onlyFiles: false, followSymlinks: false, dot: true };
 
 // Skip rules

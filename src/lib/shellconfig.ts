@@ -1,9 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { AbsolutePath } from "../types";
+import { MACOS_PLATFORM } from "./platform";
 import { join } from "node:path";
-
-// Shell config files Tret cleans on uninstall, relative to $HOME.
-const RC_FILES = [".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile"];
 
 export type RcCleaning = {
   cleaned: { file: AbsolutePath; line: string }[];
@@ -22,8 +20,12 @@ export function removeRcLines(name: string, dirs: AbsolutePath[], dryRun: boolea
   const home = Bun.env.HOME;
   if (!home) throw new Error("HOME is not set");
 
-  for (const rc of RC_FILES) {
-    const file = join(home, rc);
+  for (const config of MACOS_PLATFORM.shellConfigs) {
+    // Directory entries (for example `/etc/profile.d`) are handled by a later phase.
+    if (config.kind !== "file") {
+      continue;
+    }
+    const file = config.scope === "home" ? join(home, config.path) : config.path;
     if (!existsSync(file)) {
       continue;
     }
