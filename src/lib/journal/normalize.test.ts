@@ -17,12 +17,18 @@ function journal(events: JournalEventInput[], overrides: Partial<Journal> = {}):
 
 function normalize(
   events: JournalEventInput[],
-  options: { backups?: BackupPolicy; caseSensitive?: boolean; journal?: Partial<Journal> } = {},
+  options: {
+    backups?: BackupPolicy;
+    caseSensitive?: boolean;
+    journal?: Partial<Journal>;
+    availableBeforeImages?: ReadonlySet<string>;
+  } = {},
 ) {
   return normalizeJournal({
     journal: journal(events, options.journal),
     backups: options.backups ?? { enabled: false, sizeLimitBytes: 1024 * 1024 },
     caseSensitive: options.caseSensitive ?? true,
+    ...(options.availableBeforeImages ? { availableBeforeImages: options.availableBeforeImages } : {}),
   });
 }
 
@@ -91,7 +97,25 @@ describe("journal normalization: ownership", () => {
 });
 
 describe("journal normalization: mutation and deletion", () => {
-  test("overwriting a pre-existing file records a restorable mutation when backups allow", () => {
+  test("overwriting a pre-existing file records a restorable mutation when its before-image was captured", () => {
+    const effects = normalize(
+      [
+        {
+          type: "write",
+          path: "/home/.config/tool.conf",
+          before: { kind: "file", hash: HASH_A, size: 10 },
+          after: { kind: "file", hash: HASH_B, size: 12 },
+        },
+      ],
+      { backups: { enabled: true, sizeLimitBytes: 1024 }, availableBeforeImages: new Set([HASH_A]) },
+    );
+
+    expect(effects.mutated).toEqual([
+      { path: "/home/.config/tool.conf", beforeHash: HASH_A, installedHash: HASH_B, beforeBlob: HASH_A },
+    ]);
+  });
+
+  test("an overwrite keeps its hashes but claims no before-image when its bytes were not captured", () => {
     const effects = normalize(
       [
         {
@@ -104,9 +128,9 @@ describe("journal normalization: mutation and deletion", () => {
       { backups: { enabled: true, sizeLimitBytes: 1024 } },
     );
 
-    expect(effects.mutated).toEqual([
-      { path: "/home/.config/tool.conf", beforeHash: HASH_A, installedHash: HASH_B, beforeBlob: HASH_A },
-    ]);
+    expect(effects.mutated[0]?.beforeHash).toBe(HASH_A);
+    expect(effects.mutated[0]?.installedHash).toBe(HASH_B);
+    expect(effects.mutated[0]?.beforeBlob).toBeUndefined();
   });
 
   test("an overwrite keeps hashes but no before-image when backups are off", () => {
@@ -132,16 +156,18 @@ describe("journal normalization: mutation and deletion", () => {
           after: { kind: "file", hash: HASH_B, size: 2048 },
         },
       ],
-      { backups: { enabled: true, sizeLimitBytes: 1024 } },
+      // Availability is present, so only the size limit can explain the missing before-image.
+      { backups: { enabled: true, sizeLimitBytes: 1024 }, availableBeforeImages: new Set([HASH_A]) },
     );
 
     expect(effects.mutated[0]?.beforeHash).toBe(HASH_A);
     expect(effects.mutated[0]?.beforeBlob).toBeUndefined();
   });
 
-  test("deleting a pre-existing file records it with its prior hash and before-image", () => {
+  test("deleting a pre-existing file records it with its prior hash and before-image once captured", () => {
     const effects = normalize([{ type: "unlink", path: "/home/.old", before: { kind: "file", hash: HASH_A, size: 5 } }], {
       backups: { enabled: true, sizeLimitBytes: 1024 },
+      availableBeforeImages: new Set([HASH_A]),
     });
 
     expect(effects.deleted).toEqual([{ path: "/home/.old", beforeHash: HASH_A, beforeBlob: HASH_A }]);

@@ -38,8 +38,8 @@ type PathState = {
  * - A temporary file created (or written) and renamed over a destination becomes a change to the
  *   destination; the transient source leaves no entry and is reported as a `temp-rename` diagnostic.
  * - A path created and then removed before the install ends cancels out (`create-delete`).
- * - An overwrite or deletion keeps the prior hash (and, when backups allow, the prior content
- *   address as `beforeBlob`) only when the events actually carried it.
+ * - An overwrite or deletion keeps the prior hash (and, when backups allow and the bytes were
+ *   actually captured, the prior content address as `beforeBlob`) only when the events carried it.
  * - A rename is a source removal plus a destination creation/replacement; the relationship is
  *   retained in a `rename` diagnostic.
  * - Content equality is decided by hash first; mtime/size are only a fast path used when no hash is
@@ -47,7 +47,8 @@ type PathState = {
  *   with noisy metadata is not.
  */
 export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
-  const { journal, backups, caseSensitive } = input;
+  const { journal, backups, caseSensitive, availableBeforeImages } = input;
+  const available = availableBeforeImages ?? EMPTY_BEFORE_IMAGES;
   const diagnostics: NormalizationDiagnostic[] = [];
   const states = new Map<string, PathState>();
 
@@ -189,9 +190,9 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
       } else if (state.initial === undefined) {
         // Present with no proof it pre-existed (a lone write); record a non-restorable mutation
         // rather than claim ownership of a path that may have existed before the install.
-        mutated.push(mutatedEntry(state.path, undefined, state.current, backups));
+        mutated.push(mutatedEntry(state.path, undefined, state.current, backups, available));
       } else if (changedFrom(state.initial, state.current, state.modeChanged)) {
-        mutated.push(mutatedEntry(state.path, state.initial, state.current, backups));
+        mutated.push(mutatedEntry(state.path, state.initial, state.current, backups, available));
       }
     } else if (state.initial === null) {
       if (state.removed !== "rename") {
@@ -202,7 +203,7 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
         });
       }
     } else if (state.initial !== undefined) {
-      deleted.push(deletedEntry(state.path, state.initial, backups));
+      deleted.push(deletedEntry(state.path, state.initial, backups, available));
     }
   }
 
@@ -272,19 +273,25 @@ function mutatedEntry(
   before: NodeState | undefined,
   after: NodeState,
   backups: BackupPolicy,
+  available: ReadonlySet<string>,
 ): MutatedEntry {
   const entry: MutatedEntry = { path };
   if (before?.hash !== undefined) entry.beforeHash = before.hash;
   if (after.hash !== undefined) entry.installedHash = after.hash;
-  const blob = beforeImage(before, backups);
+  const blob = beforeImage(before, backups, available);
   if (blob !== undefined) entry.beforeBlob = blob;
   return entry;
 }
 
-function deletedEntry(path: AbsolutePath, before: NodeState, backups: BackupPolicy): DeletedEntry {
+function deletedEntry(
+  path: AbsolutePath,
+  before: NodeState,
+  backups: BackupPolicy,
+  available: ReadonlySet<string>,
+): DeletedEntry {
   const entry: DeletedEntry = { path };
   if (before.hash !== undefined) entry.beforeHash = before.hash;
-  const blob = beforeImage(before, backups);
+  const blob = beforeImage(before, backups, available);
   if (blob !== undefined) entry.beforeBlob = blob;
   return entry;
 }
@@ -292,11 +299,17 @@ function deletedEntry(path: AbsolutePath, before: NodeState, backups: BackupPoli
 /**
  * The content address of a before-image, or undefined when it cannot be claimed restorable. The
  * blob id is the sha256 of the content, so a known in-limit hash doubles as its address; storage
- * owns the bytes and the uninstall planner refuses a `beforeBlob` whose blob is missing.
+ * owns the bytes and the uninstall planner refuses a `beforeBlob` whose blob is missing. A hash is
+ * only claimed when the bytes were actually captured (`available`), so a record never points at a
+ * blob `getBlob` cannot return.
  */
-function beforeImage(before: NodeState | undefined, backups: BackupPolicy): string | undefined {
+function beforeImage(before: NodeState | undefined, backups: BackupPolicy, available: ReadonlySet<string>): string | undefined {
   if (!backups.enabled || before === undefined) return undefined;
   if (before.hash === undefined || before.size === undefined) return undefined;
   if (before.size > backups.sizeLimitBytes) return undefined;
+  if (!available.has(before.hash)) return undefined;
   return before.hash;
 }
+
+/** No captured before-images; the default when a caller supplies none. */
+const EMPTY_BEFORE_IMAGES: ReadonlySet<string> = new Set();
