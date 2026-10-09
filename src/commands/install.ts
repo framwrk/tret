@@ -331,6 +331,22 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   log(`reinstalling ${existing.name}: removing the previous install first`);
   const planner = new VerifiedUninstallPlanner();
   const plan = await planner.plan(existing, { otherRecords: records, force: true });
+
+  // The package manager goes first, mirroring `uninstall`: only once it reports the package gone
+  // does Tret remove the rest. A failed removal aborts the reinstall with nothing else touched, so
+  // a `--force` never stacks a second global package on top of a half-removed first.
+  if (existing.managedBy !== undefined) {
+    const removal = await removeManagedPackage(existing.managedBy, { home: Bun.env.HOME });
+    log(
+      `\t${removal.ok ? "removed" : "could not remove"} package ${describeManagedPackage(existing.managedBy)} (${removal.detail})`,
+    );
+    if (!removal.ok) {
+      log("Error");
+      log("\tprevious install could not be fully removed; run tret uninstall <name>, then tret install <URL> --force");
+      process.exit(1);
+    }
+  }
+
   const result = await applyUninstallPlan(plan, { storage });
 
   const announced = new Set(
@@ -356,25 +372,14 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
   }
 
-  // A previous global package-manager install is removed through the manager too, so a reinstall
-  // does not stack a second global package on top of the first.
-  let packageFailed = false;
-  if (existing.managedBy !== undefined) {
-    const removal = await removeManagedPackage(existing.managedBy, { home: Bun.env.HOME });
-    packageFailed = !removal.ok;
-    log(
-      `\t${removal.ok ? "removed" : "could not remove"} package ${describeManagedPackage(existing.managedBy)} (${removal.detail})`,
-    );
-  }
-
-  if (result.incomplete || packageFailed) {
+  if (result.incomplete) {
     const reduced = reduceRecordForRetry(
       existing,
       result,
       rc.cleaned.map((cleaned) => cleaned.file),
     );
     const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
-    if (remaining === 0 && !packageFailed) await storage.removeRecord(reduced.id);
+    if (remaining === 0) await storage.removeRecord(reduced.id);
     else await storage.saveRecord(reduced);
     log("Error");
     log("\tprevious install could not be fully removed; run tret uninstall <name>, then tret install <URL> --force");

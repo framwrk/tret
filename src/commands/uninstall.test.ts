@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -37,6 +47,16 @@ async function runCli(args: string[], home: string, extraEnv: Record<string, str
 
 function sha256(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
+}
+
+/** Whether a symlink itself is present, even when its target is missing (unlike `existsSync`). */
+function linkExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Writes a valid v3 records file by hand, so a test controls the exact record shape. */
@@ -176,7 +196,7 @@ describe("uninstall record lifecycle", () => {
     const path = `${fakebin}:${process.env.PATH ?? ""}`;
     expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
 
-    expect(existsSync(shim)).toBe(false);
+    expect(linkExists(shim)).toBe(false);
     expect(existsSync(packageDir)).toBe(false);
     expect(readFileSync(join(home, "fake-bun-args.txt"), "utf8").trim().split("\n")).toEqual(["remove", "-g", "@acme/tool"]);
     expect(readRecords(home).records).toHaveLength(0);
@@ -208,7 +228,9 @@ describe("uninstall record lifecycle", () => {
     const path = `${fakebin}:${process.env.PATH ?? ""}`;
     expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).not.toBe(0);
 
-    // The shim was removed, but the package survives, so the record stays with its managed package.
+    // The manager runs first and failed, so Tret touched nothing: the shim and package both remain
+    // and the record is kept for a retry.
+    expect(linkExists(shim)).toBe(true);
     expect(existsSync(packageDir)).toBe(true);
     const file = readRecords(home);
     expect(file.records).toHaveLength(1);
@@ -254,7 +276,7 @@ describe("uninstall record lifecycle", () => {
     // Shared state survives; only the shim is removed by Tret and the package by the manager.
     expect(existsSync(manifest)).toBe(true);
     expect(existsSync(globalDir)).toBe(true);
-    expect(existsSync(shim)).toBe(false);
+    expect(linkExists(shim)).toBe(false);
     expect(existsSync(packageDir)).toBe(false);
     expect(readFileSync(join(home, "fake-bun-args.txt"), "utf8").trim().split("\n")).toEqual(["remove", "-g", "@acme/tool"]);
     expect(readRecords(home).records).toHaveLength(0);
