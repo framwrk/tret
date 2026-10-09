@@ -3,8 +3,10 @@ import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../bac
 import type { Journal, JournalEvent, JournalEventInput } from "../events";
 import { diffScopedSnapshots, filesToHash, hashBytes, hashFile, readFileBytes, scanScopedRoots, scopedPathKey } from "./scoped";
 import { MACOS_PLATFORM } from "../../platform";
+import type { ScopedRootBounds } from "./scoped";
 import type { ScopedSnapshot } from "./scoped";
 import { isVolatileChurnPath } from "./scope";
+import { macosHomeRootBounds } from "./homeScope";
 
 /** Identifier stored in `record.capture.backend` for the macOS heuristic fallback (D1). */
 export const MACOS_HEURISTIC_BACKEND = "macos-heuristic";
@@ -18,6 +20,11 @@ export type MacosHeuristicOptions = {
   hash?: (path: AbsolutePath) => Promise<string | undefined>;
   /** Reads a file's bytes for a before-image; injected in tests to simulate an unreadable file. */
   read?: (path: AbsolutePath) => Promise<Uint8Array | undefined>;
+  /**
+   * Home directory whose top level is bounded when it appears in the observed roots; defaults to
+   * `$HOME`. Mostly for tests, which scope a temp directory and pass it here.
+   */
+  home?: string;
 };
 
 /**
@@ -37,19 +44,22 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
   private readonly roots?: AbsolutePath[];
   private readonly hash: (path: AbsolutePath) => Promise<string | undefined>;
   private readonly read: (path: AbsolutePath) => Promise<Uint8Array | undefined>;
+  private readonly home?: string;
 
   constructor(options: MacosHeuristicOptions = {}) {
     this.caseSensitive = options.caseSensitive ?? MACOS_PLATFORM.case.defaultCaseSensitive;
     this.roots = options.roots;
     this.hash = options.hash ?? hashFile;
     this.read = options.read ?? readFileBytes;
+    this.home = options.home ?? Bun.env.HOME;
   }
 
   async start(options: CaptureStartOptions): Promise<CaptureSession> {
     const roots = options.roots.length > 0 ? options.roots : (this.roots ?? []);
     const caseSensitive = this.caseSensitive;
+    const rootBounds = this.homeRootBounds(roots);
     const before: ScopedSnapshot | undefined =
-      roots.length > 0 ? scanScopedRoots(roots, { caseSensitive, skip: isVolatileChurnPath }) : undefined;
+      roots.length > 0 ? scanScopedRoots(roots, { caseSensitive, skip: isVolatileChurnPath, rootBounds }) : undefined;
     // When backups are enabled the start snapshot keeps each pre-existing file's bytes (within the
     // size limit) alongside its hash, so an overwrite or deletion later still has something to
     // restore. This is the one place content is read before the installer runs; off by default (D2).
@@ -67,7 +77,7 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
           };
         }
 
-        const after = scanScopedRoots(roots, { caseSensitive, skip: isVolatileChurnPath });
+        const after = scanScopedRoots(roots, { caseSensitive, skip: isVolatileChurnPath, rootBounds });
         const hashErrors: AbsolutePath[] = [];
         for (const path of filesToHash(before, after)) {
           const hash = await this.hash(path);
@@ -107,6 +117,18 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
       images.set(node.hash, bytes);
     }
     return images;
+  }
+
+  /**
+   * Bounds only the `$HOME` root, when it is among the observed roots (defect #3). Every other root
+   * keeps the engine's default: the root itself is the only bound.
+   */
+  private homeRootBounds(roots: AbsolutePath[]): ReadonlyMap<AbsolutePath, ScopedRootBounds> | undefined {
+    const home = this.home;
+    if (home === undefined) return undefined;
+    const homeRoot = roots.find((root) => root === home);
+    if (homeRoot === undefined) return undefined;
+    return new Map([[homeRoot, macosHomeRootBounds(homeRoot)]]);
   }
 
   private partialReason(scanErrors: string[], hashErrors: AbsolutePath[]): string | undefined {

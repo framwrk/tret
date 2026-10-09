@@ -63,6 +63,8 @@ describe("macOS scope roots", () => {
     const expected = [
       "/opt/homebrew/bin",
       "/usr/local/bin",
+      // The macOS `$HOME` root (defect #3) rides alongside the trimmed capture roots.
+      "/Users/tester",
       "/Users/tester/.bashrc",
       "/Users/tester/.bash_profile",
       "/Users/tester/.config",

@@ -52,13 +52,20 @@ bounded roots.
 - `captureRootsInHome` — the tool dot-directories an installer targets: `.config`,
   `.local/{bin,lib,share,state}`, `Library/LaunchAgents`, and `Library/Application Support`;
 - home shell config files (`shellConfigs`).
+- `$HOME` itself on macOS (the `captureHomeRoot` platform signal) — so an installer's top-level
+  dotfiles/dot-directories (`~/.claude.json`, `~/.claude/`) are observed. This root is bounded by the
+  shared legacy skip rules (`EXCLUDED_PATHS`, `EXCLUDED_DIR_NAMES`, `EXCLUDED_DIR_NAME_PATTERN`):
+  `~/Library`, `~/Desktop`, `~/Documents`, `~/Downloads`, `node_modules`, and cache-shaped
+  directories are neither recorded nor descended. Because `EXCLUDED_PATHS` skips `Library`, the
+  explicit `~/Library/*` roots above remain the only `~/Library` access, so nothing is scanned twice.
+  Linux leaves `captureHomeRoot` unset, so its scope stays XDG-only.
 
 Capture roots are curated **separately** from `tret find`'s `searchRootsInHome`. Those search roots
 stay broad (they include `~/Library` subtrees) so `find` can adopt a tool's files by hand; capture
 observes only install surfaces. The pre-rewrite snapshot skipped `~/Library` entirely via
 `EXCLUDED_PATHS`, but the first rewrite reused the whole search list for capture, which let background
 churn inside `~/Library` be attributed to the installer. D3 is revisited here with that real installer
-evidence:
+evidence (defect #2):
 
 - **Dropped as pure churn** (no installer target, continuously rewritten by background daemons):
   `.cache`, `Library/Caches`, `Library/Containers`, `Library/HTTPStorages`, `Library/Logs`,
@@ -70,10 +77,15 @@ evidence:
   `*.db-wal`/`*.db-shm`/`sqlite-wal`/`sqlite-shm`, any `*-journal`, and LevelDB `*.log` under
   `IndexedDB` — so a background database never reads as an install mutation.
 
-Callers may add or drop roots with `include`/`exclude`. The skip is a small shape-based rule, not a
-per-app exclusion list: cache-shaped _roots_ are dropped by `installObservationRoots`, and the
-remaining volatile _files_ are matched structurally. Outside these rules the platform table is the
-bound, and the result stays labeled heuristic.
+Callers may add or drop roots with `include`/`exclude`. Beyond the `$HOME` root's shared skip rules
+and the shape-based volatility skip above, there is **no global exclusion list**: each root is its own
+bound. The result stays labeled heuristic.
+
+Observing `$HOME` (defect #3) has **no process attribution** (D1): a file an unrelated process creates
+at home top level during the window is indistinguishable from installer output and may be recorded as
+owned. Keep the install window tight and rely on the existing creation-only/owned semantics — a false
+owned entry is only removed by uninstall when its recorded fingerprint still matches. This is the same
+heuristic trade-off as the rest of the scope, not a new guarantee.
 
 ### Hashing policy
 
@@ -121,3 +133,9 @@ deletion — provided the current state still matches the record (D2).
   scope in a temp directory, runs a scripted install (edit, delete, chmod, nested create, create,
   symlink), and asserts the exact event sequence and normalized owned/mutated/deleted effects and
   their hashes.
+- `src/lib/capture/macos/homeScope.test.ts` — `$HOME` is a macOS-only observation root, the home
+  bounds reuse the shared skip rules, top-level dotfiles/dot-directories are owned while excluded
+  home paths (`~/Library/Logs`, `~/node_modules`, `~/Downloads`, `~/Documents`) are neither scanned
+  nor recorded, and existing subdir roots keep their default whole-subtree scan.
+- `src/commands/install.test.ts` — an installer that writes `~/.toolrc` and `~/.tool/` at home root is
+  recorded as owned and removed by uninstall.
