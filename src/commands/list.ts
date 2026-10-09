@@ -1,16 +1,24 @@
-import { loadRecords } from "../lib/records";
+import type { CaptureCompleteness, RecordV3 } from "../types";
+import { FileStorage } from "../lib/store";
 import { log } from "../lib/utilities";
 
-/** Prints every recorded install as an aligned table: name, install URL, install date, and change counts. */
-export function list(): void {
-  const records = loadRecords().records;
+/** One printable `tret list` row, derived purely from a record so it can be tested without a terminal. */
+export type ListRow = {
+  name: string;
+  source: string;
+  url: string;
+  installed: string;
+  executable: string;
+  script: string;
+  completeness: CaptureCompleteness;
+  owned: number;
+  mutated: number;
+  deleted: number;
+};
 
-  if (records.length === 0) {
-    log("No installs tracked.");
-    return;
-  }
-
-  const rows = records
+/** Builds the sorted rows for a set of v3 records. */
+export function listRows(records: RecordV3[]): ListRow[] {
+  return records
     .slice()
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((record) => ({
@@ -20,26 +28,59 @@ export function list(): void {
       installed: record.installedAt.slice(0, 10),
       executable: record.executable || "-",
       script: record.scriptSha256 ? record.scriptSha256.slice(0, 12) : "-",
-      added: String(record.added.length),
-      edited: String(record.edited.length),
+      completeness: record.capture.completeness,
+      owned: record.owned.length,
+      mutated: record.mutated.length,
+      deleted: record.deleted.length,
     }));
+}
 
-  const nameWidth = Math.max("Name".length, ...rows.map((row) => row.name.length));
-  const sourceWidth = Math.max("Source".length, ...rows.map((row) => row.source.length));
-  const urlWidth = Math.max("URL".length, ...rows.map((row) => row.url.length));
-  const installedWidth = Math.max("Installed".length, ...rows.map((row) => row.installed.length));
-  const executableWidth = Math.max("Binary".length, ...rows.map((row) => row.executable.length));
-  const scriptWidth = Math.max("Script sha256".length, ...rows.map((row) => row.script.length));
-  const addedWidth = Math.max("Added".length, ...rows.map((row) => row.added.length));
-  const editedWidth = Math.max("Edited".length, ...rows.map((row) => row.edited.length));
-
-  log(
-    `${"Name".padEnd(nameWidth)}  ${"Source".padEnd(sourceWidth)}  ${"URL".padEnd(urlWidth)}  ${"Installed".padEnd(installedWidth)}  ${"Binary".padEnd(executableWidth)}  ${"Script sha256".padEnd(scriptWidth)}  ${"Added".padEnd(addedWidth)}  ${"Edited".padEnd(editedWidth)}`,
+/** Renders the aligned table for a set of v3 records; the first line is the header. */
+export function formatList(records: RecordV3[]): string[] {
+  const headers = ["Name", "Source", "URL", "Installed", "Binary", "Script sha256", "Capture", "Owned", "Mutated", "Deleted"];
+  const columns = listRows(records).map((row) => [
+    row.name,
+    row.source,
+    row.url,
+    row.installed,
+    row.executable,
+    row.script,
+    row.completeness,
+    String(row.owned),
+    String(row.mutated),
+    String(row.deleted),
+  ]);
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...columns.map((column) => column[index]?.length ?? 0)),
   );
+  const line = (cells: string[]): string =>
+    cells.map((cell, index) => (index < 7 ? cell.padEnd(widths[index]!) : cell.padStart(widths[index]!))).join("  ");
 
-  for (const row of rows) {
-    log(
-      `${row.name.padEnd(nameWidth)}  ${row.source.padEnd(sourceWidth)}  ${row.url.padEnd(urlWidth)}  ${row.installed.padEnd(installedWidth)}  ${row.executable.padEnd(executableWidth)}  ${row.script.padEnd(scriptWidth)}  ${row.added.padStart(addedWidth)}  ${row.edited.padStart(editedWidth)}`,
-    );
+  return [line(headers), ...columns.map(line)];
+}
+
+/** Prints every recorded install with its capture completeness and owned/mutated/deleted counts. */
+export async function list(): Promise<void> {
+  const storage = new FileStorage();
+  let records: RecordV3[];
+  try {
+    records = await storage.loadRecords();
+  } catch (error) {
+    log("Error");
+    log(`\tcould not read the install records: ${message(error)}`);
+    process.exit(1);
   }
+
+  if (records.length === 0) {
+    log("No installs tracked.");
+    return;
+  }
+
+  for (const line of formatList(records)) {
+    log(line);
+  }
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
