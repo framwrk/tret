@@ -90,4 +90,31 @@ describe("shellconfig", () => {
     expect(rc.cleaned).toHaveLength(0);
     expect(readFileSync(file, "utf8")).toBe(before);
   });
+
+  test("only edits the attributed config files, leaving other matching configs intact", () => {
+    const home = testHome();
+    const zshrc = join(home, ".zshrc");
+    const bash = join(home, ".bash_profile");
+    const line = `export PATH=${home}/.mytool/bin:$PATH\n`;
+    writeFileSync(zshrc, line);
+    writeFileSync(bash, line);
+
+    const rc = removeRcLines("mytool", [join(home, ".mytool")], false, [zshrc]);
+
+    expect(rc.cleaned.map((cleaned) => cleaned.file)).toEqual([zshrc]);
+    expect(readFileSync(zshrc, "utf8")).toBe("");
+    expect(readFileSync(bash, "utf8")).toBe(line);
+  });
+
+  test("keeps a line the user edited to point elsewhere", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const userLine = `export PATH=${home}/.mytool-custom/bin:$PATH\n`;
+    writeFileSync(file, userLine);
+
+    const rc = removeRcLines("mytool", [join(home, ".mytool")], false);
+
+    expect(rc.cleaned).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(userLine);
+  });
 });

@@ -8,14 +8,26 @@ export type RcCleaning = {
   failed: AbsolutePath[];
 };
 
+/** Absolute paths of the shell config files the active platform may clean; directories are excluded. */
+export function shellConfigPaths(platform = MACOS_PLATFORM): AbsolutePath[] {
+  const home = Bun.env.HOME;
+  if (!home) throw new Error("HOME is not set");
+  return platform.shellConfigs
+    .filter((config) => config.kind === "file")
+    .map((config) => (config.scope === "home" ? join(home, config.path) : config.path));
+}
+
 /**
  * Removes shell config lines that reference the tool's own install dirs, plus a comment line
  * directly above one that names the tool. Only dirs recorded in `added[]` are matched, so a
- * shared PATH entry like `~/.local/bin` is never touched. With `dryRun` nothing is written.
+ * shared PATH entry like `~/.local/bin` is never touched. When `only` is given, only those config
+ * files are edited, which keeps cleanup tied to the edits attributed to the install. With
+ * `dryRun` nothing is written.
  */
-export function removeRcLines(name: string, dirs: AbsolutePath[], dryRun: boolean): RcCleaning {
+export function removeRcLines(name: string, dirs: AbsolutePath[], dryRun: boolean, only?: AbsolutePath[]): RcCleaning {
   const cleaned: RcCleaning["cleaned"] = [];
   const failed: AbsolutePath[] = [];
+  const wanted = only === undefined ? undefined : new Set(only);
 
   const home = Bun.env.HOME;
   if (!home) throw new Error("HOME is not set");
@@ -26,6 +38,9 @@ export function removeRcLines(name: string, dirs: AbsolutePath[], dryRun: boolea
       continue;
     }
     const file = config.scope === "home" ? join(home, config.path) : config.path;
+    if (wanted !== undefined && !wanted.has(file)) {
+      continue;
+    }
     if (!existsSync(file)) {
       continue;
     }
