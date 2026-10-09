@@ -1,4 +1,5 @@
 import type { AbsolutePath, CaptureCompleteness } from "../../types";
+import type { BlobId } from "../storage";
 
 /** Metadata for a regular file at the time an event was observed. */
 export type FileMetadata = {
@@ -116,4 +117,11 @@ export type Journal = {
   /** Set when the backend knows attribution is incomplete (daemonized descendants, uid transitions). */
   partialReason?: string;
   events: JournalEvent[];
+  /**
+   * Pre-install file contents captured for restoration, keyed by their sha256 content address (D2).
+   * Only populated when backups are enabled and the file fit the size limit at window start; a
+   * mutation or deletion is claimed restorable only when its before hash is present here, so a
+   * record never advertises a before-image storage cannot return.
+   */
+  beforeImages?: Map<BlobId, Uint8Array>;
 };

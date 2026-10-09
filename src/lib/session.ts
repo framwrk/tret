@@ -1,4 +1,5 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureSegment, Privilege } from "../types";
+import type { BackupPolicy } from "./capture/normalize";
 import type { CaptureBackend } from "./capture/backend";
 import type { Journal } from "./capture/events";
 
@@ -45,6 +46,8 @@ export type BoundedSessionOptions<T> = {
   privilege: Privilege;
   /** Absolute roots to observe, already expanded from the active platform table. */
   roots: AbsolutePath[];
+  /** Before-image backup policy (D2); off by default, so no content is captured unless opted in. */
+  backups?: BackupPolicy;
   /** The bounded work to run while capture is attached. */
   run: () => Promise<T>;
   /** Clock in milliseconds; injectable so tests can pin the window. */
@@ -75,6 +78,8 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
     pid: options.pid,
     privilege: options.privilege,
     roots: options.roots,
+    // Omit the key entirely when no policy is supplied, so a plain window's start options stay exact.
+    ...(options.backups === undefined ? {} : { backups: options.backups }),
   });
 
   let value: T | undefined;
