@@ -32,7 +32,7 @@ switch (command) {
     const separator = args.indexOf("--");
     const own = separator === -1 ? args : args.slice(0, separator);
     const scriptArgs = separator === -1 ? [] : args.slice(separator + 1);
-    await install(own.slice(1).join(" "), own.includes("--force"), scriptArgs);
+    await install(own.slice(1).join(" "), own.includes("--force"), scriptArgs, !own.includes("--no-capture"));
     break;
   }
 
@@ -84,9 +84,13 @@ function help(): void {
   log("");
   log(`${SCRIPT_NAME} wraps installers and remembers what they added, so you can cleanly remove them later.`);
   log("");
+  log(
+    `Each install runs inside a bounded capture window. ${SCRIPT_NAME} reports when the window was open and how completely it covered the installer's process tree; it never runs the installed tool itself to discover lazy writes.`,
+  );
+  log("");
   log(`Commands`);
   log(
-    `\tinstall <url>     Run an installer and record every file and folder it adds; paste the curl | bash line when no URL is given (alias: add)`,
+    `\tinstall <url>     Run an installer inside a bounded capture window and record what it changes; paste the curl | bash line when no URL is given (alias: add)`,
   );
   log(
     `\tuninstall <tool>  Remove a tool by deleting what its install added, stripping its PATH lines, and dropping the record (aliases: remove, unadd)`,
@@ -100,6 +104,7 @@ function help(): void {
   log(`\t--version     Print the running version and exit`);
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
   log(`\t              uninstall: remove owned paths even when their fingerprint changed or is shared`);
+  log(`\t--no-capture  install: run the installer without attaching a capture window`);
   log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
   log(`\t--yes         uninstall: skip the confirmation prompt`);
   log(`\t--            install: every flag after this goes to the install script itself`);

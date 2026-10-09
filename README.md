@@ -18,11 +18,13 @@
 When you install a tool with Tret, it:
 
 1. Snapshots `~/`, `/opt/homebrew/bin`, and `/usr/local/bin` before the installer runs.
-2. Fetches the install script at the URL you give and runs it.
-3. Snapshots the same paths again, then diffs the two snapshots.
-4. Saves what the script added, edited, or deleted as a record for that tool, with the script's SHA-256 hash.
+2. Fetches the install script at the URL you give and runs it inside a bounded capture window.
+3. Closes the window and reports when it was open and how completely it covered the installer's process tree.
+4. Snapshots the same paths again, diffs the two snapshots, and saves what the script added, edited, or deleted as a record for that tool, with the script's SHA-256 hash.
 
 Records live in `~/.tret/records.json`. Nothing is backed up: Tret stores paths, not file contents.
+
+Tret never runs the tool it just installed. Files a tool writes the first time you run it are not captured automatically; records reserve a segment for a later explicit trace (see [`docs/rewrite/lazy-writes.md`](docs/rewrite/lazy-writes.md)).
 
 ## Install tret
 
@@ -36,13 +38,13 @@ Tret supports macOS on Apple Silicon only. To remove the Tret binary itself, run
 
 ## Usage
 
-| Command                                          | Purpose                                                                     |
-| ------------------------------------------------ | --------------------------------------------------------------------------- |
-| `tret install <URL>` (`add`)                     | Fetch the install script at the URL and run it, then record what it changed |
-| `tret uninstall <tool_name>` (`remove`, `unadd`) | Remove the files the tool's install added                                   |
-| `tret list` (`show`)                             | List every tool installed with Tret                                         |
+| Command                                          | Purpose                                                                         |
+| ------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `tret install <URL>` (`add`)                     | Run the install script in a bounded capture window, then record what it changed |
+| `tret uninstall <tool_name>` (`remove`, `unadd`) | Remove the files the tool's install added                                       |
+| `tret list` (`show`)                             | List every tool installed with Tret                                             |
 
-`install` also takes `--force`: it uninstalls the tool first, then reinstalls it from a clean diff. Anything after `--` passes to the install script itself (`tret install <URL> -- --skip-browser`). `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt.
+`install` also takes `--force`: it uninstalls the tool first, then reinstalls it from a clean diff. Anything after `--` passes to the install script itself (`tret install <URL> -- --skip-browser`). `install` attaches a capture backend to the install window by default; `--no-capture` runs the installer without it. `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt.
 
 ### Install a tool
 
@@ -52,11 +54,23 @@ tret install https://example.com/install.sh
 
 Tret derives the tool's name from the executable the install puts on disk — the file in a `bin` folder it ranks first, otherwise the first executable it added. The tool's own installer output passes through to your terminal. If the installer exits with an error, Tret records nothing.
 
+Each install runs inside a bounded capture window, and Tret prints a line describing it: the backend, whether coverage is `complete`, `partial`, or `heuristic`, the window's start and end, and how many events and roots were observed.
+
 The paste form works too:
 
 ```bash
 tret install curl -fsSL https://example.com/install.sh | bash
 ```
+
+### Capture and lazy writes
+
+Tret observes the install window only. It does not invoke the installed tool (no implicit `--help` run), so files a command writes the first time you run it are outside the record. Capture completeness is always reported:
+
+- **complete** — a tracer observed the installer's whole process tree.
+- **partial** — a tracer attached but lost coverage (a `sudo` transition, a daemonized process). The reason is printed.
+- **heuristic** — no process attribution (macOS has no unprivileged tracer); changes are inferred from scoped snapshots and labeled as such.
+
+A later explicit `tret trace` will run a tool under the same bounded session and attach its window as a new record segment without a format migration; it is deferred for now (decision D5).
 
 ### Uninstall a tool
 
@@ -84,7 +98,7 @@ Each row shows the tool's name, URL, install date, executable path, the script's
 | `bun run lint`   | Run ESLint                         |
 | `bun run format` | Format with Prettier               |
 
-Tret is written in TypeScript and runs on [Bun](https://bun.sh), compiled to a single binary. The layout is small by design: `index.ts` routes commands, `src/commands/<command>.ts` holds one function per command, and `src/lib/` holds the snapshot, diff, and record logic. `examples/` contains reference install scripts only.
+Tret is written in TypeScript and runs on [Bun](https://bun.sh), compiled to a single binary. The layout is small by design: `index.ts` routes commands, `src/commands/<command>.ts` holds one function per command, and `src/lib/` holds the snapshot, diff, capture-session, and record logic. `examples/` contains reference install scripts only.
 
 ## License
 
