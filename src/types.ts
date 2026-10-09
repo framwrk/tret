@@ -130,6 +130,13 @@ export type ManagedPackage = {
   manager: PackageManagerId;
   /** Package spec passed to the manager's remove command, e.g. `@scope/name`. */
   package: string;
+  /**
+   * Absolute shared root the package's global state lives under (the directory containing the
+   * manager's shared `node_modules`), when it is not the manager's fixed home-relative default.
+   * npm records it because its global prefix varies per machine (`~/.npm-global`, `~/.local`,
+   * `/opt/homebrew`, an nvm tree...); bun's default is fixed, so it stays unset.
+   */
+  globalRoot?: AbsolutePath;
 };
 
 /**

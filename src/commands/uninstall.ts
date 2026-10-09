@@ -5,8 +5,8 @@ import { confirm, log } from "../lib/utilities";
 import {
   describeManagedPackage,
   detectManagedPackage,
-  isManagedGlobalPath,
   removeManagedPackage,
+  withoutManagedGlobalPaths,
 } from "../lib/package-manager";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import { FileStorage } from "../lib/store";
@@ -219,15 +219,12 @@ function printUnresolvedShell(name: string, dirs: AbsolutePath[], files: Absolut
  */
 function withoutManagedGlobalState(record: RecordV3, managed: ManagedPackage): RecordV3 {
   const home = Bun.env.HOME;
-  if (!home) return { ...record, managedBy: record.managedBy ?? managed };
-
-  const keep = (entry: { path: AbsolutePath }): boolean => !isManagedGlobalPath(entry.path, managed, home);
   return {
     ...record,
     managedBy: record.managedBy ?? managed,
-    owned: record.owned.filter(keep),
-    mutated: record.mutated.filter(keep),
-    deleted: record.deleted.filter(keep),
+    owned: withoutManagedGlobalPaths(record.owned, managed, home),
+    mutated: withoutManagedGlobalPaths(record.mutated, managed, home),
+    deleted: withoutManagedGlobalPaths(record.deleted, managed, home),
   };
 }
 
