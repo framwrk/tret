@@ -1,5 +1,5 @@
 import type { FileMetadata, JournalEventInput } from "../events";
-import { lstatSync, readdirSync, readlinkSync } from "node:fs";
+import { type Stats, lstatSync, readdirSync, readlinkSync } from "node:fs";
 import type { AbsolutePath } from "../../../types";
 
 /**
@@ -64,7 +64,7 @@ function scanNode(
   options: ScopedScanOptions,
   isRoot: boolean,
 ): void {
-  let stat: ReturnType<typeof lstatSync>;
+  let stat: Stats;
   try {
     stat = lstatSync(path);
   } catch (error) {
@@ -88,7 +88,7 @@ function scanNode(
   for (const name of names) scanNode(`${path}/${name}`, entries, errors, options, false);
 }
 
-function toScopedNode(path: AbsolutePath, stat: ReturnType<typeof lstatSync>): ScopedNode | undefined {
+function toScopedNode(path: AbsolutePath, stat: Stats): ScopedNode | undefined {
   const base = { path, size: stat.size, mtimeMs: stat.mtimeMs, mode: stat.mode & 0o7777, inode: stat.ino };
   if (stat.isSymbolicLink()) return { ...base, kind: "symlink", linkTarget: readLinkTarget(path) };
   if (stat.isDirectory()) return { ...base, kind: "directory" };

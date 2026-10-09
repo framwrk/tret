@@ -97,7 +97,7 @@ describe("update check", () => {
     globalThis.fetch = (async () => {
       fetched = true;
       return new Response("{}");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     try {
       await checkForUpdate();
     } finally {

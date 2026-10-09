@@ -88,7 +88,13 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   }
 
   const result = await applyUninstallPlan(plan, { storage });
+  // Conflicts and already-absent paths were described in the plan above; only report the
+  // outcomes the plan did not announce (removals, restores, and anything that failed at apply).
+  const announced = new Set(
+    plan.actions.filter((action) => action.action === "conflict" || action.action === "skip").map((action) => action.path),
+  );
   for (const outcome of result.outcomes) {
+    if ((outcome.outcome === "conflict" || outcome.outcome === "skipped") && announced.has(outcome.path)) continue;
     log(`\t${describeOutcome(outcome)}`, true);
   }
 
