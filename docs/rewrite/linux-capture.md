@@ -116,8 +116,10 @@ Reconstruction runs after the window and inspects final filesystem state. It rec
 only when bytes were actually read; a path that no longer exists (a temp file, an unlink, a rename
 source) falls back to existence/kind. Because an overwrite destroys the prior bytes before a
 post-hoc tracer can read them, the strace backend records mutations without a before-image unless a
-scoped baseline or a future entry-stop tracer supplies one. Backup collection is Phase 6 (D2), and
-`normalizeJournal` already treats a missing `before` as "detectable, not restorable".
+scoped baseline or a future entry-stop tracer supplies one. The macOS heuristic fallback captures
+before-image bytes at window start when backups are enabled (`--backup`); the Linux backend does not
+yet, so a `--backup` install on Linux stays detect-only and `normalizeJournal` treats the missing
+`before` as "detectable, not restorable" rather than inventing one.
 
 The existence baseline (`captureBaseline`) walks the observe roots once and stores path → kind only.
 It reads no file content, so it cannot become the global content diff the rewrite replaces; it exists

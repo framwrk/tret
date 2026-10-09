@@ -107,6 +107,12 @@ migration) lands in Phase 6.
 - `referencedBlobs(records)` collects the before-image addresses every record references, the `keep`
   input to `gc`.
 
+With backups enabled, the install integration reads pre-existing file contents at the capture
+window's start (`Journal.beforeImages`, keyed by content address), stores them with
+`captureBeforeImage`/`putBlob`, and records each resulting address as `MutatedEntry.beforeBlob` or
+`DeletedEntry.beforeBlob`. `normalizeJournal` only claims a before-image for a hash listed in
+`NormalizeInput.availableBeforeImages`, so a record never points at a blob storage does not hold.
+
 ## `UninstallPlanner` (`src/lib/uninstall-planner.ts`)
 
 `plan(record, context?) -> Promise<UninstallPlan>` is a conservative, side-effect-free plan
