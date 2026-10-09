@@ -280,10 +280,14 @@ function planFile(entry: OwnedEntry, verification: UninstallVerification, force:
     return { action: "conflict", path: entry.path, reason: "diverged" };
   }
   if (verification.hash === undefined || entry.installedHash === undefined) {
-    return force ? { action: "remove", path: entry.path, kind: "file" } : { action: "conflict", path: entry.path, reason: "unverified" };
+    return force
+      ? { action: "remove", path: entry.path, kind: "file" }
+      : { action: "conflict", path: entry.path, reason: "unverified" };
   }
   if (verification.hash !== entry.installedHash) {
-    return force ? { action: "remove", path: entry.path, kind: "file" } : { action: "conflict", path: entry.path, reason: "modified" };
+    return force
+      ? { action: "remove", path: entry.path, kind: "file" }
+      : { action: "conflict", path: entry.path, reason: "modified" };
   }
   return { action: "remove", path: entry.path, kind: "file" };
 }
@@ -294,10 +298,14 @@ function planSymlink(entry: OwnedEntry, verification: UninstallVerification, for
     return { action: "conflict", path: entry.path, reason: "diverged" };
   }
   if (entry.linkTarget === undefined || verification.linkTarget === undefined) {
-    return force ? { action: "remove", path: entry.path, kind: "symlink" } : { action: "conflict", path: entry.path, reason: "unverified" };
+    return force
+      ? { action: "remove", path: entry.path, kind: "symlink" }
+      : { action: "conflict", path: entry.path, reason: "unverified" };
   }
   if (entry.linkTarget !== verification.linkTarget) {
-    return force ? { action: "remove", path: entry.path, kind: "symlink" } : { action: "conflict", path: entry.path, reason: "modified" };
+    return force
+      ? { action: "remove", path: entry.path, kind: "symlink" }
+      : { action: "conflict", path: entry.path, reason: "modified" };
   }
   return { action: "remove", path: entry.path, kind: "symlink" };
 }
@@ -314,7 +322,8 @@ function planMutation(
   if (claimed.has(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
   if (!verification.exists) return { action: "conflict", path, reason: "diverged" };
   if (verification.hash === undefined) return { action: "conflict", path, reason: "unreadable" };
-  if (installedHash !== undefined && verification.hash !== installedHash) return { action: "conflict", path, reason: "diverged" };
+  if (installedHash !== undefined && verification.hash !== installedHash)
+    return { action: "conflict", path, reason: "diverged" };
   if (beforeBlob === undefined) return { action: "conflict", path, reason: "missing-blob" };
   if (installedHash === undefined) return { action: "conflict", path, reason: "unverified" };
   return { action: "restore", path, kind: verification.kind ?? "file", beforeBlob, expect: "installed", installedHash };

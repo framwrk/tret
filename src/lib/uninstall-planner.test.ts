@@ -134,7 +134,11 @@ describe("VerifiedUninstallPlanner directories", () => {
 
   test("keeps an owned directory that still holds user files and reports a conflict", async () => {
     const target = { ...record(), owned: [{ path: "/h/dir", kind: "directory" as const }] };
-    const plan = await planFor(target, { "/h/dir": { exists: true, kind: "directory" } }, { list: { "/h/dir": ["/h/dir/user.txt"] } });
+    const plan = await planFor(
+      target,
+      { "/h/dir": { exists: true, kind: "directory" } },
+      { list: { "/h/dir": ["/h/dir/user.txt"] } },
+    );
 
     expect(plan.actions).toEqual([{ action: "conflict", path: "/h/dir", reason: "not-empty" }]);
     expect(plan.incomplete).toBe(true);
@@ -170,7 +174,9 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
     };
     const plan = await planFor(target, { "/h/rc": { exists: true, kind: "file", hash: h("b") } });
 
-    expect(plan.actions).toEqual([{ action: "restore", path: "/h/rc", kind: "file", beforeBlob: "blob-1", expect: "installed", installedHash: h("b") }]);
+    expect(plan.actions).toEqual([
+      { action: "restore", path: "/h/rc", kind: "file", beforeBlob: "blob-1", expect: "installed", installedHash: h("b") },
+    ]);
   });
 
   test("preserves a diverged mutation and reports a conflict", async () => {
@@ -205,7 +211,9 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
   test("restores a recorded deletion only while the path is still absent", async () => {
     const target = { ...record(), owned: [], mutated: [], deleted: [{ path: "/h/gone", beforeBlob: "blob-2" }] };
     const restored = await planFor(target, {});
-    expect(restored.actions).toEqual([{ action: "restore", path: "/h/gone", kind: "file", beforeBlob: "blob-2", expect: "absent" }]);
+    expect(restored.actions).toEqual([
+      { action: "restore", path: "/h/gone", kind: "file", beforeBlob: "blob-2", expect: "absent" },
+    ]);
 
     const recreated = await planFor(target, { "/h/gone": { exists: true, kind: "file", hash: h("x") } });
     expect(recreated.actions).toEqual([{ action: "conflict", path: "/h/gone", reason: "diverged" }]);
@@ -222,8 +230,16 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
 describe("VerifiedUninstallPlanner shared ownership", () => {
   test("another record claiming the path blocks removal unless forced", async () => {
     const target = { ...record(), owned: [{ path: "/h/bin/tool", kind: "file" as const, installedHash: h("b") }] };
-    const state = { "/h/bin/tool": { exists: true, kind: "file", hash: h("b") } } satisfies Record<string, UninstallVerification>;
-    const other: RecordV3 = { ...record(), id: "rec-2", name: "other", owned: [{ path: "/h/bin/tool", kind: "file", installedHash: h("b") }] };
+    const state = { "/h/bin/tool": { exists: true, kind: "file", hash: h("b") } } satisfies Record<
+      string,
+      UninstallVerification
+    >;
+    const other: RecordV3 = {
+      ...record(),
+      id: "rec-2",
+      name: "other",
+      owned: [{ path: "/h/bin/tool", kind: "file", installedHash: h("b") }],
+    };
 
     const blocked = await planFor(target, state, { otherRecords: [other] });
     expect(blocked.actions).toEqual([{ action: "conflict", path: "/h/bin/tool", reason: "shared-owner" }]);
@@ -235,7 +251,11 @@ describe("VerifiedUninstallPlanner shared ownership", () => {
 
 describe("VerifiedUninstallPlanner sudo awareness", () => {
   test("a root-privileged record with unknown ownership requires sudo", async () => {
-    const target = { ...record(), privilege: "root" as const, owned: [{ path: "/usr/local/bin/tool", kind: "file" as const, installedHash: h("b") }] };
+    const target = {
+      ...record(),
+      privilege: "root" as const,
+      owned: [{ path: "/usr/local/bin/tool", kind: "file" as const, installedHash: h("b") }],
+    };
     const plan = await planFor(target, { "/usr/local/bin/tool": { exists: true, kind: "file", hash: h("b") } });
 
     expect(plan.requiresSudo).toBe(true);
