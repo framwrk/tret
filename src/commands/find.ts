@@ -1,6 +1,7 @@
 import type { AbsolutePath, OwnedEntry, RecordV3 } from "../types";
 import { caseSensitiveFor, currentPlatform, processPrivilege } from "../lib/platform";
 import { FileStorage } from "../lib/store";
+import { detectManagedPackage } from "../lib/package-manager";
 import { findRelated } from "../lib/related";
 import { inspectPath } from "../lib/uninstall-planner";
 import { log } from "../lib/utilities";
@@ -50,6 +51,10 @@ export async function find(name: string | undefined): Promise<void> {
 
   const platform = currentPlatform();
   const installedAt = new Date().toISOString();
+  const owned = paths.map(ownedEntry);
+  // Adoption can also recognize a package-manager global shim, so a found tool uninstalls through
+  // the manager rather than by deleting shared global state.
+  const managedBy = detectManagedPackage(executable, owned);
   // No URL or script hash: the tool was not installed through Tret, so those fields stay empty.
   const record: RecordV3 = {
     id: randomUUID(),
@@ -66,9 +71,10 @@ export async function find(name: string | undefined): Promise<void> {
     },
     privilege: processPrivilege(),
     caseSensitive: caseSensitiveFor(platform, executable),
-    owned: paths.map(ownedEntry),
+    owned,
     mutated: [],
     deleted: [],
+    ...(managedBy === undefined ? {} : { managedBy }),
   };
 
   await storage.saveRecord(record);

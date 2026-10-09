@@ -92,6 +92,11 @@ fields:
   (`DeletedEntry`: before hash, optional `beforeBlob`). `kind` is `"file" | "directory" |
 "symlink"`, plus `"unknown"` reserved for migrated v2 records, which stored paths without a kind;
   a capture backend never emits `"unknown"`, and uninstall treats it as non-removable.
+- optional `managedBy` (`ManagedPackage`: `manager`, `package`) marks an executable installed
+  through a package manager's global mode. Its shared `node_modules`, lockfile, and manifest stay
+  out of `owned`; uninstall delegates the package to the manager first (`bun remove -g`,
+  `npm uninstall -g`) and only then removes the remaining paths, so a failed package removal leaves
+  the record and its files untouched for a retry.
 
 `RecordFileV3` wraps `RecordV3[]` with `version: 3`. Multiple records may claim one path; conflicts
 are resolved by uninstall planning, never by silently transferring ownership (D4).
