@@ -16,6 +16,10 @@ export const MACOS_PLATFORM: Platform = {
   id: "darwin",
   label: "macOS",
   scopeRoots: ["/opt/homebrew/bin", "/usr/local/bin"],
+  // Observe `$HOME` top level too (defect #3): the pre-rewrite snapshot read `$HOME` bounded by
+  // `EXCLUDED_PATHS`, so an installer's top-level dotfiles/dot-directories were recorded. The scoped
+  // engine prunes this root with the same shared skip rules, so it stays a bounded scan.
+  captureHomeRoot: true,
   searchRootsInHome: [
     ".cache",
     ".config",

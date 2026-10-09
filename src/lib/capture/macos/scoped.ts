@@ -35,6 +35,20 @@ export type ScopedSnapshot = {
   errors: string[];
 };
 
+/**
+ * Pruning rules for one observed root's subtree. A root with no bounds is scanned whole, so the
+ * engine's default "the roots are the only bound" behavior is unchanged for every existing subdir
+ * root. The macOS `$HOME` root supplies these to reuse the shared skip rules (defect #3).
+ */
+export type ScopedRootBounds = {
+  /** Absolute paths neither recorded nor descended; applies to files and directories. */
+  excludePaths?: ReadonlySet<AbsolutePath>;
+  /** Directory base names pruned at any depth under the root (files keep their name). */
+  excludeDirNames?: ReadonlySet<string>;
+  /** Directory base names matching this pattern are pruned at any depth under the root. */
+  excludeDirNamePattern?: RegExp;
+};
+
 export type ScopedScanOptions = {
   /** Whether path comparison is case-sensitive (D10). */
   caseSensitive: boolean;
@@ -44,6 +58,11 @@ export type ScopedScanOptions = {
    * default (no predicate) still has no exclusion list: the roots are the bound.
    */
   skip?: (path: AbsolutePath) => boolean;
+  /**
+   * Per-root pruning, keyed by the exact root path. A root without an entry is unbounded, so adding
+   * the `$HOME` root does not change how the existing subdir roots are scanned.
+   */
+  rootBounds?: ReadonlyMap<AbsolutePath, ScopedRootBounds>;
 };
 
 /** The comparison key for a path; mirrors journal normalization so both agree on identity (D10). */
@@ -54,13 +73,14 @@ export function scopedPathKey(path: AbsolutePath, caseSensitive: boolean): strin
 /**
  * Walks every root and records each node's stamp without following symlinks. A root that does not
  * exist is not an error (an installer may create it); a root that exists but cannot be read is. The
- * roots are the only bound: there is no exclusion list here by default (plan section 2), beyond the
- * caller-supplied `skip` used to drop known churn shapes.
+ * roots are the only bound by default (plan section 2): a caller-supplied `skip` drops known churn
+ * shapes (defect #2), and a root may opt into `ScopedRootBounds` so adding `$HOME` stays a bounded
+ * scan instead of a global one (defect #3).
  */
 export function scanScopedRoots(roots: Iterable<AbsolutePath>, options: ScopedScanOptions): ScopedSnapshot {
   const entries = new Map<string, ScopedNode>();
   const errors: string[] = [];
-  for (const root of roots) scanNode(root, entries, errors, options, true);
+  for (const root of roots) scanNode(root, entries, errors, options, true, options.rootBounds?.get(root));
   return { entries, errors };
 }
 
@@ -70,6 +90,7 @@ function scanNode(
   errors: string[],
   options: ScopedScanOptions,
   isRoot: boolean,
+  bounds?: ScopedRootBounds,
 ): void {
   if (options.skip?.(path)) return;
 
@@ -84,6 +105,7 @@ function scanNode(
 
   const node = toScopedNode(path, stat);
   if (!node) return; // sockets, fifos, and other non-regular nodes are not tracked
+  if (!isRoot && bounds !== undefined && boundsExclude(path, node.kind === "directory", bounds)) return;
   entries.set(scopedPathKey(path, options.caseSensitive), node);
   if (node.kind !== "directory") return;
 
@@ -94,7 +116,19 @@ function scanNode(
     errors.push(`${path}: ${describe(error)}`);
     return;
   }
-  for (const name of names) scanNode(`${path}/${name}`, entries, errors, options, false);
+  for (const name of names) scanNode(`${path}/${name}`, entries, errors, options, false, bounds);
+}
+
+/**
+ * Whether a child node is pruned by a root's bounds. Absolute-path exclusions cover files and
+ * directories; name and pattern exclusions apply only to directories, so a file named `build` or
+ * `cache.log` is still tracked (matching the legacy `EXCLUDED_DIR_NAMES` rule).
+ */
+function boundsExclude(path: AbsolutePath, isDirectory: boolean, bounds: ScopedRootBounds): boolean {
+  if (bounds.excludePaths?.has(path) === true) return true;
+  if (!isDirectory) return false;
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  return bounds.excludeDirNames?.has(name) === true || bounds.excludeDirNamePattern?.test(name) === true;
 }
 
 function toScopedNode(path: AbsolutePath, stat: Stats): ScopedNode | undefined {
