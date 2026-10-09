@@ -8,6 +8,7 @@ import { extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/util
 import { formatCoverage, runBoundedSession } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
+import { MacosHeuristicCaptureBackend } from "../lib/capture/macos";
 import type { Platform } from "../lib/platform";
 import { VerifiedUninstallPlanner } from "../lib/uninstall-planner";
 import { captureBackendFor } from "../lib/capture/current";
@@ -192,6 +193,7 @@ async function observeInstall(
     return { exitCode, fallback: diff(before, snapshot()) };
   }
 
+  const roots = options.roots ?? installObservationRoots(platform);
   let session: BoundedSessionResult<number>;
   try {
     session = await runBoundedSession({
@@ -199,19 +201,52 @@ async function observeInstall(
       // The installer is spawned as a child of this process, so observing this pid covers it.
       pid: process.pid,
       privilege: processPrivilege(),
-      roots: options.roots ?? installObservationRoots(platform),
+      roots,
       backups,
       run: () => runInstaller(script, scriptArgs),
     });
   } catch (error) {
-    log(`capture unavailable (${message(error)}); the install runs without an observation window`);
-    const before = snapshot();
-    const exitCode = await runInstaller(script, scriptArgs);
-    return { exitCode, fallback: diff(before, snapshot()) };
+    // The platform tracer could not attach (for example `ptrace_scope=1` refuses a child tracing its
+    // parent). The installer has not run yet, so observe it with the labeled scoped-snapshot fallback
+    // instead of running it unwatched; a fallback that itself fails keeps the legacy snapshot/diff.
+    log(`capture unavailable (${message(error)}); observing the install with a heuristic window`);
+    try {
+      const fallback = await runBoundedSession({
+        backend: new MacosHeuristicCaptureBackend({ caseSensitive: caseSensitiveFor(platform, Bun.env.HOME) }),
+        pid: process.pid,
+        privilege: processPrivilege(),
+        roots: heuristicFallbackRoots(roots),
+        backups,
+        run: () => runInstaller(script, scriptArgs),
+      });
+      if (fallback.error !== undefined) throw fallback.error;
+      return { exitCode: fallback.value ?? 1, coverage: fallback.coverage, journal: fallback.journal };
+    } catch (fallbackError) {
+      log(`heuristic capture unavailable (${message(fallbackError)}); the install runs without an observation window`);
+      const before = snapshot();
+      const exitCode = await runInstaller(script, scriptArgs);
+      return { exitCode, fallback: diff(before, snapshot()) };
+    }
   }
 
   if (session.error !== undefined) throw session.error;
   return { exitCode: session.value ?? 1, coverage: session.coverage, journal: session.journal };
+}
+
+/**
+ * Roots for the heuristic fallback: the install scope plus `$HOME`, so a tool that drops state at the
+ * home top level is still observed, minus the unbounded system trees `/opt` and `/usr/bin`. The
+ * scoped-snapshot engine scans a non-home root whole and, with `--backup`, reads every pre-existing
+ * file to keep its bytes; those two trees are shared multi-GB surfaces (a runner's tool cache and
+ * system binaries), so keeping them would replay the very stall the baseline walk now prunes. The
+ * narrower `/usr/local/bin` install surface stays.
+ */
+function heuristicFallbackRoots(roots: AbsolutePath[]): AbsolutePath[] {
+  const scoped = new Set(roots);
+  if (Bun.env.HOME) scoped.add(Bun.env.HOME);
+  scoped.delete("/opt");
+  scoped.delete("/usr/bin");
+  return [...scoped].sort();
 }
 
 /** Normalizes the captured journal into effects; a fallback diff maps to hash-less legacy entries. */

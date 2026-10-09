@@ -116,7 +116,7 @@ describe("platform tables", () => {
   });
 
   test("Linux replaces the macOS-only surfaces with XDG and package-manager roots", () => {
-    expect(LINUX_PLATFORM.scopeRoots).toEqual(["/usr/bin", "/usr/local/bin", "/opt"]);
+    expect(LINUX_PLATFORM.scopeRoots).toEqual(["/usr/bin", "/usr/local/bin"]);
     expect(LINUX_PLATFORM.sharedAbsolute).not.toContain("/Applications");
     expect(LINUX_PLATFORM.sharedAbsolute).not.toContain("/opt/homebrew");
     expect(LINUX_PLATFORM.searchRootsInHome).toContain(".config/systemd/user");

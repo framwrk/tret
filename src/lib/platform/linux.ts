@@ -8,7 +8,10 @@ import type { Platform } from "./types";
 export const LINUX_PLATFORM: Platform = {
   id: "linux",
   label: "Linux",
-  scopeRoots: ["/usr/bin", "/usr/local/bin", "/opt"],
+  // `/opt` is deliberately not a capture root: it is an unbounded shared system tree (a runner's
+  // /opt/hostedtoolcache is a multi-GB tool cache), so observing it whole costs far more than the
+  // tool directories Tret targets. `tret find` still searches it via `searchRootsAbsolute`.
+  scopeRoots: ["/usr/bin", "/usr/local/bin"],
   searchRootsInHome: [
     ".cache",
     ".config",

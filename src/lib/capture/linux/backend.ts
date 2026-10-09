@@ -3,9 +3,9 @@ import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../bac
 import type { LinuxTracer, LinuxTracerFactory, TracerAttachOptions } from "./tracer";
 import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
 import { attachFanotify, attachStrace } from "./tracer";
+import { existsSync, readFileSync } from "node:fs";
 import type { AbsolutePath } from "../../../types";
 import type { Journal } from "../events";
-import { existsSync } from "node:fs";
 import { reconstruct } from "./reconstruct";
 
 /**
@@ -115,7 +115,59 @@ export class LinuxCaptureBackend implements CaptureBackend {
 export async function defaultTracerFactory(attach: TracerAttachOptions): Promise<LinuxTracer> {
   const helper = fanotifyHelperPath();
   if (isRoot() && helper !== undefined) return attachFanotify(attach, { helperPath: helper });
-  return attachStrace(attach, { cwd: process.cwd() });
+  if (parentAttachRestricted()) {
+    throw new Error(
+      "strace cannot attach to this process: yama ptrace_scope restricts an unprivileged tracer from tracing its parent",
+    );
+  }
+  const tracer = await attachStrace(attach, { cwd: process.cwd() });
+  await requireAttached(tracer);
+  return tracer;
+}
+
+/**
+ * True when the kernel's Yama LSM forbids this unprivileged process from tracing its own parent — the
+ * relationship `strace -f -p <parent>` needs. Under `ptrace_scope >= 1` a child may only trace its
+ * descendants, so the attach can never succeed; detecting that up front keeps the caller's heuristic
+ * fallback deterministic instead of racing the tracer's exit.
+ */
+function parentAttachRestricted(): boolean {
+  if (isRoot()) return false;
+  try {
+    const scope = Number.parseInt(readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim(), 10);
+    return Number.isFinite(scope) && scope >= 1;
+  } catch {
+    return false; // no Yama (or unreadable): assume the attach is allowed and let strace report
+  }
+}
+
+/**
+ * Rejects a tracer that died before it could attach. `strace -p <parent>` is refused under the
+ * default `ptrace_scope=1` (an unprivileged child may not trace its parent), and without this check
+ * that failure is only a loss reason on a journal returned after the installer has already run
+ * unwatched. Throwing here lets the caller fall back to a heuristic window *before* the install runs,
+ * so the install is still attributed instead of recorded as an empty journal with no executable.
+ */
+async function requireAttached(tracer: LinuxTracer, graceMs = 250): Promise<void> {
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    const reasons = tracer.losses();
+    // A spawn failure (strace missing) leaves the child object "alive" with no exit code, so the loss
+    // reason is the only signal; an attach refusal instead exits the child, caught by the status check.
+    if (reasons.some(isAttachFailure)) {
+      throw new Error(`strace could not attach: ${reasons.join("; ")}`);
+    }
+    if (!(await tracer.status()).active) {
+      throw new Error(`strace could not attach: ${reasons.length > 0 ? reasons.join("; ") : "tracer exited before attaching"}`);
+    }
+    if (Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** A tracer loss that means the tracer never began observing, so the window has no coverage at all. */
+function isAttachFailure(reason: string): boolean {
+  return /could not (?:start|attach)|Operation not permitted/i.test(reason);
 }
 
 /** The fanotify helper path when it is present; Tret never installs or elevates it itself. */
