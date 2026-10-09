@@ -1,4 +1,5 @@
 import { IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
+import { DEFAULT_BACKUP_POLICY } from "./src/lib/store";
 import { checkForUpdate } from "./src/lib/updatecheck";
 import { find } from "./src/commands/find";
 import { install } from "./src/commands/install";
@@ -34,6 +35,8 @@ switch (command) {
     const scriptArgs = separator === -1 ? [] : args.slice(separator + 1);
     await install(own.slice(1).join(" "), own.includes("--force"), scriptArgs, {
       capture: !own.includes("--no-capture"),
+      // D2: backups are off unless the user opts in; a captured before-image makes restore reachable.
+      backups: own.includes("--backup") ? { ...DEFAULT_BACKUP_POLICY, enabled: true } : undefined,
     });
     break;
   }
@@ -107,6 +110,9 @@ function help(): void {
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
   log(`\t              uninstall: remove owned paths even when their fingerprint changed or is shared`);
   log(`\t--no-capture  install: run the installer without attaching a capture window`);
+  log(
+    `\t--backup      install: capture before-images of overwritten or deleted files so uninstall can restore them (off by default)`,
+  );
   log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
   log(`\t--yes         uninstall: skip the confirmation prompt`);
   log(`\t--            install: every flag after this goes to the install script itself`);

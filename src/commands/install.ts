@@ -1,4 +1,5 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, Diff, RecordV3 } from "../types";
+import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
 import type { BoundedSessionResult, SessionCoverage } from "../lib/session";
 import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
@@ -7,7 +8,6 @@ import { extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/util
 import { formatCoverage, runBoundedSession } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
-import type { NormalizedEffects } from "../lib/capture/normalize";
 import type { Platform } from "../lib/platform";
 import { VerifiedUninstallPlanner } from "../lib/uninstall-planner";
 import { captureBackendFor } from "../lib/capture/current";
@@ -27,6 +27,11 @@ export type InstallOptions = {
   backend?: CaptureBackend;
   /** Observation roots override (D3); defaults to the platform's bounded install roots. */
   roots?: AbsolutePath[];
+  /**
+   * Before-image backup policy (D2); off by default. When enabled, pre-existing file contents are
+   * captured (within the size limit) and stored so uninstall can restore them.
+   */
+  backups?: BackupPolicy;
   /** Clock; injectable so a test can pin `installedAt` and the window timestamps. */
   now?: () => number;
 };
@@ -38,6 +43,7 @@ export async function install(
   options: InstallOptions = {},
 ): Promise<void> {
   const clock = options.now ?? Date.now;
+  const backups = options.backups ?? DEFAULT_BACKUP_POLICY;
 
   if (!url) {
     log("Paste the install command (curl ... | bash):");
@@ -60,7 +66,7 @@ export async function install(
     process.exit(1);
   }
 
-  const storage = new FileStorage();
+  const storage = new FileStorage({ backups });
   let records: RecordV3[];
   try {
     records = await storage.loadRecords();
@@ -103,14 +109,17 @@ export async function install(
   // The installer runs inside a bounded capture window. With capture on, the journal is the sole
   // effects source, so no global snapshot runs. `--no-capture` (or a backend that cannot attach)
   // falls back to the legacy snapshot/diff, whose hash-less entries uninstall treats as unverified.
-  const window = await observeInstall(platform, script, scriptArgs, options);
+  const window = await observeInstall(platform, script, scriptArgs, options, backups);
   log(
     window.coverage
       ? `observed the install with ${formatCoverage(window.coverage)}`
       : "capture disabled for this install; no observation window was recorded",
   );
 
-  const effects = buildEffects(window, caseSensitive);
+  const effects = buildEffects(window, caseSensitive, backups);
+  // Store the before-image bytes the window captured, then drop any restore claim storage did not
+  // actually land, so the record never advertises a blob `getBlob` cannot return (D2).
+  await storeBeforeImages(effects, window.journal, storage, backups);
 
   // The tool name comes from the executable the install actually put on disk, not the URL or a
   // prompt; when the URL is already tracked, keep the name that install used rather than re-deriving.
@@ -175,6 +184,7 @@ async function observeInstall(
   script: string,
   scriptArgs: string[],
   options: InstallOptions,
+  backups: BackupPolicy,
 ): Promise<InstallWindow> {
   if (!(options.capture ?? true)) {
     const before = snapshot();
@@ -190,6 +200,7 @@ async function observeInstall(
       pid: process.pid,
       privilege: processPrivilege(),
       roots: options.roots ?? installObservationRoots(platform),
+      backups,
       run: () => runInstaller(script, scriptArgs),
     });
   } catch (error) {
@@ -204,9 +215,15 @@ async function observeInstall(
 }
 
 /** Normalizes the captured journal into effects; a fallback diff maps to hash-less legacy entries. */
-function buildEffects(window: InstallWindow, caseSensitive: boolean): NormalizedEffects {
+function buildEffects(window: InstallWindow, caseSensitive: boolean, backups: BackupPolicy): NormalizedEffects {
   if (window.journal) {
-    return normalizeJournal({ journal: window.journal, backups: DEFAULT_BACKUP_POLICY, caseSensitive });
+    return normalizeJournal({
+      journal: window.journal,
+      backups,
+      caseSensitive,
+      // Restorable only for bytes the window actually captured; anything else stays detect-only.
+      availableBeforeImages: new Set(window.journal.beforeImages?.keys() ?? []),
+    });
   }
 
   const changes = window.fallback ?? { added: [], edited: [], deleted: [] };
@@ -216,6 +233,31 @@ function buildEffects(window: InstallWindow, caseSensitive: boolean): Normalized
     deleted: changes.deleted.map((path) => ({ path })),
     diagnostics: [],
   };
+}
+
+/**
+ * Persists the before-image bytes the capture window collected and drops any restore claim whose
+ * blob was not actually stored, so a record never advertises a restore `getBlob` cannot perform
+ * (D2, plan section 9 item 5). Off by default: with backups disabled there is nothing captured.
+ */
+async function storeBeforeImages(
+  effects: NormalizedEffects,
+  journal: Journal | undefined,
+  storage: FileStorage,
+  backups: BackupPolicy,
+): Promise<void> {
+  const images = journal?.beforeImages;
+  for (const entry of [...effects.mutated, ...effects.deleted]) {
+    const id = entry.beforeBlob;
+    if (id === undefined) continue;
+    const bytes = backups.enabled ? images?.get(id) : undefined;
+    if (bytes === undefined) {
+      delete entry.beforeBlob;
+      continue;
+    }
+    const stored = await storage.captureBeforeImage(bytes);
+    if (stored === undefined || stored.id !== id) delete entry.beforeBlob;
+  }
 }
 
 /** Builds the record's capture info; a non-zero installer exit is labeled partial (D6). */
