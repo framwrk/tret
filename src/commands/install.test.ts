@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -68,11 +68,25 @@ printf '#!/bin/sh\\necho hometool\\n' > "$HOME/.tool/bin/hometool"
 chmod +x "$HOME/.tool/bin/hometool"
 `;
 
+// A `bun install -g` shape: a shared global manifest/lockfile/node_modules plus a bin shim. The
+// shared global state must not be owned, and the shim must mark the record as a managed package so
+// uninstall delegates to the manager instead of deleting state every other global install shares.
+const BUN_GLOBAL_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.bun/install/global/node_modules/@acme/tool" "$HOME/.bun/bin"
+printf '{"dependencies":{"@acme/tool":"^1.0.0"}}\\n' > "$HOME/.bun/install/global/package.json"
+printf 'lockfile\\n' > "$HOME/.bun/install/global/bun.lock"
+printf '#!/usr/bin/env node\\nconsole.log(1)\\n' > "$HOME/.bun/install/global/node_modules/@acme/tool/cli.js"
+chmod +x "$HOME/.bun/install/global/node_modules/@acme/tool/cli.js"
+ln -s ../install/global/node_modules/@acme/tool/cli.js "$HOME/.bun/bin/acmetool"
+`;
+
 type StoredRecord = {
   name: string;
   source: string;
   capture: { completeness: string; segments: { kind: string; partialReason?: string }[] };
-  owned: { path: string; installedHash?: string }[];
+  owned: { path: string; kind?: string; installedHash?: string }[];
+  managedBy?: { manager: string; package: string };
 };
 
 function readStore(home: string): { version: number; records: StoredRecord[] } {
@@ -167,6 +181,28 @@ describe("install -> list -> uninstall", () => {
       expect(await runCli(["uninstall", "hometool", "--yes"], home)).toBe(0);
       expect(existsSync(join(home, ".toolrc"))).toBe(false);
       expect(existsSync(join(home, ".tool", "bin", "hometool"))).toBe(false);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("does not own shared bun global state and marks the install as a managed package", async () => {
+    const home = makeHome();
+    // Bun and its shared state already exist; only the global manifest/shim are new, so the parent
+    // directories are not owned and only the shim can be recorded.
+    mkdirSync(join(home, ".bun", "bin"), { recursive: true });
+    mkdirSync(join(home, ".bun", "install"), { recursive: true });
+    const server = serve(BUN_GLOBAL_SCRIPT);
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "acmetool");
+      expect(record).toBeDefined();
+      expect(record?.owned.some((entry) => entry.path === join(home, ".bun", "bin", "acmetool"))).toBe(true);
+      // The shared global directory, manifest, and lockfile are never owned.
+      const ownedPaths = record?.owned.map((entry) => entry.path) ?? [];
+      expect(ownedPaths.some((path) => path.includes(".bun/install/global"))).toBe(false);
+      expect(record?.managedBy).toEqual({ manager: "bun", package: "@acme/tool" });
     } finally {
       await server.stop();
     }
