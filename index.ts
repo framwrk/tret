@@ -32,7 +32,9 @@ switch (command) {
     const separator = args.indexOf("--");
     const own = separator === -1 ? args : args.slice(0, separator);
     const scriptArgs = separator === -1 ? [] : args.slice(separator + 1);
-    await install(own.slice(1).join(" "), own.includes("--force"), scriptArgs, !own.includes("--no-capture"));
+    await install(own.slice(1).join(" "), own.includes("--force"), scriptArgs, {
+      capture: !own.includes("--no-capture"),
+    });
     break;
   }
 
@@ -44,11 +46,11 @@ switch (command) {
 
   case "show":
   case "list":
-    list();
+    await list();
     break;
 
   case "find":
-    find(args[1]);
+    await find(args[1]);
     break;
 
   case "update":

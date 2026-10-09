@@ -51,13 +51,13 @@ To remove the Tret binary itself, run `curl -fsSL https://tret.framwrk.com/scrip
 
 ## Usage
 
-| Command                                          | Purpose                                                                          |
-| ------------------------------------------------ | -------------------------------------------------------------------------------- |
+| Command                                          | Purpose                                                                                              |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `tret install <URL>` (`add`)                     | Fetch the install script at the URL, run it in a bounded capture window, then record what it changed |
-| `tret uninstall <tool_name>` (`remove`, `unadd`) | Remove the files the tool's install owns, after verifying their fingerprints     |
-| `tret list` (`show`)                             | List every tool installed with Tret, with its capture completeness               |
-| `tret find <tool_name>`                          | Adopt an already-installed command and record the files it owns                  |
-| `tret update`                                    | Update Tret to the latest release                                                |
+| `tret uninstall <tool_name>` (`remove`, `unadd`) | Remove the files the tool's install owns, after verifying their fingerprints                         |
+| `tret list` (`show`)                             | List every tool installed with Tret, with its capture completeness                                   |
+| `tret find <tool_name>`                          | Adopt an already-installed command and record the files it owns                                      |
+| `tret update`                                    | Update Tret to the latest release                                                                    |
 
 `install` also takes `--force` (uninstall the tool first, then reinstall it from a clean capture) and `--no-capture` (run the installer without attaching a capture window). Anything after `--` passes to the install script itself (`tret install <URL> -- --skip-browser`). `uninstall` takes `--dry-run` to preview the removal and `--yes` to skip the confirmation prompt.
 
@@ -115,13 +115,9 @@ Linux provides the complete/partial tiers through kernel and process tracing. ma
 
 ## Backups and privacy
 
-Tret stores paths and content **hashes** by default; it does **not** copy file contents. Before-image blobs are **off by default** and enabled only by explicit opt-in, because prior config files can contain secrets.
+Tret stores paths and content **hashes** by default; it does **not** copy file contents. Before-image blobs are **off by default**, because prior config files can contain secrets.
 
-With backups disabled, a record still supports detection, verification, and logging, and is marked non-restorable. With backups enabled:
-
-- Blobs are stored under `~/.tret/objects/` with restrictive permissions and atomic writes.
-- Blobs are content-addressed and deduplicated, with a configurable size limit; files over the limit or unreadable are recorded as mutations but not claimed restorable.
-- Garbage collection removes only blobs no record references.
+With backups disabled, a record still supports detection, verification, and logging, and is marked non-restorable. The storage layer implements a bounded, private, content-addressed opt-in (owner-only `~/.tret/objects/`, atomic writes, deduplication, a size limit, and reference-aware garbage collection), but `tret install` does not yet expose a flag or config for it, so restore is not reachable from the shipped commands.
 
 Tret never silently restores over a file that changed after installation.
 
