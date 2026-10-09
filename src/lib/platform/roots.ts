@@ -14,9 +14,13 @@ export type ObservationRootsOptions = {
 
 /**
  * Expands a platform table into the bounded absolute roots a capture session observes (D3). This is
- * the table's absolute `scopeRoots` plus its home-relative `searchRootsInHome` and shell config files,
- * with optional user additions/removals. Roots are sorted and de-duplicated so a journal is
+ * the table's absolute `scopeRoots` plus its home-relative `captureRootsInHome` and shell config
+ * files, with optional user additions/removals. Roots are sorted and de-duplicated so a journal is
  * deterministic. The table is the bound: there is no other exclusion list here.
+ *
+ * `captureRootsInHome` is deliberately narrower than `searchRootsInHome`: `tret find` searches every
+ * tool directory to adopt files by hand, while capture stays off roots that churn without an
+ * installer (see the macOS table and `docs/rewrite/macos-capture.md`).
  */
 export function observationRoots(platform: Platform, options: ObservationRootsOptions = {}): AbsolutePath[] {
   const home = options.home ?? Bun.env.HOME;
@@ -27,7 +31,7 @@ export function observationRoots(platform: Platform, options: ObservationRootsOp
     if (config.scope === "absolute") roots.add(config.path);
     else if (home) roots.add(`${home}/${config.path}`);
   }
-  if (home) for (const relative of platform.searchRootsInHome) roots.add(`${home}/${relative}`);
+  if (home) for (const relative of platform.captureRootsInHome) roots.add(`${home}/${relative}`);
   for (const path of options.include ?? []) roots.add(path);
   for (const path of options.exclude ?? []) roots.delete(path);
 

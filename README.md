@@ -112,7 +112,7 @@ Every record carries a `capture.backend` and a `capture.completeness` label, and
 
 - **`complete`** — a journal or tracer observed the install's process tree end to end, so attribution is proven rather than inferred.
 - **`partial`** — the installer escalated privileges, daemonized, or otherwise escaped the observed tree; some changes may be unattributed, and Tret says so.
-- **`heuristic`** — no tracer was available, so Tret compared scoped snapshots and content hashes. Attribution is inferred and may miss detached processes or background churn.
+- **`heuristic`** — no tracer was available, so Tret compared scoped snapshots and content hashes. Attribution is inferred and may miss detached processes or background churn. The macOS scope is curated to install surfaces (not the volatile `~/Library` trees) and skips known database/journal churn shapes, but unrelated writes inside scope are still attributed.
 
 Linux provides the complete/partial tiers through kernel and process tracing. macOS has no unprivileged, process-attributing tracer, so it always reports `heuristic`; Tret never claims completeness the backend cannot prove. The record format is backend-neutral, so a future opt-in tracer can produce the same records without a migration.
 
@@ -156,7 +156,7 @@ Existing `find` records and their URL/hash semantics are preserved.
 ## Unsupported cases and limits
 
 - **OS/arch:** Windows and CPUs other than `arm64`/`x64` are unsupported; the install script and update check stop with a message.
-- **macOS attribution:** without an Apple-granted tracer entitlement, Tret can only infer ownership from scoped snapshots, and reports `heuristic`.
+- **macOS attribution:** without an Apple-granted tracer entitlement, Tret can only infer ownership from scoped snapshots, and reports `heuristic`. The scope is trimmed to install surfaces and skips known database/journal churn shapes, so volatile `~/Library` trees are not mistaken for installer writes.
 - **Daemonized or privilege-escalated descendants:** a process that detaches or changes user during install can escape the capture window; Tret labels the record `partial` instead of `complete`.
 - **Backup coverage:** with `--backup`, the macOS heuristic backend captures before-images of pre-existing files under the size limit; the Linux tracer records hashes but not content yet, so `--backup` installs there stay detect-only. Files that exceed the size limit or cannot be read are recorded but not restorable; files written through `mmap` on some backends and changes on network filesystems may not appear in a journal.
 - **Privileged installs:** Tret supports installers that use `sudo`, records the install's privilege, and makes uninstall sudo-aware for root-owned entries. It never escalates on your behalf.
