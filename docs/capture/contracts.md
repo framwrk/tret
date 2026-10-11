@@ -6,7 +6,7 @@ behavior is preserved behind them. It does not implement capture, storage, or un
 not change runtime behavior. The files here are consumed by later phases; the running `install`,
 `uninstall`, `list`, and `find` commands still use the pre-rewrite code paths.
 
-The decisions referenced below (`D1`–`D10`) live in the Decisions log of `REWRITE_PLAN.md`.
+The decisions referenced below (`D1`–`D10`) live in the Decisions log of `docs/capture/plan.md`.
 
 ## Where each contract lives
 
@@ -59,7 +59,7 @@ tracer and the labeled macOS heuristic fallback produce the same shape (D1, D7).
   then `start`/`stop` to collect a journal. It records every `start()` call for assertions.
 
 The Phase 4 macOS implementation (`MacosHeuristicCaptureBackend`, `src/lib/capture/macos/`) implements
-this interface as a labeled heuristic fallback; see `docs/rewrite/macos-capture.md` for its scope,
+this interface as a labeled heuristic fallback; see `docs/capture/macos-capture.md` for its scope,
 hashing policy, and coverage limits.
 
 ### Journal events (`src/lib/capture/events.ts`)

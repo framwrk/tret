@@ -18,7 +18,7 @@
  * over `read(2)`. The helper does the kernel decoding and emits the same event shape the strace
  * parser produces, so the backend, reconstruction and normalization are shared (plan section 8).
  *
- * Coverage notes (also documented in docs/rewrite/linux-capture.md):
+ * Coverage notes (also documented in docs/capture/linux-capture.md):
  * - Move pairing matches FAN_MOVED_FROM/FAN_MOVED_TO FIFO within a read buffer, since fanotify does
  *   not expose a rename cookie; an unmatched move degrades to an unlink/create pair.
  * - A deleted node cannot be stat(2)ed, so FAN_DELETE is reported as an `unlink`; directory removal

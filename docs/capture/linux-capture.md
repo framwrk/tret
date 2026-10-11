@@ -94,7 +94,7 @@ Anonymous `mmap` allocations are filtered and do **not** lower completeness, so 
 startup is not reported as partial. The fanotify helper cannot see mmap writes either and reports
 queue overflow (`@loss`) as a separate reason.
 
-The `docs/rewrite/contracts.md` diagnostic codes are reused end to end: `coverage` (from
+The `docs/capture/contracts.md` diagnostic codes are reused end to end: `coverage` (from
 normalization reading `completeness`), `unsupported`, `temp-rename`, `rename`, `create-delete`.
 
 ## Completeness rules
