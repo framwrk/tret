@@ -12,7 +12,7 @@ export type MacosScopeOptions = ObservationRootsOptions;
  * macOS this is the table's absolute `scopeRoots` plus its home-relative `captureRootsInHome` and home
  * shell config files (the plan's fallback scope, D3). The capture roots are curated separately from
  * `tret find`'s search roots so volatile `~/Library` subtrees are not scanned: see the macOS table and
- * `docs/rewrite/macos-capture.md`. There is no other exclusion list here: the table is the bound, and
+ * `docs/capture/macos-capture.md`. There is no other exclusion list here: the table is the bound, and
  * it is revisited with fixtures rather than padded with skips. Roots are sorted and de-duplicated so a
  * journal is deterministic.
  */

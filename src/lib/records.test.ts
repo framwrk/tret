@@ -32,7 +32,7 @@ afterEach(() => {
   process.env.HOME = HOME_BACKUP;
 });
 
-describe("legacy v2 writers are disabled (B3/S6)", () => {
+describe("legacy v2 writers are disabled", () => {
   test("a legacy write after a v3 migration cannot downgrade or corrupt the file", async () => {
     const home = mkdtempSync(join(tmpdir(), "tret-test-"));
     process.env.HOME = home;

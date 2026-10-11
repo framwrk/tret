@@ -4,14 +4,14 @@ import type { MutatedEntry, OwnedEntry, RecordFileV3, RecordV3, ToolRecord } fro
 //
 // The pre-rewrite v2 writers (`saveRecord`/`removeRecord`) are **disabled**: version 3 is the only
 // format any code path may write, so a late legacy call can never drop a migrated file back to v2
-// and mix record shapes (B3/S6). Every persisted record goes through `FileStorage`. The pure
+// and mix record shapes. Every persisted record goes through `FileStorage`. The pure
 // migration functions below are retained, because `FileStorage` reads v2 files through them.
 //
 // Migration is a pure transformation: it reads no files and writes nothing. Callers persist the
 // result, so a malformed file throws instead of producing an empty one, and no entry is dropped or
 // given restore capability the v2 record never had.
 
-/** Raised when a retired pre-rewrite v2 writer is invoked; nothing may write v2 any more (B3). */
+/** Raised when a retired pre-rewrite v2 writer is invoked; nothing may write v2 any more. */
 export class LegacyRecordWriteError extends Error {
   constructor(name: string) {
     super(`refusing to write the legacy v2 record for ${name}; tret persists version 3 records only`);
@@ -28,7 +28,7 @@ export function saveRecord(record: ToolRecord): never {
   throw new LegacyRecordWriteError(record.name);
 }
 
-/** Disabled pre-rewrite v2 writer; removal by name is now `FileStorage.removeRecord(id)` (B3). */
+/** Disabled pre-rewrite v2 writer; removal by name is now `FileStorage.removeRecord(id)`. */
 export function removeRecord(name: string): never {
   throw new LegacyRecordWriteError(name);
 }

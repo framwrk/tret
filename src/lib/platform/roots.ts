@@ -20,7 +20,7 @@ export type ObservationRootsOptions = {
  *
  * `captureRootsInHome` is deliberately narrower than `searchRootsInHome`: `tret find` searches every
  * tool directory to adopt files by hand, while capture stays off roots that churn without an
- * installer (see the macOS table and `docs/rewrite/macos-capture.md`).
+ * installer (see the macOS table and `docs/capture/macos-capture.md`).
  */
 export function observationRoots(platform: Platform, options: ObservationRootsOptions = {}): AbsolutePath[] {
   const home = options.home ?? Bun.env.HOME;

@@ -163,7 +163,7 @@ export function fileStampChanged(before: ScopedNode, after: ScopedNode): boolean
 /**
  * Files whose content must be hashed at stop: created files and files whose stamps changed. The
  * fallback deliberately does not hash at start, so a plain edit keeps no before-hash and is recorded
- * as a non-restorable mutation (see `docs/rewrite/macos-capture.md`).
+ * as a non-restorable mutation (see `docs/capture/macos-capture.md`).
  */
 export function filesToHash(before: ScopedSnapshot, after: ScopedSnapshot): AbsolutePath[] {
   const paths: AbsolutePath[] = [];

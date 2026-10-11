@@ -1,7 +1,7 @@
 # macOS capture backend (Phase 4)
 
 This document records the macOS capture backend shipped in Phase 4 and the coverage limits it
-labels. It is the implementation of decision **D1** in the `REWRITE_PLAN.md` Decisions log: no
+labels. It is the implementation of decision **D1** in the `docs/capture/plan.md` Decisions log: no
 unprivileged macOS mechanism attributes filesystem changes to a process tree, so macOS ships the
 **labeled heuristic fallback** (`capture.backend: "macos-heuristic"`,
 `capture.completeness: "heuristic"`) behind the same `CaptureBackend` interface a tracer would use.
@@ -10,7 +10,7 @@ Nothing here requires root, an Apple-granted entitlement, SIP changes, or code i
 
 ## Why not a tracer
 
-Phase 1's "macOS capture feasibility" table in `REWRITE_PLAN.md` evaluated every candidate. The
+Phase 1's "macOS capture feasibility" table in `docs/capture/plan.md` evaluated every candidate. The
 short version, with the limit that disqualifies each as a general backend:
 
 | Mechanism                      | Limit                                                                                                                                     |

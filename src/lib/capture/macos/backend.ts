@@ -34,7 +34,7 @@ export type MacosHeuristicOptions = {
  * claim attribution. It takes scoped snapshots of the platform table's roots before and after the
  * install window, hashes files whose stamps changed, and reports `completeness: "heuristic"`. It
  * requires no root and no Apple entitlement, and it still produces the same `CaptureBackend` journal
- * a future opt-in tracer would. See `docs/rewrite/macos-capture.md` for the coverage limits.
+ * a future opt-in tracer would. See `docs/capture/macos-capture.md` for the coverage limits.
  */
 export class MacosHeuristicCaptureBackend implements CaptureBackend {
   readonly name = MACOS_HEURISTIC_BACKEND;

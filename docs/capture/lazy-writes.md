@@ -1,7 +1,7 @@
 # Lazy writes and the bounded install session (Phase 8)
 
 This document records the Phase 8 lazy-write workflow and the bounded install session that replaces
-the implicit `--help` first run. It implements decision **D5** in the `REWRITE_PLAN.md` Decisions log
+the implicit `--help` first run. It implements decision **D5** in the `docs/capture/plan.md` Decisions log
 and removes the pre-rewrite behavior described in plan section 5.
 
 The plan's rule is: **do not silently run arbitrary installed tools as the only way to discover their
