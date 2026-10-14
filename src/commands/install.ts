@@ -98,12 +98,7 @@ export async function install(
     process.exit(1);
   }
 
-  // A --force reinstall is an uninstall then install: the old tool and its record go first through
-  // the same verified planner an explicit uninstall uses, so no stale owned path survives it.
-  if (existing && force) {
-    await removePrevious(storage, existing, records);
-  }
-
+  // Fetch and validate the replacement before a forced reinstall removes the current install.
   const script = await fetchScript(url);
   if (script === undefined) {
     log("Error");
@@ -114,6 +109,12 @@ export async function install(
   const scriptSha256 = new Bun.CryptoHasher("sha256").update(script).digest("hex");
   if (existing?.scriptSha256 && existing.scriptSha256 !== scriptSha256) {
     log(`the script at ${url} changed since ${existing.name} was last installed`);
+  }
+
+  // A --force reinstall is an uninstall then install: the old tool and its record go first through
+  // the same verified planner an explicit uninstall uses, so no stale owned path survives it.
+  if (existing && force) {
+    await removePrevious(storage, existing, records);
   }
 
   const platform = currentPlatform();
@@ -135,18 +136,21 @@ export async function install(
   // prompt; when the URL is already tracked, keep the name that install used rather than re-deriving.
   const executable = pickExecutable(effects.owned.map((entry) => entry.path));
   const name = existing?.name ?? executable?.split("/").pop();
-  if (!executable || !name) {
+  const missingExecutable = executable === undefined;
+  const canRecordWithoutExecutable = existing !== undefined && force;
+  if (!name || (missingExecutable && !canRecordWithoutExecutable)) {
     log("Error");
     log(`\tinstall script added no executable command: ${url}`);
     process.exit(1);
   }
 
-  const failed = window.exitCode !== 0;
+  const failureReason = missingExecutable ? "installer added no executable command" : undefined;
+  const failed = window.exitCode !== 0 || missingExecutable;
   // A global package-manager install keeps its executable as a bin shim into shared state; record
   // that so uninstall delegates to the manager instead of touching the shared node_modules/manifest.
   // The shared tree itself is never owned: npm's prefix `lib` and bun's global root are shared by
   // every global install, so the capture drops what sits under the detected root.
-  const managedBy = detectManagedPackage(executable, effects.owned);
+  const managedBy = executable === undefined ? undefined : detectManagedPackage(executable, effects.owned);
   if (managedBy !== undefined) {
     effects.owned = withoutManagedGlobalPaths(effects.owned, managedBy, Bun.env.HOME);
     effects.mutated = withoutManagedGlobalPaths(effects.mutated, managedBy, Bun.env.HOME);
@@ -156,7 +160,7 @@ export async function install(
   // A first-party managed install (a marker file under an install root) keeps a `node_modules`
   // payload capture skips everywhere; own the launcher and the root's ancestors, but leave the root
   // and its payload to a delegated recursive removal so uninstall cannot strand the record on it.
-  const managedInstall = detectManagedInstall(executable, effects.owned);
+  const managedInstall = executable === undefined ? undefined : detectManagedInstall(executable, effects.owned);
   if (managedInstall !== undefined) {
     effects.owned = withoutManagedInstallPaths(effects.owned, managedInstall);
     effects.mutated = withoutManagedInstallPaths(effects.mutated, managedInstall);
@@ -174,9 +178,11 @@ export async function install(
     source: "install",
     url,
     installedAt: new Date(clock()).toISOString(),
-    executable,
+    // An empty path is the v3 representation for a partial record with no discoverable executable;
+    // `list` shows it as partial and `uninstall <name>` can still remove its captured effects.
+    executable: executable ?? "",
     scriptSha256,
-    capture: buildCapture(window, failed, clock),
+    capture: buildCapture(window, failed, clock, failureReason),
     privilege: processPrivilege(),
     caseSensitive,
     owned: effects.owned,
@@ -188,9 +194,10 @@ export async function install(
   await storage.saveRecord(record);
 
   if (failed) {
-    // D6: a wrong exit keeps a labeled partial record instead of silently undoing the changes.
+    // A non-zero exit or missing executable keeps observed changes in a labeled partial record.
     log("Error");
-    log(`\tinstall script exited with code ${window.exitCode}: ${url}`);
+    if (window.exitCode !== 0) log(`\tinstall script exited with code ${window.exitCode}: ${url}`);
+    if (missingExecutable) log(`\tinstall script added no executable command: ${url}`);
     log(`\tkept a partial record for ${name}; inspect it with tret list, remove it with tret uninstall ${name}`);
     process.exit(1);
   }
@@ -336,8 +343,13 @@ async function storeBeforeImages(
   }
 }
 
-/** Builds the record's capture info; a non-zero installer exit is labeled partial (D6). */
-function buildCapture(window: InstallWindow, failed: boolean, clock: () => number): CaptureInfo {
+/** Builds the record's capture info; a failed install or missing executable is labeled partial (D6). */
+function buildCapture(
+  window: InstallWindow,
+  failed: boolean,
+  clock: () => number,
+  failureReason?: string,
+): CaptureInfo {
   const at = new Date(clock()).toISOString();
   const segment: CaptureSegment = window.coverage
     ? { ...window.coverage.segment }
@@ -346,7 +358,11 @@ function buildCapture(window: InstallWindow, failed: boolean, clock: () => numbe
 
   if (failed) {
     completeness = "partial";
-    segment.partialReason = combineReasons(segment.partialReason, `installer exited with code ${window.exitCode}`);
+    const reasons = [
+      ...(window.exitCode === 0 ? [] : [`installer exited with code ${window.exitCode}`]),
+      ...(failureReason === undefined ? [] : [failureReason]),
+    ];
+    if (reasons.length > 0) segment.partialReason = combineReasons(segment.partialReason, reasons.join("; "));
   }
 
   return {

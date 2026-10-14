@@ -79,7 +79,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 | `tret forget <tool_name>`                        | Stop tracking a tool without touching its files                                                      |
 | `tret update`                                    | Update Tret to the latest release                                                                    |
 
-- `install --force`: uninstall the tool first, then reinstall it from a clean capture.
+- `install --force`: fetch and validate the replacement script, then uninstall the tool and reinstall it from a clean capture.
 - `install --no-capture`: run the installer without a capture window.
 - `install --backup`: save before-images so overwritten or deleted files can be restored on uninstall.
 - `install <URL> -- <args>`: anything after `--` goes to the install script (`tret install <URL> -- --skip-browser`).
@@ -96,7 +96,9 @@ tret install https://example.com/install.sh
 tret install
 ```
 
-Tret gets the tool's name from the executable that the installer puts on disk. The file in a `bin` folder is ranked first, otherwise the first executable it added. The tool's own installer output passes through to your terminal. If the installer exits non-zero, Tret keeps a partial record rather than silently undoing anything, and tells you how to inspect or remove the changes.
+Tret gets the tool's name from the executable that the installer puts on disk. The file in a `bin` folder is ranked first, otherwise the first executable it added. The tool's own installer output passes through to your terminal. If the installer exits non-zero after producing a discoverable executable, Tret keeps a partial record rather than silently undoing anything, and tells you how to inspect or remove the changes.
+
+For `install --force`, a failed download leaves the current install and its record untouched. Once the old install has been removed, Tret does not roll it back: if the replacement exits non-zero or creates no discoverable executable, Tret saves a partial recovery record under the old tool name with the changes the capture observed. A no-executable record is shown as `partial` with no binary. Use `tret list` to inspect it and `tret uninstall <name>` to remove its recorded changes. Recovery is limited to observed changes; only before-images captured with `--backup` can be restored.
 
 Each install runs inside a bounded capture window. Tret prints a line describing it: the backend, whether coverage is `complete`, `partial`, or `heuristic`, the window's start and end, and how many events and roots were observed.
 
