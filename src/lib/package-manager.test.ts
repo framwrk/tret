@@ -4,6 +4,7 @@ import {
   detectManagedPackage,
   isManagedGlobalPath,
   managedGlobalRoot,
+  managedPackageRemovalScope,
   removeManagedPackage,
 } from "./package-manager";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
@@ -188,6 +189,7 @@ describe("managed global state", () => {
     const root = join(home, ".bun", "install", "global");
 
     expect(managedGlobalRoot(pkg, home)).toBe(root);
+    expect(managedPackageRemovalScope(pkg, home)).toBe(join(root, "node_modules", "@acme", "tool"));
     expect(isManagedGlobalPath(root, pkg, home)).toBe(true);
     expect(isManagedGlobalPath(join(root, "package.json"), pkg, home)).toBe(true);
     expect(isManagedGlobalPath(join(home, ".bun", "bin", "acmetool"), pkg, home)).toBe(false);

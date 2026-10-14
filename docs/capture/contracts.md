@@ -145,7 +145,11 @@ context can carry other records that claim the same paths (D4 shared ownership),
 subtree a recursive removal will clear (see `managedInstall` above). The planner treats each
 delegated root as already gone, so an owned ancestor directory that only held the root is still
 planned for removal instead of being reported `not-empty` against payload the record never owns.
-Applying the plan is Phase 7; a dry run and the real
+Each `remove` and `restore` action carries the filesystem state inspected when the plan was made.
+`force` may bypass a known file-hash or symlink-target mismatch already present at that point, as
+well as shared ownership; it does not make a missing/unreadable fingerprint or kind change
+removable. The applier rechecks the captured state immediately before each write or removal, after
+confirmation. A state change after planning is always kept, even with `force`. A dry run and the real
 uninstall share the same plan so they cannot diverge.
 
 ## Tests

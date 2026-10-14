@@ -103,10 +103,17 @@ function symlinkTarget(executable: AbsolutePath, owned: readonly OwnedEntry[]): 
  * manager. A record's own `globalRoot` (npm's machine-specific prefix) wins over the fixed default.
  * Tret never owns or removes anything at or under it.
  */
-export function managedGlobalRoot(pkg: ManagedPackage, home: AbsolutePath): AbsolutePath | undefined {
+export function managedGlobalRoot(pkg: ManagedPackage, home: AbsolutePath | undefined): AbsolutePath | undefined {
   if (pkg.globalRoot !== undefined) return pkg.globalRoot;
+  if (home === undefined) return undefined;
   const spec = MANAGERS[pkg.manager];
   return spec === undefined ? undefined : join(home, spec.globalRoot);
+}
+
+/** The package directory a managed-package removal delegates to its package manager. */
+export function managedPackageRemovalScope(pkg: ManagedPackage, home: AbsolutePath | undefined): AbsolutePath | undefined {
+  const root = managedGlobalRoot(pkg, home);
+  return root === undefined ? undefined : join(root, "node_modules", pkg.package);
 }
 
 /** True when `path` is shared package-manager state that belongs to no single tool. */
@@ -179,7 +186,10 @@ export async function removeManagedPackage(
     return { ok: false, skipped: false, detail: `${pkg.manager} is not a supported package manager` };
   }
 
-  const packageDir = join(root, "node_modules", pkg.package);
+  const packageDir = managedPackageRemovalScope(pkg, home);
+  if (packageDir === undefined) {
+    return { ok: false, skipped: false, detail: `${pkg.manager} is not a supported package manager` };
+  }
   if (!existsSync(packageDir)) return { ok: true, skipped: true, detail: `${pkg.package} is already absent` };
 
   const runner = options.runner ?? spawnRunner;

@@ -23,6 +23,7 @@ export type UninstallConflictReason =
   | "modified"
   | "shared-owner"
   | "diverged"
+  | "changed-after-plan"
   | "unreadable"
   /** A fingerprinted path recorded before the rewrite (`kind: "unknown"`) or without a hash; never removed (D4). */
   | "unverified"
@@ -38,20 +39,18 @@ export type UninstallDetectedKind = "mutated" | "deleted";
 
 /**
  * One planned uninstall step: `conflict` is actionable (it blocks completion until resolved or
- * forced), while `detected` is informational (a non-restorable change that is reported but never
- * blocks). `remove`, `restore`, and `skip` round out the shapes the planner emits.
+ * reconsidered in a new plan), while `detected` is informational (a non-restorable change that is
+ * reported but never blocks). `remove`, `restore`, and `skip` round out the shapes the planner emits.
  */
 export type UninstallAction =
-  | { action: "remove"; path: AbsolutePath; kind: OwnedKind }
+  | { action: "remove"; path: AbsolutePath; kind: OwnedKind; plannedState: UninstallVerification }
   | {
       action: "restore";
       path: AbsolutePath;
       kind: OwnedKind;
       beforeBlob: BlobId;
-      /** Whether the applier expects the path absent (a deletion) or holding the installed bytes (a mutation). */
-      expect?: "absent" | "installed";
-      /** For `expect: "installed"`, the hash the path must still match before it is overwritten. */
-      installedHash?: string;
+      /** Snapshot checked by the planner; the applier requires this exact state before writing. */
+      plannedState: UninstallVerification;
     }
   | { action: "skip"; path: AbsolutePath; reason: UninstallSkipReason }
   | { action: "detected"; path: AbsolutePath; kind: UninstallDetectedKind }
@@ -76,7 +75,11 @@ export type UninstallPlan = {
 export type UninstallPlanContext = {
   /** Other records that also claim paths, for shared-ownership detection (D4). */
   otherRecords?: RecordV3[];
-  /** Explicit user force past conflicts (D4). */
+  /**
+   * Explicit user force past known fingerprint mismatches and shared-owner conflicts (D4). A
+   * missing/unreadable fingerprint remains unverified, and force never overrides a later state
+   * change between planning and applying.
+   */
   force?: boolean;
   /** Reads the current state of a path; defaults to disk once the planner is implemented. */
   inspect?: (path: AbsolutePath) => UninstallVerification;
@@ -173,7 +176,8 @@ function claimedByOthers(records: RecordV3[], selfId: string): Set<AbsolutePath>
  * The real planner: it verifies every owned, mutated, and deleted path against current disk state
  * before emitting anything, keeps diverged or shared paths unless `force` says otherwise, removes
  * an owned directory only when this record's own removals leave it empty, and restores only from a
- * before-image that still matches the recorded installed state. It never touches disk.
+ * before-image that still matches the recorded installed state. Destructive actions retain the
+ * inspected state so the applier can reject changes made after this plan. It never touches disk.
  */
 export class VerifiedUninstallPlanner implements UninstallPlanner {
   constructor(
@@ -295,46 +299,38 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
       return;
     }
 
-    actions.push({ action: "remove", path: entry.path, kind: "directory" });
+    actions.push({ action: "remove", path: entry.path, kind: "directory", plannedState: snapshotState(verification) });
     gone.add(entry.path);
     if (sudoNeeded(verification)) markSudo();
   }
 }
 
-/** Plans one owned file: verified fingerprint removes it, a mismatch is kept unless forced. */
+/** Plans one owned file: force may bypass a known mismatch, but never an unavailable fingerprint. */
 function planFile(entry: OwnedEntry, verification: UninstallVerification, force: boolean): UninstallAction {
   if (verification.kind !== "file") {
     return { action: "conflict", path: entry.path, reason: "diverged" };
   }
   if (verification.hash === undefined || entry.installedHash === undefined) {
-    return force
-      ? { action: "remove", path: entry.path, kind: "file" }
-      : { action: "conflict", path: entry.path, reason: "unverified" };
+    return { action: "conflict", path: entry.path, reason: "unverified" };
   }
   if (verification.hash !== entry.installedHash) {
-    return force
-      ? { action: "remove", path: entry.path, kind: "file" }
-      : { action: "conflict", path: entry.path, reason: "modified" };
+    if (!force) return { action: "conflict", path: entry.path, reason: "modified" };
   }
-  return { action: "remove", path: entry.path, kind: "file" };
+  return { action: "remove", path: entry.path, kind: "file", plannedState: snapshotState(verification) };
 }
 
-/** Plans one owned symlink: the recorded target must match what `readlink` reports now. */
+/** Plans one owned symlink: force may bypass a known target mismatch, never an unknown target. */
 function planSymlink(entry: OwnedEntry, verification: UninstallVerification, force: boolean): UninstallAction {
   if (verification.kind !== "symlink") {
     return { action: "conflict", path: entry.path, reason: "diverged" };
   }
   if (entry.linkTarget === undefined || verification.linkTarget === undefined) {
-    return force
-      ? { action: "remove", path: entry.path, kind: "symlink" }
-      : { action: "conflict", path: entry.path, reason: "unverified" };
+    return { action: "conflict", path: entry.path, reason: "unverified" };
   }
   if (entry.linkTarget !== verification.linkTarget) {
-    return force
-      ? { action: "remove", path: entry.path, kind: "symlink" }
-      : { action: "conflict", path: entry.path, reason: "modified" };
+    if (!force) return { action: "conflict", path: entry.path, reason: "modified" };
   }
-  return { action: "remove", path: entry.path, kind: "symlink" };
+  return { action: "remove", path: entry.path, kind: "symlink", plannedState: snapshotState(verification) };
 }
 
 /**
@@ -359,7 +355,13 @@ function planMutation(
   if (installedHash !== undefined && verification.hash !== installedHash)
     return { action: "conflict", path, reason: "diverged" };
   if (installedHash === undefined) return { action: "conflict", path, reason: "unverified" };
-  return { action: "restore", path, kind: verification.kind ?? "file", beforeBlob, expect: "installed", installedHash };
+  return {
+    action: "restore",
+    path,
+    kind: verification.kind ?? "file",
+    beforeBlob,
+    plannedState: snapshotState(verification),
+  };
 }
 
 /** Plans one deletion: restore only while the path is still absent and a before-image exists. */
@@ -374,7 +376,12 @@ function planDeletion(
   // As with a mutation, a deletion without a before-image cannot be reversed; report it, don't block.
   if (beforeBlob === undefined) return { action: "detected", path, kind: "deleted" };
   if (verification.exists) return { action: "conflict", path, reason: "diverged" };
-  return { action: "restore", path, kind: "file", beforeBlob, expect: "absent" };
+  return { action: "restore", path, kind: "file", beforeBlob, plannedState: snapshotState(verification) };
+}
+
+/** Copies the state used for this decision so every destructive action is tied to its plan. */
+function snapshotState(verification: UninstallVerification): UninstallVerification {
+  return { ...verification };
 }
 
 /**
