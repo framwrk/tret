@@ -15,9 +15,9 @@ import {
   removeManagedPackage,
   withoutManagedGlobalPaths,
 } from "../lib/package-manager";
+import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import { FileStorage } from "../lib/store";
-import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 
 /** The shell-config work an uninstall may do, kept separate from the file plan. */
 type ShellCleanup = {
@@ -94,9 +94,10 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
 
   if (dryRun) {
     if (delegatedConflicts.length > 0) {
-      log(`uninstall ${name} is blocked by delegated-removal conflicts`);
+      log("Error");
       for (const conflict of delegatedConflicts) log(`\t${formatDelegatedRemovalConflict(conflict)}`);
-      return;
+      log(`\t${name} is blocked by delegated-removal conflicts; resolve the overlapping claim and retry`);
+      process.exit(1);
     }
     printDryRun(name, plan, shell, target.managedBy, managedInstall);
     return;
