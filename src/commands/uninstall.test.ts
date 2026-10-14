@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -133,6 +134,37 @@ describe("uninstall record lifecycle", () => {
     expect(readFileSync(churn, "utf8")).toBe("churn");
     expect(existsSync(gone)).toBe(false);
     // Nothing actionable remained, so the record is gone rather than reduced forever.
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("uninstall keeps a changed file unless --force is used", async () => {
+    const home = makeHome();
+    const file = join(home, "tool");
+    writeFileSync(file, "changed");
+    writeRecords(home, [record({ owned: [{ path: file, kind: "file", installedHash: sha256("installed") }] })]);
+
+    expect(await runCli(["uninstall", "mytool", "--yes"], home)).not.toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("changed");
+    expect(readRecords(home).records).toHaveLength(1);
+
+    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(0);
+    expect(existsSync(file)).toBe(false);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("uninstall keeps a changed symlink unless --force is used", async () => {
+    const home = makeHome();
+    const link = join(home, "tool-link");
+    symlinkSync("changed-target", link);
+    writeRecords(home, [record({ owned: [{ path: link, kind: "symlink", linkTarget: "installed-target" }] })]);
+
+    expect(await runCli(["uninstall", "mytool", "--yes"], home)).not.toBe(0);
+    expect(linkExists(link)).toBe(true);
+    expect(readlinkSync(link)).toBe("changed-target");
+    expect(readRecords(home).records).toHaveLength(1);
+
+    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(0);
+    expect(linkExists(link)).toBe(false);
     expect(readRecords(home).records).toHaveLength(0);
   });
 

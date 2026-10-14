@@ -84,6 +84,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 - `install --backup`: save before-images so overwritten or deleted files can be restored on uninstall.
 - `install <URL> -- <args>`: anything after `--` goes to the install script (`tret install <URL> -- --skip-browser`).
 - `uninstall --dry-run`: preview the removal without changing anything.
+- `uninstall --force`: allow removing files or symlinks with a known fingerprint mismatch already present when planning, and bypass shared-owner conflicts.
 - `uninstall --yes`: skip the confirmation prompt.
 
 ### Install a tool
@@ -108,7 +109,7 @@ tret install curl -fsSL https://example.com/install.sh | bash
 
 ### Uninstall a tool
 
-Run `tret uninstall <tool_name>` to remove a tool's files. It removes only files whose fingerprint still matches, restores files that have a before-image (captured with `--backup`), and keeps anything that diverged. It asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. Ordinary shared-path conflicts block until you pass `--force`; delegated-removal overlaps always block, including with `--force`. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
+Run `tret uninstall <tool_name>` to remove a tool's files. By default, a file is removed only while its recorded content hash matches, and a symlink only while its recorded target matches; divergent paths are kept. `--force` may remove an owned file or symlink when both fingerprints are known but already mismatch at planning time, and may bypass shared-owner conflicts. It does not make a missing or unreadable fingerprint removable or override a kind change. Each planned `remove` or `restore` action carries the state captured by the plan and is checked again immediately before it is applied, after confirmation. If that state changes between planning and apply, the path is kept even with `--force`; run uninstall again to review the new state. Ordinary shared-path conflicts block until you pass `--force`; delegated-removal overlaps always block, including with `--force`. Uninstall asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
 
 ### List installed tools
 
