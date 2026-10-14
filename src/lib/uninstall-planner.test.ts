@@ -469,22 +469,42 @@ describe("dry-run parity", () => {
     const dry = formatUninstallPlan(first, "dry-run");
     const real = formatUninstallPlan(first, "apply");
 
-    // Every action is enumerated in both, in the same order, with only the verb differing.
+    // Every action is enumerated in both, in the same order, with only the verb differing. The
+    // observed caveat leads the destructive lines, so a heuristic record is never shown as proven.
     expect(first.actions.map((action) => action.action)).toEqual(["remove", "conflict", "remove", "restore", "restore"]);
+    expect(first.confidence).toBe("observed");
     expect(dry).toEqual([
-      "would remove /h/dir/tool",
+      "note: these paths were only observed during a bounded window, not proven to come from the installer",
+      "would remove /h/dir/tool (observed, not proven)",
       "conflict /h/bin/changed (modified)",
-      "would remove /h/dir",
-      "would restore /h/rc",
-      "would restore /h/gone",
+      "would remove /h/dir (observed, not proven)",
+      "would restore /h/rc (observed, not proven)",
+      "would restore /h/gone (observed, not proven)",
     ]);
     expect(real).toEqual([
-      "remove /h/dir/tool",
+      "note: these paths were only observed during a bounded window, not proven to come from the installer",
+      "remove /h/dir/tool (observed, not proven)",
       "keep /h/bin/changed (modified)",
-      "remove /h/dir",
-      "restore /h/rc",
-      "restore /h/gone",
+      "remove /h/dir (observed, not proven)",
+      "restore /h/rc (observed, not proven)",
+      "restore /h/gone (observed, not proven)",
     ]);
+  });
+
+  test("a complete capture plans the same actions without the observed caveat", async () => {
+    const target = {
+      ...record(),
+      capture: { backend: "linux-fanotify", completeness: "complete" as const, segments: [] },
+      owned: [{ path: "/h/bin/tool", kind: "file" as const, installedHash: h("b") }],
+    };
+
+    const plan = await planFor(target, { "/h/bin/tool": { exists: true, kind: "file", hash: h("b") } });
+
+    expect(plan.confidence).toBe("proven");
+    expect(plan.actions).toEqual([
+      { action: "remove", path: "/h/bin/tool", kind: "file", plannedState: { exists: true, kind: "file", hash: h("b") } },
+    ]);
+    expect(formatUninstallPlan(plan, "dry-run")).toEqual(["would remove /h/bin/tool"]);
   });
 });
 
@@ -510,7 +530,14 @@ describe("uninstall planner contract", () => {
           { action: "detected", path: "/home/.mytool/churn", kind: "mutated" },
           { action: "conflict", path: "/home/.mytool/edited", reason: "modified" },
         ];
-        return { recordId: target.id, tool: target.name, actions, requiresSudo: false, incomplete: true };
+        return {
+          recordId: target.id,
+          tool: target.name,
+          actions,
+          confidence: "observed",
+          requiresSudo: false,
+          incomplete: true,
+        };
       },
     };
     const plan = await stub.plan(record());

@@ -623,3 +623,51 @@ describe("uninstall record lifecycle", () => {
     expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
   });
 });
+
+describe("uninstall ownership confidence", () => {
+  test("a heuristic record's destructive plan is labeled as observed, not proven", async () => {
+    const home = makeHome();
+    const binary = join(home, ".local", "bin", "mytool");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(binary, "installed");
+
+    writeRecords(home, [
+      record({ executable: binary, owned: [{ path: binary, kind: "file", installedHash: sha256("installed") }] }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--dry-run"], home);
+
+    expect(result.code).toBe(0);
+    // `log` writes to the terminal, not a piped stdout, so read the combined output.
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(output).toContain("note: these paths were only observed during a bounded window");
+    expect(output).toContain(`would remove ${binary} (observed, not proven)`);
+  });
+
+  test("a complete record's destructive plan carries no observed caveat", async () => {
+    const home = makeHome();
+    const binary = join(home, ".local", "bin", "mytool");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(binary, "installed");
+
+    writeRecords(home, [
+      record({
+        executable: binary,
+        capture: {
+          backend: "linux-fanotify",
+          completeness: "complete",
+          segments: [{ kind: "install", startedAt: "2026-10-09T00:00:00.000Z" }],
+        },
+        owned: [{ path: binary, kind: "file", installedHash: sha256("installed") }],
+      }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--dry-run"], home);
+
+    expect(result.code).toBe(0);
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(output).toContain(`would remove ${binary}`);
+    expect(output).not.toContain("only observed");
+    expect(output).not.toContain("(observed, not proven)");
+  });
+});
