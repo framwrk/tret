@@ -43,9 +43,10 @@ function serve(script: string): { url: string; stop: () => Promise<void> } {
   return serveResponses({ body: script });
 }
 
-function serveResponses(
-  ...responses: { body: string; status?: number; contentType?: string }[]
-): { url: string; stop: () => Promise<void> } {
+function serveResponses(...responses: { body: string; status?: number; contentType?: string }[]): {
+  url: string;
+  stop: () => Promise<void>;
+} {
   let requestCount = 0;
   const server = Bun.serve({
     port: 0,

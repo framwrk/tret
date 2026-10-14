@@ -1,6 +1,6 @@
 import type { AbsolutePath, RecordV3 } from "../types";
-import { managedPackageRemovalScope } from "./package-manager";
 import { resolve, sep } from "node:path";
+import { managedPackageRemovalScope } from "./package-manager";
 
 /** One record path that would be affected by a delegated removal. */
 export type DelegatedRemovalConflict = {
