@@ -114,7 +114,8 @@ function help(): void {
   log(`\t-h, --help    Show this help and exit`);
   log(`\t--version     Print the running version and exit`);
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
-  log(`\t              uninstall: remove owned paths despite fingerprint/shared-path conflicts`);
+  log(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
+  log(`\t              unverified paths and state changes after planning still block removal`);
   log(`\t              delegated-removal overlap always blocks, including with --force`);
   log(`\t--no-capture  install: run the installer without attaching a capture window`);
   log(

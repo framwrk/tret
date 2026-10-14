@@ -55,7 +55,14 @@ describe("VerifiedUninstallPlanner fingerprints", () => {
     const target = { ...record(), owned: [{ path: "/h/bin/tool", kind: "file" as const, installedHash: h("b") }] };
     const plan = await planFor(target, { "/h/bin/tool": { exists: true, kind: "file", hash: h("b") } });
 
-    expect(plan.actions).toEqual([{ action: "remove", path: "/h/bin/tool", kind: "file" }]);
+    expect(plan.actions).toEqual([
+      {
+        action: "remove",
+        path: "/h/bin/tool",
+        kind: "file",
+        plannedState: { exists: true, kind: "file", hash: h("b") },
+      },
+    ]);
     expect(plan.incomplete).toBe(false);
   });
 
@@ -71,8 +78,23 @@ describe("VerifiedUninstallPlanner fingerprints", () => {
     const target = { ...record(), owned: [{ path: "/h/bin/tool", kind: "file" as const, installedHash: h("b") }] };
     const plan = await planFor(target, { "/h/bin/tool": { exists: true, kind: "file", hash: h("d") } }, { force: true });
 
-    expect(plan.actions).toEqual([{ action: "remove", path: "/h/bin/tool", kind: "file" }]);
+    expect(plan.actions).toEqual([
+      {
+        action: "remove",
+        path: "/h/bin/tool",
+        kind: "file",
+        plannedState: { exists: true, kind: "file", hash: h("d") },
+      },
+    ]);
     expect(plan.incomplete).toBe(false);
+  });
+
+  test("force does not remove a file whose fingerprint is unavailable", async () => {
+    const target = { ...record(), owned: [{ path: "/h/bin/tool", kind: "file" as const }] };
+    const plan = await planFor(target, { "/h/bin/tool": { exists: true, kind: "file", hash: h("d") } }, { force: true });
+
+    expect(plan.actions).toEqual([{ action: "conflict", path: "/h/bin/tool", reason: "unverified" }]);
+    expect(plan.incomplete).toBe(true);
   });
 
   test("an owned path with no recorded hash is unverified, not removed", async () => {
@@ -100,10 +122,42 @@ describe("VerifiedUninstallPlanner fingerprints", () => {
   test("verifies a symlink by its recorded target, not the bytes it points at", async () => {
     const target = { ...record(), owned: [{ path: "/h/bin/link", kind: "symlink" as const, linkTarget: "/h/tool" }] };
     const match = await planFor(target, { "/h/bin/link": { exists: true, kind: "symlink", linkTarget: "/h/tool" } });
-    expect(match.actions).toEqual([{ action: "remove", path: "/h/bin/link", kind: "symlink" }]);
+    expect(match.actions).toEqual([
+      {
+        action: "remove",
+        path: "/h/bin/link",
+        kind: "symlink",
+        plannedState: { exists: true, kind: "symlink", linkTarget: "/h/tool" },
+      },
+    ]);
 
     const mismatch = await planFor(target, { "/h/bin/link": { exists: true, kind: "symlink", linkTarget: "/h/other" } });
     expect(mismatch.actions).toEqual([{ action: "conflict", path: "/h/bin/link", reason: "modified" }]);
+
+    const forced = await planFor(
+      target,
+      { "/h/bin/link": { exists: true, kind: "symlink", linkTarget: "/h/other" } },
+      { force: true },
+    );
+    expect(forced.actions).toEqual([
+      {
+        action: "remove",
+        path: "/h/bin/link",
+        kind: "symlink",
+        plannedState: { exists: true, kind: "symlink", linkTarget: "/h/other" },
+      },
+    ]);
+  });
+
+  test("force does not remove a symlink whose target is unavailable", async () => {
+    const target = { ...record(), owned: [{ path: "/h/bin/link", kind: "symlink" as const }] };
+    const plan = await planFor(
+      target,
+      { "/h/bin/link": { exists: true, kind: "symlink", linkTarget: "/h/other" } },
+      { force: true },
+    );
+
+    expect(plan.actions).toEqual([{ action: "conflict", path: "/h/bin/link", reason: "unverified" }]);
   });
 
   test("a recorded kind that no longer matches is a diverged conflict", async () => {
@@ -130,8 +184,13 @@ describe("VerifiedUninstallPlanner directories", () => {
     );
 
     expect(plan.actions).toEqual([
-      { action: "remove", path: "/h/dir/tool", kind: "file" },
-      { action: "remove", path: "/h/dir", kind: "directory" },
+      {
+        action: "remove",
+        path: "/h/dir/tool",
+        kind: "file",
+        plannedState: { exists: true, kind: "file", hash: h("b") },
+      },
+      { action: "remove", path: "/h/dir", kind: "directory", plannedState: { exists: true, kind: "directory" } },
     ]);
     expect(plan.incomplete).toBe(false);
   });
@@ -192,17 +251,37 @@ describe("VerifiedUninstallPlanner delegated roots", () => {
 
     const without = await planFor(target, state, { list });
     expect(without.actions).toEqual([
-      { action: "remove", path: "/h/agent/bin/pi", kind: "file" },
-      { action: "remove", path: "/h/agent/bin", kind: "directory" },
+      {
+        action: "remove",
+        path: "/h/agent/bin/pi",
+        kind: "file",
+        plannedState: { exists: true, kind: "file", hash: h("b") },
+      },
+      {
+        action: "remove",
+        path: "/h/agent/bin",
+        kind: "directory",
+        plannedState: { exists: true, kind: "directory" },
+      },
       { action: "conflict", path: "/h/agent", reason: "not-empty" },
     ]);
     expect(without.incomplete).toBe(true);
 
     const withRoot = await planFor(target, state, { list, delegatedRoots: ["/h/agent/install"] });
     expect(withRoot.actions).toEqual([
-      { action: "remove", path: "/h/agent/bin/pi", kind: "file" },
-      { action: "remove", path: "/h/agent/bin", kind: "directory" },
-      { action: "remove", path: "/h/agent", kind: "directory" },
+      {
+        action: "remove",
+        path: "/h/agent/bin/pi",
+        kind: "file",
+        plannedState: { exists: true, kind: "file", hash: h("b") },
+      },
+      {
+        action: "remove",
+        path: "/h/agent/bin",
+        kind: "directory",
+        plannedState: { exists: true, kind: "directory" },
+      },
+      { action: "remove", path: "/h/agent", kind: "directory", plannedState: { exists: true, kind: "directory" } },
     ]);
     expect(withRoot.incomplete).toBe(false);
   });
@@ -218,7 +297,13 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
     const plan = await planFor(target, { "/h/rc": { exists: true, kind: "file", hash: h("b") } });
 
     expect(plan.actions).toEqual([
-      { action: "restore", path: "/h/rc", kind: "file", beforeBlob: "blob-1", expect: "installed", installedHash: h("b") },
+      {
+        action: "restore",
+        path: "/h/rc",
+        kind: "file",
+        beforeBlob: "blob-1",
+        plannedState: { exists: true, kind: "file", hash: h("b") },
+      },
     ]);
   });
 
@@ -264,7 +349,7 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
     const target = { ...record(), owned: [], mutated: [], deleted: [{ path: "/h/gone", beforeBlob: "blob-2" }] };
     const restored = await planFor(target, {});
     expect(restored.actions).toEqual([
-      { action: "restore", path: "/h/gone", kind: "file", beforeBlob: "blob-2", expect: "absent" },
+      { action: "restore", path: "/h/gone", kind: "file", beforeBlob: "blob-2", plannedState: { exists: false } },
     ]);
 
     const recreated = await planFor(target, { "/h/gone": { exists: true, kind: "file", hash: h("x") } });
@@ -298,7 +383,14 @@ describe("VerifiedUninstallPlanner shared ownership", () => {
     expect(blocked.actions).toEqual([{ action: "conflict", path: "/h/bin/tool", reason: "shared-owner" }]);
 
     const forced = await planFor(target, state, { otherRecords: [other], force: true });
-    expect(forced.actions).toEqual([{ action: "remove", path: "/h/bin/tool", kind: "file" }]);
+    expect(forced.actions).toEqual([
+      {
+        action: "remove",
+        path: "/h/bin/tool",
+        kind: "file",
+        plannedState: { exists: true, kind: "file", hash: h("b") },
+      },
+    ]);
   });
 
   test("another record claiming a detect-only mutation still blocks unless forced (D4)", async () => {
@@ -401,8 +493,19 @@ describe("uninstall planner contract", () => {
     const stub: UninstallPlanner = {
       async plan(target: RecordV3): Promise<UninstallPlan> {
         const actions: UninstallAction[] = [
-          { action: "remove", path: target.owned[0]?.path ?? "/home/.local/bin/mytool", kind: "file" },
-          { action: "restore", path: target.mutated[0]?.path ?? "/home/.zshrc", kind: "file", beforeBlob: "blob-1" },
+          {
+            action: "remove",
+            path: target.owned[0]?.path ?? "/home/.local/bin/mytool",
+            kind: "file",
+            plannedState: { exists: true, kind: "file", hash: h("b") },
+          },
+          {
+            action: "restore",
+            path: target.mutated[0]?.path ?? "/home/.zshrc",
+            kind: "file",
+            beforeBlob: "blob-1",
+            plannedState: { exists: true, kind: "file", hash: h("b") },
+          },
           { action: "skip", path: "/home/.mytool/gone", reason: "absent" },
           { action: "detected", path: "/home/.mytool/churn", kind: "mutated" },
           { action: "conflict", path: "/home/.mytool/edited", reason: "modified" },
