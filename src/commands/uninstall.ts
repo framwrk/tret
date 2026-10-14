@@ -11,9 +11,11 @@ import {
 import {
   describeManagedPackage,
   detectManagedPackage,
+  managedPackageRemovalScope,
   removeManagedPackage,
   withoutManagedGlobalPaths,
 } from "../lib/package-manager";
+import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import { FileStorage } from "../lib/store";
 
@@ -81,9 +83,31 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     ...(managedInstall === undefined ? {} : { delegatedRoots: [managedInstall.root] }),
   });
 
+  // Delegated removals can reach whole trees; planner `--force` never bypasses their overlap guard.
+  const delegatedScopes: AbsolutePath[] = [];
+  if (target.managedBy !== undefined) {
+    const scope = managedPackageRemovalScope(target.managedBy, Bun.env.HOME);
+    if (scope !== undefined) delegatedScopes.push(scope);
+  }
+  if (managedInstall !== undefined) delegatedScopes.push(managedInstall.root);
+  const delegatedConflicts = findDelegatedRemovalConflicts(delegatedScopes, records, record, Bun.env.HOME);
+
   if (dryRun) {
+    if (delegatedConflicts.length > 0) {
+      log("Error");
+      for (const conflict of delegatedConflicts) log(`\t${formatDelegatedRemovalConflict(conflict)}`);
+      log(`\t${name} is blocked by delegated-removal conflicts; resolve the overlapping claim and retry`);
+      process.exit(1);
+    }
     printDryRun(name, plan, shell, target.managedBy, managedInstall);
     return;
+  }
+
+  if (delegatedConflicts.length > 0) {
+    log("Error");
+    for (const conflict of delegatedConflicts) log(`\t${formatDelegatedRemovalConflict(conflict)}`);
+    log(`\t${name} is unchanged; resolve the overlapping claim and retry`);
+    process.exit(1);
   }
 
   const hasFileWork = plan.actions.length > 0;

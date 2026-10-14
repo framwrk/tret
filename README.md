@@ -79,11 +79,12 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 | `tret forget <tool_name>`                        | Stop tracking a tool without touching its files                                                      |
 | `tret update`                                    | Update Tret to the latest release                                                                    |
 
-- `install --force`: uninstall the tool first, then reinstall it from a clean capture.
+- `install --force`: fetch and validate the replacement script, then uninstall the tool and reinstall it from a clean capture.
 - `install --no-capture`: run the installer without a capture window.
 - `install --backup`: save before-images so overwritten or deleted files can be restored on uninstall.
 - `install <URL> -- <args>`: anything after `--` goes to the install script (`tret install <URL> -- --skip-browser`).
 - `uninstall --dry-run`: preview the removal without changing anything.
+- `uninstall --force`: allow removing files or symlinks with a known fingerprint mismatch already present when planning, and bypass shared-owner conflicts.
 - `uninstall --yes`: skip the confirmation prompt.
 
 ### Install a tool
@@ -96,7 +97,9 @@ tret install https://example.com/install.sh
 tret install
 ```
 
-Tret gets the tool's name from the executable that the installer puts on disk. The file in a `bin` folder is ranked first, otherwise the first executable it added. The tool's own installer output passes through to your terminal. If the installer exits non-zero, Tret keeps a partial record rather than silently undoing anything, and tells you how to inspect or remove the changes.
+Tret gets the tool's name from the executable that the installer puts on disk. The file in a `bin` folder is ranked first, otherwise the first executable it added. The tool's own installer output passes through to your terminal. If the installer exits non-zero after producing a discoverable executable, Tret keeps a partial record rather than silently undoing anything, and tells you how to inspect or remove the changes.
+
+For `install --force`, a failed download leaves the current install and its record untouched. Once the old install has been removed, Tret does not roll it back: if the replacement exits non-zero or creates no discoverable executable, Tret saves a partial recovery record under the old tool name with the changes the capture observed. A no-executable record is shown as `partial` with no binary. Use `tret list` to inspect it and `tret uninstall <name>` to remove its recorded changes. Recovery is limited to observed changes; only before-images captured with `--backup` can be restored.
 
 Each install runs inside a bounded capture window. Tret prints a line describing it: the backend, whether coverage is `complete`, `partial`, or `heuristic`, the window's start and end, and how many events and roots were observed.
 
@@ -108,7 +111,7 @@ tret install curl -fsSL https://example.com/install.sh | bash
 
 ### Uninstall a tool
 
-Run `tret uninstall <tool_name>` to remove a tool's files. It removes only files whose fingerprint still matches, restores files that have a before-image (captured with `--backup`), and keeps anything that diverged. It asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. Shared-ownership conflicts block until you pass `--force`. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
+Run `tret uninstall <tool_name>` to remove a tool's files. By default, a file is removed only while its recorded content hash matches, and a symlink only while its recorded target matches; divergent paths are kept. `--force` may remove an owned file or symlink when both fingerprints are known but already mismatch at planning time, and may bypass shared-owner conflicts. It does not make a missing or unreadable fingerprint removable or override a kind change. Each planned `remove` or `restore` action carries the state captured by the plan and is checked again immediately before it is applied, after confirmation. If that state changes between planning and apply, the path is kept even with `--force`; run uninstall again to review the new state. Ordinary shared-path conflicts block until you pass `--force`; delegated-removal overlaps always block, including with `--force`. Uninstall asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
 
 ### List installed tools
 
