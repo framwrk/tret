@@ -62,6 +62,16 @@ export type RecordFile = {
  */
 export type CaptureCompleteness = "complete" | "partial" | "heuristic";
 
+/**
+ * How much a record proves about the paths it holds (D11). `proven` means the capture
+ * attributed the paths to the installer's observed process tree; `observed` means they were only seen
+ * to differ across a bounded observation window, where unrelated activity is indistinguishable from
+ * installer output. It is derived from `CaptureInfo.completeness` by
+ * `src/lib/ownership.ts::ownershipConfidence` and never stored, so a record's label and its paths
+ * cannot drift apart.
+ */
+export type OwnershipConfidence = "proven" | "observed";
+
 /** Privilege an install ran under; recorded explicitly instead of implied per platform (D8). */
 export type Privilege = "user" | "root";
 

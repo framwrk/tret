@@ -28,6 +28,7 @@ import { VerifiedUninstallPlanner } from "../lib/uninstall-planner";
 import { captureBackendFor } from "../lib/capture/current";
 import { diff } from "../lib/diff";
 import { normalizeJournal } from "../lib/journal/normalize";
+import { ownershipNote } from "../lib/ownership";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
 import { removeRcLines } from "../lib/shellconfig";
@@ -425,6 +426,11 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     log("\tprevious install is unchanged; resolve the overlapping claim and retry the forced reinstall");
     process.exit(1);
   }
+
+  // Label the previous install's evidence before anything is removed, so a forced reinstall does not
+  // silently present observed-only paths as proven installer output (D11).
+  const ownershipCaveat = ownershipNote(plan.confidence);
+  if (ownershipCaveat !== undefined) log(`\t${ownershipCaveat}`);
 
   // The package manager goes first, mirroring `uninstall`: only once it reports the package gone
   // does Tret remove the rest. A failed removal aborts the reinstall with nothing else touched, so

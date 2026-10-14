@@ -1,5 +1,6 @@
-import type { AbsolutePath, OwnedEntry, OwnedKind, RecordV3 } from "../types";
+import type { AbsolutePath, OwnedEntry, OwnedKind, OwnershipConfidence, RecordV3 } from "../types";
 import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { ownershipConfidence, ownershipMarker, ownershipNote } from "./ownership";
 import type { BlobId } from "./storage";
 import { join } from "node:path";
 
@@ -61,6 +62,13 @@ export type UninstallPlan = {
   recordId: string;
   tool: string;
   actions: UninstallAction[];
+  /**
+   * How much the record's capture proves about the paths this plan may remove or restore (D11). Set
+   * from `capture.completeness`, so a `remove`/`restore` on an `observed` record is labeled as resting
+   * on a fingerprint match rather than on process attribution. It never changes what the planner
+   * allows; verification does that, identically for both labels.
+   */
+  confidence: OwnershipConfidence;
   /** True when any action needs sudo for a root-owned entry (D8). */
   requiresSudo: boolean;
   /**
@@ -271,6 +279,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
       recordId: record.id,
       tool: record.name,
       actions,
+      confidence: ownershipConfidence(record.capture.completeness),
       requiresSudo,
       // Only actionable conflicts block; a `detected` (non-restorable) change never does.
       incomplete: actions.some((action) => action.action === "conflict"),
@@ -386,15 +395,18 @@ function snapshotState(verification: UninstallVerification): UninstallVerificati
 
 /**
  * Renders a plan as stable lines. `dry-run` and `apply` share the same action order and the same
- * per-action logic, so a dry run cannot enumerate anything the real run would not attempt.
+ * per-action logic, so a dry run cannot enumerate anything the real run would not attempt. A
+ * `remove`/`restore` on an `observed` record is labeled and prefaced with the caveat that explains
+ * the label (D11); a plan with nothing destructive to do stays exactly as long as its action list.
  */
 export function formatUninstallPlan(plan: UninstallPlan, mode: "dry-run" | "apply"): string[] {
-  return plan.actions.map((action) => {
+  const marker = ownershipMarker(plan.confidence);
+  const lines = plan.actions.map((action) => {
     switch (action.action) {
       case "remove":
-        return mode === "dry-run" ? `would remove ${action.path}` : `remove ${action.path}`;
+        return `${mode === "dry-run" ? "would remove" : "remove"} ${action.path}${marker}`;
       case "restore":
-        return mode === "dry-run" ? `would restore ${action.path}` : `restore ${action.path}`;
+        return `${mode === "dry-run" ? "would restore" : "restore"} ${action.path}${marker}`;
       case "skip":
         return `skip ${action.path} (${action.reason})`;
       case "detected":
@@ -407,4 +419,8 @@ export function formatUninstallPlan(plan: UninstallPlan, mode: "dry-run" | "appl
         return mode === "dry-run" ? `conflict ${action.path} (${action.reason})` : `keep ${action.path} (${action.reason})`;
     }
   });
+
+  const destructive = plan.actions.some((action) => action.action === "remove" || action.action === "restore");
+  const note = destructive ? ownershipNote(plan.confidence) : undefined;
+  return note === undefined ? lines : [note, ...lines];
 }

@@ -38,6 +38,26 @@ async function runCli(args: string[], home: string, extraEnv: Record<string, str
   return proc.exited;
 }
 
+/** Runs the CLI and keeps its output, for assertions on what Tret told the user. */
+async function runCliResult(
+  args: string[],
+  home: string,
+  extraEnv: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn([BUN, TRET, ...args], {
+    env: { ...process.env, ...extraEnv, HOME: home },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
 /** Serves one raw script over loopback; the install URL needs a dotted host and a non-HTML body. */
 function serve(script: string): { url: string; stop: () => Promise<void> } {
   return serveResponses({ body: script });
@@ -564,6 +584,24 @@ describe("install -> list -> uninstall", () => {
         layout: "releases-v1",
         root: join(home, ".pi", "agent", "install"),
       });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--force labels the previous install's observed paths before removing them", async () => {
+    const home = makeHome();
+    const server = serveResponses({ body: INSTALL_SCRIPT }, { body: INSTALL_SCRIPT });
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      const result = await runCliResult(["install", server.url, "--force"], home);
+
+      expect(result.code).toBe(0);
+      // The previous record's evidence is heuristic, so the caveat leads the forced removal.
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain("reinstalling mytool: removing the previous install first");
+      expect(output).toContain("note: these paths were only observed during a bounded window");
     } finally {
       await server.stop();
     }
