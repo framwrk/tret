@@ -18,6 +18,11 @@ function makeHome(): string {
   return dir;
 }
 
+function writeRecords(home: string, records: unknown[]): void {
+  mkdirSync(join(home, ".tret"), { recursive: true });
+  writeFileSync(join(home, ".tret", "records.json"), JSON.stringify({ version: 3, records }, null, 2));
+}
+
 afterEach(() => {
   while (homes.length > 0) rmSync(homes.pop()!, { recursive: true, force: true });
 });
@@ -109,6 +114,7 @@ chmod +x "$HOME/.pi/agent/bin/pi"
 `;
 
 type StoredRecord = {
+  id: string;
   name: string;
   source: string;
   capture: { completeness: string; segments: { kind: string; partialReason?: string }[] };
@@ -322,6 +328,84 @@ describe("install -> list -> uninstall", () => {
         globalRoot: join(prefix, "lib"),
       });
       expect(record?.owned.some((entry) => entry.path.includes("lib/node_modules"))).toBe(false);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--force does not delegate removal of a managed package with another record's descendant claim", async () => {
+    const home = makeHome();
+    const prefix = join(home, ".local");
+    const shim = join(prefix, "bin", "acmetool");
+    const packageDir = join(prefix, "lib", "node_modules", "@acme", "tool");
+    const claimedPath = join(packageDir, "nested", "owned.txt");
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    mkdirSync(join(packageDir, "nested"), { recursive: true });
+    symlinkSync("../lib/node_modules/@acme/tool/cli.js", shim);
+    writeFileSync(join(packageDir, "cli.js"), "#!/bin/sh\n");
+    writeFileSync(claimedPath, "owned by another tool");
+
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeNpm = join(fakebin, "npm");
+    writeFileSync(
+      fakeNpm,
+      `#!/bin/sh\nprintf '%s\\n' called > "$HOME/fake-npm-called"\nrm -rf "$HOME/.local/lib/node_modules/@acme/tool"\nexit 0\n`,
+    );
+    chmodSync(fakeNpm, 0o755);
+
+    const server = serve(NPM_GLOBAL_SCRIPT);
+    writeRecords(home, [
+      {
+        id: "rec-managed",
+        name: "acmetool",
+        source: "install",
+        url: server.url,
+        installedAt: "2026-10-09T00:00:00.000Z",
+        executable: shim,
+        scriptSha256: "a".repeat(64),
+        capture: {
+          backend: "macos-heuristic",
+          completeness: "heuristic",
+          segments: [{ kind: "install", startedAt: "2026-10-09T00:00:00.000Z" }],
+        },
+        privilege: "user",
+        caseSensitive: true,
+        owned: [{ path: shim, kind: "symlink", linkTarget: "../lib/node_modules/@acme/tool/cli.js" }],
+        mutated: [],
+        deleted: [],
+        managedBy: { manager: "npm", package: "@acme/tool", globalRoot: join(prefix, "lib") },
+      },
+      {
+        id: "rec-other",
+        name: "other-tool",
+        source: "install",
+        url: "https://example.com/other.sh",
+        installedAt: "2026-10-09T00:00:00.000Z",
+        executable: claimedPath,
+        scriptSha256: "b".repeat(64),
+        capture: {
+          backend: "macos-heuristic",
+          completeness: "heuristic",
+          segments: [{ kind: "install", startedAt: "2026-10-09T00:00:00.000Z" }],
+        },
+        privilege: "user",
+        caseSensitive: true,
+        owned: [{ path: claimedPath, kind: "file" }],
+        mutated: [],
+        deleted: [],
+      },
+    ]);
+
+    try {
+      const path = `${fakebin}:${process.env.PATH ?? ""}`;
+      expect(await runCli(["install", server.url, "--force"], home, { PATH: path })).not.toBe(0);
+
+      expect(existsSync(join(home, "fake-npm-called"))).toBe(false);
+      expect(existsSync(packageDir)).toBe(true);
+      expect(existsSync(claimedPath)).toBe(true);
+      expect(existsSync(shim)).toBe(true);
+      expect(readStore(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
     } finally {
       await server.stop();
     }

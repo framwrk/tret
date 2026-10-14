@@ -35,14 +35,27 @@ afterEach(() => {
 });
 
 /** Runs the CLI from source as a child process so its `process.exit` never kills the test runner. */
-async function runCli(args: string[], home: string, extraEnv: Record<string, string> = {}): Promise<number> {
+async function runCliResult(
+  args: string[],
+  home: string,
+  extraEnv: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, ...extraEnv, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
   });
-  return proc.exited;
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
+async function runCli(args: string[], home: string, extraEnv: Record<string, string> = {}): Promise<number> {
+  return (await runCliResult(args, home, extraEnv)).code;
 }
 
 function sha256(text: string): string {
@@ -200,6 +213,101 @@ describe("uninstall record lifecycle", () => {
     expect(existsSync(packageDir)).toBe(false);
     expect(readFileSync(join(home, "fake-bun-args.txt"), "utf8").trim().split("\n")).toEqual(["remove", "-g", "@acme/tool"]);
     expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("blocks package-manager removal when another record claims a descendant, even with --force", async () => {
+    const home = makeHome();
+    const shim = join(home, ".bun", "bin", "acmetool");
+    const packageDir = join(home, ".bun", "install", "global", "node_modules", "@acme", "tool");
+    const claimedPath = join(packageDir, "nested", "owned.txt");
+    mkdirSync(join(home, ".bun", "bin"), { recursive: true });
+    mkdirSync(join(packageDir, "nested"), { recursive: true });
+    symlinkSync("../install/global/node_modules/@acme/tool/cli.js", shim);
+    writeFileSync(claimedPath, "owned by another tool");
+
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeBun = join(fakebin, "bun");
+    writeFileSync(
+      fakeBun,
+      `#!/bin/sh\nprintf '%s\\n' called > "$HOME/fake-bun-called"\nrm -rf "$HOME/.bun/install/global/node_modules/@acme/tool"\nexit 0\n`,
+    );
+    chmodSync(fakeBun, 0o755);
+
+    writeRecords(home, [
+      record({
+        id: "rec-managed",
+        name: "acmetool",
+        executable: shim,
+        owned: [{ path: shim, kind: "symlink", linkTarget: "../install/global/node_modules/@acme/tool/cli.js" }],
+        managedBy: { manager: "bun", package: "@acme/tool" },
+      }),
+      record({
+        id: "rec-other",
+        name: "other-tool",
+        owned: [{ path: claimedPath, kind: "file", installedHash: sha256("owned by another tool") }],
+      }),
+    ]);
+
+    const path = `${fakebin}:${process.env.PATH ?? ""}`;
+    const result = await runCliResult(["uninstall", "acmetool", "--yes", "--force"], home, { PATH: path });
+
+    expect(result.code).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("conflict:");
+    expect(`${result.stdout}\n${result.stderr}`).toContain(claimedPath);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("other-tool");
+    expect(existsSync(join(home, "fake-bun-called"))).toBe(false);
+    expect(existsSync(packageDir)).toBe(true);
+    expect(linkExists(shim)).toBe(true);
+    expect(existsSync(claimedPath)).toBe(true);
+    expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
+  });
+
+  test("allows package-manager removal when another record claims a sibling package", async () => {
+    const home = makeHome();
+    const shim = join(home, ".bun", "bin", "acmetool");
+    const globalRoot = join(home, ".bun", "install", "global");
+    const packageDir = join(globalRoot, "node_modules", "@acme", "tool");
+    const siblingClaim = join(globalRoot, "node_modules", "@acme", "other", "keep.txt");
+    mkdirSync(join(home, ".bun", "bin"), { recursive: true });
+    mkdirSync(packageDir, { recursive: true });
+    mkdirSync(join(globalRoot, "node_modules", "@acme", "other"), { recursive: true });
+    symlinkSync("../install/global/node_modules/@acme/tool/cli.js", shim);
+    writeFileSync(join(packageDir, "cli.js"), "target package");
+    writeFileSync(siblingClaim, "sibling package");
+
+    const fakebin = join(home, "fakebin");
+    mkdirSync(fakebin, { recursive: true });
+    const fakeBun = join(fakebin, "bun");
+    writeFileSync(
+      fakeBun,
+      `#!/bin/sh\nprintf '%s\\n' called > "$HOME/fake-bun-called"\nrm -rf "$HOME/.bun/install/global/node_modules/@acme/tool"\nexit 0\n`,
+    );
+    chmodSync(fakeBun, 0o755);
+
+    writeRecords(home, [
+      record({
+        id: "rec-managed",
+        name: "acmetool",
+        executable: shim,
+        owned: [{ path: shim, kind: "symlink", linkTarget: "../install/global/node_modules/@acme/tool/cli.js" }],
+        managedBy: { manager: "bun", package: "@acme/tool" },
+      }),
+      record({
+        id: "rec-other",
+        name: "other-tool",
+        owned: [{ path: siblingClaim, kind: "file", installedHash: sha256("sibling package") }],
+      }),
+    ]);
+
+    const path = `${fakebin}:${process.env.PATH ?? ""}`;
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
+
+    expect(existsSync(join(home, "fake-bun-called"))).toBe(true);
+    expect(existsSync(packageDir)).toBe(false);
+    expect(linkExists(shim)).toBe(false);
+    expect(readFileSync(siblingClaim, "utf8")).toBe("sibling package");
+    expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-other"]);
   });
 
   test("a managed npm global is removed through its recorded prefix", async () => {
@@ -405,5 +513,46 @@ describe("uninstall record lifecycle", () => {
     // The delegated recursive removal clears the root and its payload; Tret clears the ancestors.
     expect(existsSync(join(home, ".pi"))).toBe(false);
     expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("does not recursively remove a managed-install root with another record's descendant claim, even with --force", async () => {
+    const home = makeHome();
+    const root = join(home, ".pi", "agent", "install");
+    const launcher = join(home, ".pi", "agent", "bin", "pi");
+    const claimedPath = join(root, "releases", "1.0.0", "owned.txt");
+    mkdirSync(join(root, "releases", "1.0.0"), { recursive: true });
+    mkdirSync(join(home, ".pi", "agent", "bin"), { recursive: true });
+    writeFileSync(
+      join(root, "managed-install.json"),
+      JSON.stringify({ kind: "pi-managed-install", schemaVersion: 1, layout: "releases-v1" }),
+    );
+    writeFileSync(launcher, "#!/bin/sh\n");
+    writeFileSync(claimedPath, "owned by another tool");
+
+    writeRecords(home, [
+      record({
+        id: "rec-managed",
+        name: "pi",
+        executable: launcher,
+        owned: [{ path: launcher, kind: "file", installedHash: sha256("#!/bin/sh\n") }],
+        managedInstall: { kind: "pi-managed-install", layout: "releases-v1", root },
+      }),
+      record({
+        id: "rec-other",
+        name: "other-tool",
+        owned: [{ path: claimedPath, kind: "file", installedHash: sha256("owned by another tool") }],
+      }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "pi", "--yes", "--force"], home);
+
+    expect(result.code).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("conflict:");
+    expect(`${result.stdout}\n${result.stderr}`).toContain(claimedPath);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("other-tool");
+    expect(existsSync(root)).toBe(true);
+    expect(readFileSync(claimedPath, "utf8")).toBe("owned by another tool");
+    expect(existsSync(launcher)).toBe(true);
+    expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
   });
 });

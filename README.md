@@ -108,7 +108,7 @@ tret install curl -fsSL https://example.com/install.sh | bash
 
 ### Uninstall a tool
 
-Run `tret uninstall <tool_name>` to remove a tool's files. It removes only files whose fingerprint still matches, restores files that have a before-image (captured with `--backup`), and keeps anything that diverged. It asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. Shared-ownership conflicts block until you pass `--force`. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
+Run `tret uninstall <tool_name>` to remove a tool's files. It removes only files whose fingerprint still matches, restores files that have a before-image (captured with `--backup`), and keeps anything that diverged. It asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. Ordinary shared-path conflicts block until you pass `--force`; delegated-removal overlaps always block, including with `--force`. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
 
 ### List installed tools
 
