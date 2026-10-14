@@ -40,10 +40,23 @@ async function runCli(args: string[], home: string, extraEnv: Record<string, str
 
 /** Serves one raw script over loopback; the install URL needs a dotted host and a non-HTML body. */
 function serve(script: string): { url: string; stop: () => Promise<void> } {
+  return serveResponses({ body: script });
+}
+
+function serveResponses(
+  ...responses: { body: string; status?: number; contentType?: string }[]
+): { url: string; stop: () => Promise<void> } {
+  let requestCount = 0;
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch: () => new Response(script, { headers: { "content-type": "text/plain" } }),
+    fetch: () => {
+      const response = responses[Math.min(requestCount++, responses.length - 1)]!;
+      return new Response(response.body, {
+        status: response.status ?? 200,
+        headers: { "content-type": response.contentType ?? "text/plain" },
+      });
+    },
   });
   return { url: `http://127.0.0.1:${server.port}/install.sh`, stop: () => server.stop(true) };
 }
@@ -61,6 +74,24 @@ mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho boo\\n' > "$HOME/.local/bin/badtool"
 chmod +x "$HOME/.local/bin/badtool"
 exit 3
+`;
+
+const FORCE_FAIL_SCRIPT = `#!/bin/bash
+set -e
+if [ -e "$HOME/.local/bin/mytool" ]; then exit 99; fi
+mkdir -p "$HOME/.local/bin" "$HOME/.config/mytool"
+printf '#!/bin/sh\\necho replacement\\n' > "$HOME/.local/bin/mytool"
+chmod +x "$HOME/.local/bin/mytool"
+printf 'replacement config\\n' > "$HOME/.config/mytool/config"
+exit 7
+`;
+
+const FORCE_NO_EXECUTABLE_SCRIPT = `#!/bin/bash
+set -e
+if [ -e "$HOME/.local/bin/mytool" ]; then exit 99; fi
+mkdir -p "$HOME/.config/mytool"
+printf 'recovery data\\n' > "$HOME/.config/mytool/recovery.txt"
+exit 9
 `;
 
 // Defect #3: an installer that writes a tool directory and a dotfile directly at `$HOME` (the shape
@@ -117,6 +148,7 @@ type StoredRecord = {
   id: string;
   name: string;
   source: string;
+  executable: string;
   capture: { completeness: string; segments: { kind: string; partialReason?: string }[] };
   owned: { path: string; kind?: string; installedHash?: string }[];
   managedBy?: { manager: string; package: string; globalRoot?: string };
@@ -194,6 +226,78 @@ describe("install -> list -> uninstall", () => {
       expect(record?.capture.completeness).toBe("partial");
       expect(record?.capture.segments[0]?.partialReason).toContain("3");
       expect(record?.owned.some((entry) => entry.path.endsWith("/.local/bin/badtool"))).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--force keeps the current install and record when the replacement download fails", async () => {
+    const home = makeHome();
+    const server = serveResponses(
+      { body: INSTALL_SCRIPT },
+      { body: "<!doctype html><html>unavailable</html>", status: 503, contentType: "text/html" },
+    );
+    const executable = join(home, ".local", "bin", "mytool");
+    const config = join(home, ".config", "mytool", "config");
+    const recordsPath = join(home, ".tret", "records.json");
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+      const previousRecords = readFileSync(recordsPath, "utf8");
+
+      expect(await runCli(["install", server.url, "--force"], home)).not.toBe(0);
+
+      expect(existsSync(executable)).toBe(true);
+      expect(readFileSync(executable, "utf8")).toContain("echo mytool");
+      expect(readFileSync(config, "utf8")).toBe("setting = 1\n");
+      expect(readFileSync(recordsPath, "utf8")).toBe(previousRecords);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--force keeps a partial record for a downloaded replacement that exits non-zero", async () => {
+    const home = makeHome();
+    const server = serveResponses({ body: INSTALL_SCRIPT }, { body: FORCE_FAIL_SCRIPT });
+    const executable = join(home, ".local", "bin", "mytool");
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      expect(await runCli(["install", server.url, "--force"], home)).not.toBe(0);
+
+      expect(readFileSync(executable, "utf8")).toContain("echo replacement");
+      const records = readStore(home).records;
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ name: "mytool", executable, capture: { completeness: "partial" } });
+      expect(records[0]?.capture.segments[0]?.partialReason).toContain("7");
+      expect(records[0]?.owned.some((entry) => entry.path === executable)).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--force records and allows removal of changes when the replacement adds no executable", async () => {
+    const home = makeHome();
+    const server = serveResponses({ body: INSTALL_SCRIPT }, { body: FORCE_NO_EXECUTABLE_SCRIPT });
+    const executable = join(home, ".local", "bin", "mytool");
+    const recoveryPath = join(home, ".config", "mytool", "recovery.txt");
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      expect(await runCli(["install", server.url, "--force"], home)).not.toBe(0);
+
+      expect(existsSync(executable)).toBe(false);
+      expect(readFileSync(recoveryPath, "utf8")).toBe("recovery data\n");
+      const records = readStore(home).records;
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ name: "mytool", executable: "", capture: { completeness: "partial" } });
+      expect(records[0]?.capture.segments[0]?.partialReason).toContain("9");
+      expect(records[0]?.capture.segments[0]?.partialReason).toContain("no executable command");
+      expect(records[0]?.owned.some((entry) => entry.path === recoveryPath)).toBe(true);
+
+      expect(await runCli(["list"], home)).toBe(0);
+      expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
+      expect(existsSync(recoveryPath)).toBe(false);
+      expect(readStore(home).records).toHaveLength(0);
     } finally {
       await server.stop();
     }
