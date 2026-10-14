@@ -13,6 +13,7 @@ import {
 import {
   describeManagedPackage,
   detectManagedPackage,
+  managedPackageRemovalScope,
   removeManagedPackage,
   withoutManagedGlobalPaths,
 } from "../lib/package-manager";
@@ -31,6 +32,7 @@ import { randomUUID } from "node:crypto";
 import { removeRcLines } from "../lib/shellconfig";
 import { runInstaller } from "../lib/installer";
 import { snapshot } from "../lib/snapshot";
+import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 
 /** Options for `install`; the command line uses the defaults, tests inject capture seams. */
 export type InstallOptions = {
@@ -397,6 +399,21 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     force: true,
     ...(managedInstall === undefined ? {} : { delegatedRoots: [managedInstall.root] }),
   });
+
+  // A forced reinstall uses the planner's force behavior, but delegated-scope overlaps still block.
+  const delegatedScopes: AbsolutePath[] = [];
+  if (managedBy !== undefined) {
+    const scope = managedPackageRemovalScope(managedBy, Bun.env.HOME);
+    if (scope !== undefined) delegatedScopes.push(scope);
+  }
+  if (managedInstall !== undefined) delegatedScopes.push(managedInstall.root);
+  const delegatedConflicts = findDelegatedRemovalConflicts(delegatedScopes, records, existing, Bun.env.HOME);
+  if (delegatedConflicts.length > 0) {
+    log("Error");
+    for (const conflict of delegatedConflicts) log(`\t${formatDelegatedRemovalConflict(conflict)}`);
+    log("\tprevious install is unchanged; resolve the overlapping claim and retry the forced reinstall");
+    process.exit(1);
+  }
 
   // The package manager goes first, mirroring `uninstall`: only once it reports the package gone
   // does Tret remove the rest. A failed removal aborts the reinstall with nothing else touched, so
