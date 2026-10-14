@@ -307,6 +307,13 @@ Each entry resolves or explicitly defers one item from "Open decisions". Status 
 - **Status:** decided
 - **Date:** 2026-10-09
 
+### D11. Ownership confidence
+
+- **Decision:** Derive an `ownership` label from `capture.completeness` rather than storing it: `proven` only for a `complete` window (paths attributed to the installer's observed process tree), `observed` for `partial` and `heuristic` (paths seen to differ across a bounded window, where unrelated activity is indistinguishable from installer output). Label each destructive `remove`/`restore` in the uninstall plan and in the forced-reinstall prelude with `(observed, not proven)`, and print the "only observed during a bounded window" caveat once above them. The label changes no removal rule; verification decides what may change, identically for both labels.
+- **Rationale:** the confidence must be visible wherever Tret proposes destructive actions, but storing a second field would let it drift from the completeness that supports it. Deriving it keeps one source of truth and cannot overclaim evidence a record no longer has. A `partial` window is `observed` because attribution was lost somewhere in the tree.
+- **Status:** decided
+- **Date:** 2026-10-14
+
 ## Build execution
 
 Phases follow the Implementation sequence. Each phase lists deliverables, exit criteria, and dependencies.
