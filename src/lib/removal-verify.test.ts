@@ -1,3 +1,4 @@
+import { VerifiedUninstallPlanner, inspectPath } from "./uninstall-planner";
 import { afterAll, describe, expect, test } from "bun:test";
 import { applyUninstallPlan, reduceRecordForRetry } from "./removal";
 import {
@@ -13,7 +14,6 @@ import {
 } from "node:fs";
 import type { RecordV3 } from "../types";
 import type { Storage } from "./storage";
-import { inspectPath, VerifiedUninstallPlanner } from "./uninstall-planner";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 

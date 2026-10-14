@@ -18,6 +18,7 @@ import {
   withoutManagedGlobalPaths,
 } from "../lib/package-manager";
 import { extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
+import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatCoverage, runBoundedSession } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
@@ -32,7 +33,6 @@ import { randomUUID } from "node:crypto";
 import { removeRcLines } from "../lib/shellconfig";
 import { runInstaller } from "../lib/installer";
 import { snapshot } from "../lib/snapshot";
-import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 
 /** Options for `install`; the command line uses the defaults, tests inject capture seams. */
 export type InstallOptions = {
@@ -346,12 +346,7 @@ async function storeBeforeImages(
 }
 
 /** Builds the record's capture info; a failed install or missing executable is labeled partial (D6). */
-function buildCapture(
-  window: InstallWindow,
-  failed: boolean,
-  clock: () => number,
-  failureReason?: string,
-): CaptureInfo {
+function buildCapture(window: InstallWindow, failed: boolean, clock: () => number, failureReason?: string): CaptureInfo {
   const at = new Date(clock()).toISOString();
   const segment: CaptureSegment = window.coverage
     ? { ...window.coverage.segment }
