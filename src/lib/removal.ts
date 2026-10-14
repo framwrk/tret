@@ -70,10 +70,10 @@ export type ApplyUninstallOptions = {
 };
 
 /**
- * Applies a plan one action at a time, verifying against current state as it goes. A removal whose
- * path was changed, replaced by a directory, or refilled between planning and applying is reported
- * as a conflict instead of being forced. A restore never overwrites an existing path. Anything that
- * throws is recorded as `failed` and left in place, so a retry sees only the survivors.
+ * Applies a plan one action at a time, verifying against the state captured by that plan. A removal
+ * whose path changed after planning is reported as a conflict, even when force allowed a mismatch
+ * already present at planning time. A restore never overwrites a changed path. Anything that throws
+ * is recorded as `failed` and left in place, so a retry sees only the survivors.
  */
 export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUninstallOptions): Promise<ApplyUninstallResult> {
   const inspect = options.inspect ?? inspectPath;
@@ -145,9 +145,15 @@ function applyRemove(
     return;
   }
 
+  if (verification.kind !== action.kind || !sameVerification(action.plannedState, verification)) {
+    outcomes.push({ path: action.path, outcome: "conflict", reason: "changed-after-plan" });
+    conflicts.push(action.path);
+    return;
+  }
+
   // Re-confirm an owned directory is still empty; between planning and applying a user file may
   // have appeared, and the applier must never recurse into a tree it did not verify.
-  if (verification.kind === "directory") {
+  if (action.kind === "directory") {
     if (list(action.path).length > 0) {
       outcomes.push({ path: action.path, outcome: "conflict", reason: "not-empty" });
       conflicts.push(action.path);
@@ -160,7 +166,7 @@ function applyRemove(
       failed.push(action.path);
       return;
     }
-  } else {
+  } else if (action.kind === "file" || action.kind === "symlink") {
     try {
       fs.removeFile(action.path);
     } catch (error) {
@@ -168,6 +174,10 @@ function applyRemove(
       failed.push(action.path);
       return;
     }
+  } else {
+    outcomes.push({ path: action.path, outcome: "conflict", reason: "changed-after-plan" });
+    conflicts.push(action.path);
+    return;
   }
 
   outcomes.push({ path: action.path, outcome: "removed" });
@@ -185,27 +195,6 @@ async function applyRestore(
   conflicts: AbsolutePath[],
   failed: AbsolutePath[],
 ): Promise<void> {
-  const verification = inspect(action.path);
-
-  // A mutation restore overwrites the installed bytes; a deletion restore recreates an absent path.
-  // Either way, a state change since planning is preserved, not overwritten.
-  if (action.expect === "installed") {
-    if (!verification.exists) {
-      outcomes.push({ path: action.path, outcome: "conflict", reason: "diverged" });
-      conflicts.push(action.path);
-      return;
-    }
-    if (action.installedHash !== undefined && verification.hash !== action.installedHash) {
-      outcomes.push({ path: action.path, outcome: "conflict", reason: "diverged" });
-      conflicts.push(action.path);
-      return;
-    }
-  } else if (verification.exists) {
-    outcomes.push({ path: action.path, outcome: "conflict", reason: "diverged" });
-    conflicts.push(action.path);
-    return;
-  }
-
   let bytes: Uint8Array | undefined;
   try {
     bytes = await storage.getBlob(action.beforeBlob);
@@ -221,6 +210,15 @@ async function applyRestore(
     return;
   }
 
+  // Loading the before-image may take time; check the plan snapshot immediately before writing so
+  // a change made after confirmation is preserved.
+  const verification = inspect(action.path);
+  if (!sameVerification(action.plannedState, verification)) {
+    outcomes.push({ path: action.path, outcome: "conflict", reason: "changed-after-plan" });
+    conflicts.push(action.path);
+    return;
+  }
+
   try {
     fs.writeFile(action.path, bytes);
   } catch (error) {
@@ -231,6 +229,17 @@ async function applyRestore(
 
   outcomes.push({ path: action.path, outcome: "restored" });
   restored.push(action.path);
+}
+
+/** Compares every state component used by planning, including file hashes and symlink targets. */
+function sameVerification(expected: UninstallVerification, actual: UninstallVerification): boolean {
+  return (
+    expected.exists === actual.exists &&
+    expected.kind === actual.kind &&
+    expected.hash === actual.hash &&
+    expected.linkTarget === actual.linkTarget &&
+    expected.uid === actual.uid
+  );
 }
 
 function message(error: unknown): string {
