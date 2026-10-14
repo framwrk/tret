@@ -295,6 +295,41 @@ describe("uninstall record lifecycle", () => {
     expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
   });
 
+  test("dry-run reports a delegated-removal conflict and exits non-zero", async () => {
+    const home = makeHome();
+    const shim = join(home, ".bun", "bin", "acmetool");
+    const packageDir = join(home, ".bun", "install", "global", "node_modules", "@acme", "tool");
+    const claimedPath = join(packageDir, "nested", "owned.txt");
+    mkdirSync(join(home, ".bun", "bin"), { recursive: true });
+    mkdirSync(join(packageDir, "nested"), { recursive: true });
+    symlinkSync("../install/global/node_modules/@acme/tool/cli.js", shim);
+    writeFileSync(claimedPath, "owned by another tool");
+
+    writeRecords(home, [
+      record({
+        id: "rec-managed",
+        name: "acmetool",
+        executable: shim,
+        owned: [{ path: shim, kind: "symlink", linkTarget: "../install/global/node_modules/@acme/tool/cli.js" }],
+        managedBy: { manager: "bun", package: "@acme/tool" },
+      }),
+      record({
+        id: "rec-other",
+        name: "other-tool",
+        owned: [{ path: claimedPath, kind: "file", installedHash: sha256("owned by another tool") }],
+      }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "acmetool", "--dry-run"], home);
+
+    expect(result.code).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("conflict:");
+    expect(`${result.stdout}\n${result.stderr}`).toContain(claimedPath);
+    expect(existsSync(claimedPath)).toBe(true);
+    expect(linkExists(shim)).toBe(true);
+    expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
+  });
+
   test("allows package-manager removal when another record claims a sibling package", async () => {
     const home = makeHome();
     const shim = join(home, ".bun", "bin", "acmetool");
