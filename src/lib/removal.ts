@@ -1,5 +1,5 @@
 import type { AbsolutePath, RecordV3 } from "../types";
-import { PRIVATE_FILE_MODE, writeFileAtomic } from "./atomic";
+import { PRIVATE_FILE_MODE, writeFileAtomicPreservingParents } from "./atomic";
 import type { UninstallAction, UninstallDetectedKind, UninstallPlan, UninstallVerification } from "./uninstall-planner";
 import { dirname, join } from "node:path";
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from "node:fs";
@@ -16,8 +16,8 @@ export type RemovalFileSystem = {
   removeFile(path: AbsolutePath): void;
   /** Removes an empty directory; a non-empty directory throws rather than being recursed. */
   removeDir(path: AbsolutePath): void;
-  /** Atomically writes restored bytes, creating parent directories as needed. */
-  writeFile(path: AbsolutePath, bytes: Uint8Array): void;
+  /** Atomically writes restored bytes, creating missing parent directories but never re-permissioning existing ones. */
+  writeFile(path: AbsolutePath, bytes: Uint8Array, mode?: number): void;
 };
 
 /** The real filesystem, used when an applier caller does not inject one. */
@@ -28,8 +28,10 @@ export const nodeRemovalFileSystem: RemovalFileSystem = {
   removeDir(path) {
     rmdirSync(path);
   },
-  writeFile(path, bytes) {
-    writeFileAtomic(path, bytes, PRIVATE_FILE_MODE);
+  writeFile(path, bytes, mode) {
+    // The recorded pre-install mode is restored whenever the capture knew it; without one
+    // (older records), private permissions are the safe fallback.
+    writeFileAtomicPreservingParents(path, bytes, mode ?? PRIVATE_FILE_MODE);
   },
 };
 
@@ -184,7 +186,7 @@ function applyRemove(
   removed.push(action.path);
 }
 
-/** Restores one before-image, re-verifying the current state the plan was built from. */
+/** Restores one before-image and its recorded permission bits, re-verifying the current state the plan was built from. */
 async function applyRestore(
   action: Extract<UninstallAction, { action: "restore" }>,
   storage: Pick<Storage, "getBlob">,
@@ -220,7 +222,7 @@ async function applyRestore(
   }
 
   try {
-    fs.writeFile(action.path, bytes);
+    fs.writeFile(action.path, bytes, action.mode);
   } catch (error) {
     outcomes.push({ path: action.path, outcome: "failed", reason: message(error) });
     failed.push(action.path);

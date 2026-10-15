@@ -1,10 +1,13 @@
-import { FakeFsInspector, MemoryBaseline } from "./inspect";
+import { FakeFsInspector, MemoryBaseline, RealFsInspector } from "./inspect";
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import type { BackupPolicy } from "../normalize";
 import type { ReconstructInput } from "./reconstruct";
 import type { TracerRecord } from "./raw";
+import { join } from "node:path";
 import { normalizeJournal } from "../../journal/normalize";
 import { reconstruct } from "./reconstruct";
+import { tmpdir } from "node:os";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
@@ -122,6 +125,85 @@ describe("linux reconstruction: pre-existing paths", () => {
 
     expect(effects.owned).toEqual([{ path: "/h/new", kind: "file", installedHash: HASH_A }]);
     expect(effects.diagnostics.some((diagnostic) => diagnostic.code === "rename")).toBe(true);
+  });
+});
+
+describe("linux reconstruction: root boundaries", () => {
+  test("a `..` segment inside the roots is normalized before the path is recorded", async () => {
+    const { result } = await run([{ op: "mkdir", at: 1, pid: 9, path: "/h/a/../keep" }]);
+    expect(result.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual(["/h/keep"]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  test("a path that is itself an observe root is accepted", async () => {
+    const { result } = await run([{ op: "mkdir", at: 1, pid: 9, path: "/h" }]);
+    expect(result.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual(["/h"]);
+  });
+
+  test("a symlinked parent that still resolves inside the roots is kept", async () => {
+    const inspector = new FakeFsInspector().setResolution("/h/link", "/h/real");
+    const { result } = await run([{ op: "mkdir", at: 1, pid: 9, path: "/h/link/out" }], { inspector });
+    expect(result.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual(["/h/link/out"]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  test("a symlinked parent that resolves outside the roots is dropped with a diagnostic", async () => {
+    const inspector = new FakeFsInspector().setResolution("/h/link", "/away");
+    const { result } = await run([{ op: "mkdir", at: 1, pid: 9, path: "/h/link/out" }], { inspector });
+    expect(result.events).toEqual([]);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.includes("/h/link/out"))).toBe(true);
+  });
+
+  test("a `..` after a symlinked component resolves like the kernel, so an escape is dropped", async () => {
+    // The kernel follows `link` first, so `/h/link/..` is `/` (not `/h`); the lexical form `/h/out`
+    // must not be recorded.
+    const inspector = new FakeFsInspector().setResolution("/h/link", "/away");
+    const { result } = await run([{ op: "mkdir", at: 1, pid: 9, path: "/h/link/../out" }], { inspector });
+    expect(result.events).toEqual([]);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.includes("/h/link/../out"))).toBe(true);
+  });
+
+  test("the final component is not followed: a symlink inside the roots is its own object", async () => {
+    const inspector = new FakeFsInspector([["/h/tool", { kind: "symlink", target: "/usr/bin/true" }]]).setResolution(
+      "/h/tool",
+      "/usr/bin/true",
+    );
+    const { result } = await run([{ op: "symlink", at: 1, pid: 9, path: "/h/tool", target: "/usr/bin/true" }], {
+      inspector,
+    });
+    expect(result.events.map((event) => (event.type === "symlink" ? event.path : ""))).toEqual(["/h/tool"]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  test("a symlinked parent pointing outside the roots is dropped against the real filesystem", async () => {
+    const base = await mkdtemp(join(tmpdir(), "tret-root-escape-"));
+    const home = join(base, "home");
+    const outside = join(base, "outside");
+    try {
+      await mkdir(home);
+      await mkdir(outside);
+      await symlink(outside, join(home, "esc"));
+
+      const result = await reconstruct({
+        traced: {
+          records: [
+            { op: "mkdir", at: 1, pid: 9, path: join(home, "esc", "evil") },
+            { op: "mkdir", at: 2, pid: 9, path: join(home, "ok") },
+          ],
+          unsupported: [],
+          diagnostics: [],
+        },
+        inspector: new RealFsInspector(),
+        baseline: new MemoryBaseline(),
+        roots: [home],
+        fallbackAt: 1000,
+      });
+
+      expect(result.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual([join(home, "ok")]);
+      expect(result.diagnostics.some((diagnostic) => diagnostic.includes(join(home, "esc", "evil")))).toBe(true);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });
 

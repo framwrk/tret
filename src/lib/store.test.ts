@@ -1,4 +1,11 @@
-import { BlobCorruptionError, BlobTooLargeError, FileStorage, InvalidRecordError, RecordsCorruptionError } from "./store";
+import {
+  BlobCorruptionError,
+  BlobTooLargeError,
+  FileStorage,
+  InvalidRecordError,
+  RecordsCorruptionError,
+  RecordsLockedError,
+} from "./store";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
@@ -170,6 +177,42 @@ describe("FileStorage records", () => {
     expect(readFileSync(recordsPath(home), "utf8")).toBe(malformed);
   });
 
+  test("rejects a records file whose nested entry is malformed and leaves its bytes untouched", async () => {
+    const home = makeHome();
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    const malformed = JSON.stringify({
+      version: 3,
+      records: [{ ...v3Record(), owned: [{ path: "bin/mytool", kind: "file" }] }],
+    });
+    writeFileSync(recordsPath(home), malformed);
+
+    const storage = new FileStorage({ homeDir: home });
+    const error = await storage.loadRecords().catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(RecordsCorruptionError);
+    expect((error as RecordsCorruptionError).issues).toContain("records[0].owned[0].path must be an absolute path");
+    expect(readFileSync(recordsPath(home), "utf8")).toBe(malformed);
+  });
+
+  test("rejects a v2 file whose path cannot migrate to an absolute v3 entry, leaving it untouched", async () => {
+    const home = makeHome();
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    const legacy = JSON.stringify({ version: 2, records: [{ ...v2Record("ripgrep"), added: ["bin/ripgrep"] }] });
+    writeFileSync(recordsPath(home), legacy);
+
+    const storage = new FileStorage({ homeDir: home });
+    await expect(storage.loadRecords()).rejects.toBeInstanceOf(RecordsCorruptionError);
+    expect(readFileSync(recordsPath(home), "utf8")).toBe(legacy);
+  });
+
+  test("rejects a record with a malformed nested entry without writing anything", async () => {
+    const home = makeHome();
+    const storage = new FileStorage({ homeDir: home });
+    const invalid = { ...v3Record(), mutated: [{ path: "/home/.zshrc", beforeBlob: "blob-1" }] } as unknown as RecordV3;
+
+    await expect(storage.saveRecord(invalid)).rejects.toBeInstanceOf(InvalidRecordError);
+    expect(existsSync(recordsPath(home))).toBe(false);
+  });
+
   test("does not overwrite a corrupt file when a save is attempted", async () => {
     const home = makeHome();
     mkdirSync(join(home, ".tret"), { recursive: true });
@@ -214,6 +257,73 @@ describe("FileStorage records", () => {
     expect((await storage.loadRecords()).map((record) => record.id)).toEqual(["rec-1"]);
     await storage.saveRecord(v3Record({ id: "rec-2" }));
     expect((await storage.loadRecords()).map((record) => record.id).sort()).toEqual(["rec-1", "rec-2"]);
+  });
+});
+
+describe("FileStorage records lock", () => {
+  test("concurrent saves keep every record instead of overwriting one another", async () => {
+    const home = makeHome();
+    const storage = new FileStorage({ homeDir: home });
+
+    await Promise.all([
+      storage.saveRecord(v3Record({ id: "a" })),
+      storage.saveRecord(v3Record({ id: "b", name: "other" })),
+      storage.saveRecord(v3Record({ id: "c", name: "third" })),
+    ]);
+
+    expect((await storage.loadRecords()).map((record) => record.id).sort()).toEqual(["a", "b", "c"]);
+    expect(existsSync(`${recordsPath(home)}.lock`)).toBe(false);
+  });
+
+  test("a save racing a removal keeps both the added record and the untouched one", async () => {
+    const home = makeHome();
+    const storage = new FileStorage({ homeDir: home });
+    await storage.saveRecord(v3Record({ id: "keep" }));
+    await storage.saveRecord(v3Record({ id: "gone", name: "gone" }));
+
+    await Promise.all([storage.saveRecord(v3Record({ id: "added", name: "added" })), storage.removeRecord("gone")]);
+
+    expect((await storage.loadRecords()).map((record) => record.id).sort()).toEqual(["added", "keep"]);
+  });
+
+  test("fails closed when another process holds the lock past the timeout, preserving its lock", async () => {
+    const home = makeHome();
+    const storage = new FileStorage({ homeDir: home, lockTimeoutMs: 40, lockStaleMs: 60_000 });
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    writeFileSync(`${recordsPath(home)}.lock`, "99999\n");
+
+    await expect(storage.saveRecord(v3Record())).rejects.toBeInstanceOf(RecordsLockedError);
+    expect(existsSync(recordsPath(home))).toBe(false);
+    expect(existsSync(`${recordsPath(home)}.lock`)).toBe(true);
+  });
+
+  test("reclaims a lock left behind by a crashed writer once it is stale", async () => {
+    const home = makeHome();
+    const storage = new FileStorage({ homeDir: home, lockStaleMs: 1000 });
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    const lock = `${recordsPath(home)}.lock`;
+    writeFileSync(lock, "99999\n");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(lock, past, past);
+
+    await storage.saveRecord(v3Record());
+
+    expect((await storage.loadRecords()).map((record) => record.id)).toEqual(["rec-1"]);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("a failed write releases the lock instead of stranding it", async () => {
+    const home = makeHome();
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    writeFileSync(recordsPath(home), "garbage");
+    const storage = new FileStorage({ homeDir: home });
+
+    await expect(storage.saveRecord(v3Record())).rejects.toBeInstanceOf(RecordsCorruptionError);
+    expect(existsSync(`${recordsPath(home)}.lock`)).toBe(false);
+
+    await storage.quarantineCorruptRecords();
+    await storage.saveRecord(v3Record());
+    expect((await storage.loadRecords()).length).toBe(1);
   });
 });
 

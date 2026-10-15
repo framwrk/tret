@@ -622,6 +622,22 @@ describe("uninstall record lifecycle", () => {
     expect(existsSync(launcher)).toBe(true);
     expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
   });
+
+  test("a records file with a malformed nested entry is rejected without overwriting it", async () => {
+    const home = makeHome();
+    const malformed = JSON.stringify({
+      version: 3,
+      records: [{ ...record(), owned: [{ path: "relative/tool", kind: "file" }] }],
+    });
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    writeFileSync(join(home, ".tret", "records.json"), malformed);
+
+    const result = await runCliResult(["uninstall", "mytool", "--yes"], home);
+
+    expect(result.code).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("could not read the install records");
+    expect(readFileSync(join(home, ".tret", "records.json"), "utf8")).toBe(malformed);
+  });
 });
 
 describe("uninstall ownership confidence", () => {

@@ -164,6 +164,53 @@ describe("journal normalization: mutation and deletion", () => {
     expect(effects.mutated[0]?.beforeBlob).toBeUndefined();
   });
 
+  test("an overwrite records the prior permission bits from the before metadata", () => {
+    const effects = normalize([
+      {
+        type: "write",
+        path: "/home/.config/tool.conf",
+        before: { kind: "file", hash: HASH_A, size: 10, mode: 0o640 },
+        after: { kind: "file", hash: HASH_B, size: 12, mode: 0o644 },
+      },
+    ]);
+
+    expect(effects.mutated).toEqual([
+      { path: "/home/.config/tool.conf", beforeHash: HASH_A, installedHash: HASH_B, mode: 0o640 },
+    ]);
+  });
+
+  test("a write after a chmod keeps the chmod's prior mode and gains the write's before hash", () => {
+    const effects = normalize(
+      [
+        { type: "chmod", path: "/home/.config/tool.conf", before: { mode: 0o640 }, after: { mode: 0o600 } },
+        {
+          type: "write",
+          path: "/home/.config/tool.conf",
+          before: { kind: "file", hash: HASH_A, size: 10, mode: 0o640 },
+          after: { kind: "file", hash: HASH_B, size: 12, mode: 0o600 },
+        },
+      ],
+      { backups: { enabled: true, sizeLimitBytes: 1024 }, availableBeforeImages: new Set([HASH_A]) },
+    );
+
+    expect(effects.mutated).toEqual([
+      { path: "/home/.config/tool.conf", beforeHash: HASH_A, installedHash: HASH_B, mode: 0o640, beforeBlob: HASH_A },
+    ]);
+    expect(effects.diagnostics).toEqual([]);
+  });
+
+  test("a deletion after a chmod keeps the chmod's prior mode and the deletion's before hash", () => {
+    const effects = normalize(
+      [
+        { type: "chmod", path: "/home/.old", before: { mode: 0o640 }, after: { mode: 0o600 } },
+        { type: "unlink", path: "/home/.old", before: { kind: "file", hash: HASH_A, size: 5, mode: 0o600 } },
+      ],
+      { backups: { enabled: true, sizeLimitBytes: 1024 }, availableBeforeImages: new Set([HASH_A]) },
+    );
+
+    expect(effects.deleted).toEqual([{ path: "/home/.old", beforeHash: HASH_A, mode: 0o640, beforeBlob: HASH_A }]);
+  });
+
   test("deleting a pre-existing file records it with its prior hash and before-image once captured", () => {
     const effects = normalize([{ type: "unlink", path: "/home/.old", before: { kind: "file", hash: HASH_A, size: 5 } }], {
       backups: { enabled: true, sizeLimitBytes: 1024 },
@@ -171,6 +218,14 @@ describe("journal normalization: mutation and deletion", () => {
     });
 
     expect(effects.deleted).toEqual([{ path: "/home/.old", beforeHash: HASH_A, beforeBlob: HASH_A }]);
+  });
+
+  test("deleting a pre-existing file records its permission bits", () => {
+    const effects = normalize([
+      { type: "unlink", path: "/home/.old", before: { kind: "file", hash: HASH_A, size: 5, mode: 0o600 } },
+    ]);
+
+    expect(effects.deleted).toEqual([{ path: "/home/.old", beforeHash: HASH_A, mode: 0o600 }]);
   });
 
   test("removing a pre-existing directory records a deletion", () => {
@@ -184,6 +239,13 @@ describe("journal normalization: mutation and deletion", () => {
 
     expect(effects.mutated).toEqual([{ path: "/home/script.sh" }]);
     expect(effects.diagnostics.map((diagnostic) => diagnostic.code)).toContain("unsupported");
+  });
+
+  test("chmod whose prior mode is known records it for restore without a diagnostic", () => {
+    const effects = normalize([{ type: "chmod", path: "/home/script.sh", before: { mode: 0o644 }, after: { mode: 0o755 } }]);
+
+    expect(effects.mutated).toEqual([{ path: "/home/script.sh", mode: 0o644 }]);
+    expect(effects.diagnostics).toEqual([]);
   });
 
   test("chmod on a file the install created stays owned without a separate mutation", () => {

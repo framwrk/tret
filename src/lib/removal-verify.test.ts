@@ -2,6 +2,7 @@ import { VerifiedUninstallPlanner, inspectPath } from "./uninstall-planner";
 import { afterAll, describe, expect, test } from "bun:test";
 import { applyUninstallPlan, reduceRecordForRetry } from "./removal";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -9,6 +10,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -245,6 +247,70 @@ describe("applyUninstallPlan restores", () => {
     const result = await applyUninstallPlan(plan, { storage: storageReturning({ b1: bytes("before") }) });
     expect(result.restored).toEqual([file]);
     expect(readFileSync(file, "utf8")).toBe("before");
+  });
+
+  test("restores a mutation's recorded permission bits with its bytes", async () => {
+    const home = testHome();
+    const file = join(home, "rc");
+    writeFileSync(file, "installed", { mode: 0o600 });
+    const target = record({
+      mutated: [{ path: file, installedHash: sha256("installed"), beforeBlob: "b1", mode: 0o640 }],
+    });
+
+    const plan = await planner.plan(target);
+    const result = await applyUninstallPlan(plan, { storage: storageReturning({ b1: bytes("before") }) });
+
+    expect(result.restored).toEqual([file]);
+    expect(readFileSync(file, "utf8")).toBe("before");
+    expect(statSync(file).mode & 0o7777).toBe(0o640);
+  });
+
+  test("restores a deletion's permission bits and creates a missing parent directory private", async () => {
+    const home = testHome();
+    const dir = join(home, "nested");
+    const file = join(dir, "gone");
+    const target = record({ deleted: [{ path: file, beforeBlob: "b2", mode: 0o640 }] });
+
+    const plan = await planner.plan(target);
+    const result = await applyUninstallPlan(plan, { storage: storageReturning({ b2: bytes("original") }) });
+
+    expect(result.restored).toEqual([file]);
+    expect(readFileSync(file, "utf8")).toBe("original");
+    expect(statSync(file).mode & 0o7777).toBe(0o640);
+    expect(statSync(dir).mode & 0o7777).toBe(0o700);
+  });
+
+  test("restores into an existing parent directory without re-permissioning it", async () => {
+    const home = testHome();
+    const config = join(home, ".config");
+    const dir = join(config, "mytool");
+    mkdirSync(dir, { recursive: true });
+    chmodSync(config, 0o755);
+    chmodSync(dir, 0o750);
+    const file = join(dir, "gone");
+    const target = record({ deleted: [{ path: file, beforeBlob: "b2", mode: 0o640 }] });
+
+    const plan = await planner.plan(target);
+    const result = await applyUninstallPlan(plan, { storage: storageReturning({ b2: bytes("original") }) });
+
+    expect(result.restored).toEqual([file]);
+    expect(readFileSync(file, "utf8")).toBe("original");
+    expect(statSync(file).mode & 0o7777).toBe(0o640);
+    expect(statSync(config).mode & 0o7777).toBe(0o755);
+    expect(statSync(dir).mode & 0o7777).toBe(0o750);
+  });
+
+  test("falls back to private permissions for a record captured without a mode", async () => {
+    const home = testHome();
+    const file = join(home, "rc");
+    writeFileSync(file, "installed");
+    const target = record({ mutated: [{ path: file, installedHash: sha256("installed"), beforeBlob: "b1" }] });
+
+    const plan = await planner.plan(target);
+    const result = await applyUninstallPlan(plan, { storage: storageReturning({ b1: bytes("before") }) });
+
+    expect(result.restored).toEqual([file]);
+    expect(statSync(file).mode & 0o7777).toBe(0o600);
   });
 
   test("preserves a mutation edited after planning instead of overwriting it", async () => {

@@ -1,4 +1,4 @@
-import type { AbsolutePath, OwnedEntry, OwnedKind, OwnershipConfidence, RecordV3 } from "../types";
+import type { AbsolutePath, DeletedEntry, MutatedEntry, OwnedEntry, OwnedKind, OwnershipConfidence, RecordV3 } from "../types";
 import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { ownershipConfidence, ownershipMarker, ownershipNote } from "./ownership";
 import type { BlobId } from "./storage";
@@ -50,6 +50,8 @@ export type UninstallAction =
       path: AbsolutePath;
       kind: OwnedKind;
       beforeBlob: BlobId;
+      /** Recorded pre-install permission bits; the applier restores them when the capture knew them. */
+      mode?: number;
       /** Snapshot checked by the planner; the applier requires this exact state before writing. */
       plannedState: UninstallVerification;
     }
@@ -263,7 +265,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     // Without a before-image the change is detect-only: report it, never block on it (D2).
     for (const entry of record.mutated) {
       const verification = inspect(entry.path);
-      const action = planMutation(entry.path, entry.installedHash, entry.beforeBlob, verification, claimed, force);
+      const action = planMutation(entry, verification, claimed, force);
       actions.push(action);
       if (action.action === "restore" && sudoNeeded(verification)) requiresSudo = true;
     }
@@ -272,7 +274,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     // deletion with no before-image is likewise detect-only.
     for (const entry of record.deleted) {
       const verification = inspect(entry.path);
-      actions.push(planDeletion(entry.path, entry.beforeBlob, verification, claimed, force));
+      actions.push(planDeletion(entry, verification, claimed, force));
     }
 
     return {
@@ -345,47 +347,55 @@ function planSymlink(entry: OwnedEntry, verification: UninstallVerification, for
 /**
  * Plans one mutation. A before-image is required to restore; without one the change is detect-only
  * and reported rather than blocking. With a before-image, the current bytes must still equal the
- * recorded installed hash (and a hash must exist) before uninstall will overwrite them.
+ * recorded installed hash (and a hash must exist) before uninstall will overwrite them. The entry's
+ * recorded pre-install mode travels with the restore so the applier can put it back.
  */
 function planMutation(
-  path: AbsolutePath,
-  installedHash: string | undefined,
-  beforeBlob: BlobId | undefined,
+  entry: MutatedEntry,
   verification: UninstallVerification,
   claimed: Set<AbsolutePath>,
   force: boolean,
 ): UninstallAction {
+  const { path } = entry;
   if (claimed.has(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
   // No before-image: nothing to restore from, so the install's edit is detectable but not
   // reversible. Report it as informational instead of a permanent `missing-blob` conflict (D2).
-  if (beforeBlob === undefined) return { action: "detected", path, kind: "mutated" };
+  if (entry.beforeBlob === undefined) return { action: "detected", path, kind: "mutated" };
   if (!verification.exists) return { action: "conflict", path, reason: "diverged" };
   if (verification.hash === undefined) return { action: "conflict", path, reason: "unreadable" };
-  if (installedHash !== undefined && verification.hash !== installedHash)
+  if (entry.installedHash !== undefined && verification.hash !== entry.installedHash)
     return { action: "conflict", path, reason: "diverged" };
-  if (installedHash === undefined) return { action: "conflict", path, reason: "unverified" };
+  if (entry.installedHash === undefined) return { action: "conflict", path, reason: "unverified" };
   return {
     action: "restore",
     path,
     kind: verification.kind ?? "file",
-    beforeBlob,
+    beforeBlob: entry.beforeBlob,
+    ...(entry.mode === undefined ? {} : { mode: entry.mode }),
     plannedState: snapshotState(verification),
   };
 }
 
 /** Plans one deletion: restore only while the path is still absent and a before-image exists. */
 function planDeletion(
-  path: AbsolutePath,
-  beforeBlob: BlobId | undefined,
+  entry: DeletedEntry,
   verification: UninstallVerification,
   claimed: Set<AbsolutePath>,
   force: boolean,
 ): UninstallAction {
+  const { path } = entry;
   if (claimed.has(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
   // As with a mutation, a deletion without a before-image cannot be reversed; report it, don't block.
-  if (beforeBlob === undefined) return { action: "detected", path, kind: "deleted" };
+  if (entry.beforeBlob === undefined) return { action: "detected", path, kind: "deleted" };
   if (verification.exists) return { action: "conflict", path, reason: "diverged" };
-  return { action: "restore", path, kind: "file", beforeBlob, plannedState: snapshotState(verification) };
+  return {
+    action: "restore",
+    path,
+    kind: "file",
+    beforeBlob: entry.beforeBlob,
+    ...(entry.mode === undefined ? {} : { mode: entry.mode }),
+    plannedState: snapshotState(verification),
+  };
 }
 
 /** Copies the state used for this decision so every destructive action is tied to its plan. */
