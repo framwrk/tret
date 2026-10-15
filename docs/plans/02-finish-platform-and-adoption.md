@@ -27,6 +27,17 @@ Make the macOS and Linux platform tables drive the real commands consistently, e
 - Adopting a populated tool directory produces a useful, safe uninstall plan and never recursively deletes unverified contents.
 - CI covers the platform tables and at least one real Linux capture path in addition to the existing fake-backend tests.
 
+## Outcome
+
+Implemented on `platform/p1-finish-platform` (items 1–6 complete; 7–8 outstanding):
+
+- Item 1: `find`, the snapshot scope, and the shared-path guards read the running platform table, so Linux searches its XDG and package-manager surfaces and protects `/usr`, `/etc`, and the other shared system trees instead of the macOS list.
+- Item 2: shell-config cleanup walks the active table's entries, including the Linux-only `.bash_login`, fish's `config.fish`, and directory entries (`/etc/profile.d` is reported, never edited as a file).
+- Item 3: the fanotify helper builds for the Linux release targets and ships inside the Linux archives; the backend discovers it beside the `tret` binary, so no private `TRET_FANOTIFY` path is needed, and the unprivileged `strace` fallback stays available.
+- Item 4: a Linux smoke test runs a representative installer through the shipped `strace` backend, parser, and reconstruction on genuine kernel output, skipping cleanly where the kernel or the missing `strace` refuses it; hermetic fake-tracer tests keep the edge cases deterministic.
+- Item 5: with `--backup`, the Linux capture reads each eligible pre-existing file's bytes and prior mode at window start and attaches them as before-images; a restore is claimed only for bytes storage actually holds.
+- Item 6: case behavior is probed read-only per filesystem (a case-flipped spelling of the deepest existing ancestor); `install` and `find` resolve one conservative record-wide flag over every observed path, the capture backends key paths with that same flag, and uninstall folds case in shared-ownership and delegated-removal overlap checks whenever either record was on a case-insensitive filesystem. The platform defaults remain only as the last resort when nothing can be probed.
+
 ## Dependencies and boundaries
 
 The re-verification, root-boundary, and shared-ownership work in [Safety and data integrity](01-safety-and-data-integrity.md) is complete; build on it before enabling real destructive operations on newly supported paths. Keep the shared record format and capture-backend seam; do not fork core install or uninstall logic by operating system.

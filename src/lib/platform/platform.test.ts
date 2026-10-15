@@ -1,6 +1,6 @@
-import { LINUX_PLATFORM, MACOS_PLATFORM, hostArch, platformFor } from "./index";
+import type { CaseDetection, Platform } from "./types";
+import { LINUX_PLATFORM, MACOS_PLATFORM, caseSensitiveForPaths, hostArch, platformFor } from "./index";
 import { describe, expect, test } from "bun:test";
-import type { Platform } from "./types";
 
 // The pre-rewrite macOS tables, copied here verbatim so the platform seam is provably equivalent.
 const LEGACY_SNAPSHOT_ROOTS = ["/opt/homebrew/bin", "/usr/local/bin"];
@@ -152,10 +152,27 @@ describe("platform tables", () => {
     }
   });
 
-  test("case behavior defaults match each OS and the stub reports them (D10)", () => {
+  test("case behavior keeps each OS default only as the last resort (D10)", () => {
     expect(MACOS_PLATFORM.case.defaultCaseSensitive).toBe(false);
-    expect(MACOS_PLATFORM.case.detect("/tmp")).toBe("insensitive");
     expect(LINUX_PLATFORM.case.defaultCaseSensitive).toBe(true);
-    expect(LINUX_PLATFORM.case.detect("/tmp")).toBe("sensitive");
+    // The detector reads the filesystem, so both tables share the same probe.
+    expect(MACOS_PLATFORM.case.detect).toBe(LINUX_PLATFORM.case.detect);
+  });
+
+  test("one record-wide case flag: any sensitive path wins, otherwise an insensitive path decides (D10)", () => {
+    expect(caseSensitiveForPaths(probingPlatform({ "/a": "insensitive", "/b": "sensitive" }, false), ["/a", "/b"])).toBe(true);
+    expect(caseSensitiveForPaths(probingPlatform({ "/a": "insensitive" }, true), ["/a"])).toBe(false);
+    // Unprobed paths defer to the probed ones, and an all-unknown (or empty) set to the default.
+    expect(caseSensitiveForPaths(probingPlatform({ "/a": "sensitive" }, false), ["/a", "/b"])).toBe(true);
+    expect(caseSensitiveForPaths(probingPlatform({}, false), ["/a"])).toBe(false);
+    expect(caseSensitiveForPaths(probingPlatform({}, true), [])).toBe(true);
   });
 });
+
+/** A platform whose case probe answers from a map, for exercising the record-wide reduction (D10). */
+function probingPlatform(answers: Record<string, CaseDetection>, defaultCaseSensitive: boolean): Platform {
+  return {
+    ...MACOS_PLATFORM,
+    case: { defaultCaseSensitive, detect: (path) => answers[path] ?? "unknown" },
+  };
+}

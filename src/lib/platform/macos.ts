@@ -1,4 +1,5 @@
 import type { Platform } from "./types";
+import { detectCaseBehavior } from "./case";
 
 /**
  * macOS platform table. The legacy path tables (`SNAPSHOT_ROOTS`, `SHARED_ABSOLUTE`/`SHARED_IN_HOME`,
@@ -111,7 +112,6 @@ export const MACOS_PLATFORM: Platform = {
   },
   case: {
     defaultCaseSensitive: false,
-    // Phase 2 stub: per-mount probing lands with storage/uninstall (D10).
-    detect: () => "insensitive",
+    detect: detectCaseBehavior,
   },
 };
