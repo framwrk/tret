@@ -170,6 +170,42 @@ describe("FileStorage records", () => {
     expect(readFileSync(recordsPath(home), "utf8")).toBe(malformed);
   });
 
+  test("rejects a records file whose nested entry is malformed and leaves its bytes untouched", async () => {
+    const home = makeHome();
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    const malformed = JSON.stringify({
+      version: 3,
+      records: [{ ...v3Record(), owned: [{ path: "bin/mytool", kind: "file" }] }],
+    });
+    writeFileSync(recordsPath(home), malformed);
+
+    const storage = new FileStorage({ homeDir: home });
+    const error = await storage.loadRecords().catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(RecordsCorruptionError);
+    expect((error as RecordsCorruptionError).issues).toContain("records[0].owned[0].path must be an absolute path");
+    expect(readFileSync(recordsPath(home), "utf8")).toBe(malformed);
+  });
+
+  test("rejects a v2 file whose path cannot migrate to an absolute v3 entry, leaving it untouched", async () => {
+    const home = makeHome();
+    mkdirSync(join(home, ".tret"), { recursive: true });
+    const legacy = JSON.stringify({ version: 2, records: [{ ...v2Record("ripgrep"), added: ["bin/ripgrep"] }] });
+    writeFileSync(recordsPath(home), legacy);
+
+    const storage = new FileStorage({ homeDir: home });
+    await expect(storage.loadRecords()).rejects.toBeInstanceOf(RecordsCorruptionError);
+    expect(readFileSync(recordsPath(home), "utf8")).toBe(legacy);
+  });
+
+  test("rejects a record with a malformed nested entry without writing anything", async () => {
+    const home = makeHome();
+    const storage = new FileStorage({ homeDir: home });
+    const invalid = { ...v3Record(), mutated: [{ path: "/home/.zshrc", beforeBlob: "blob-1" }] } as unknown as RecordV3;
+
+    await expect(storage.saveRecord(invalid)).rejects.toBeInstanceOf(InvalidRecordError);
+    expect(existsSync(recordsPath(home))).toBe(false);
+  });
+
   test("does not overwrite a corrupt file when a save is attempted", async () => {
     const home = makeHome();
     mkdirSync(join(home, ".tret"), { recursive: true });

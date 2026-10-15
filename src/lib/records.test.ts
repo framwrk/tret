@@ -2,14 +2,15 @@ import {
   LEGACY_BACKEND,
   LegacyRecordWriteError,
   RecordMigrationError,
+  isV3Record,
   migrateRecordFileV2ToV3,
   migrateRecordV2ToV3,
   saveRecord,
 } from "./records";
+import type { RecordV3, ToolRecord } from "../types";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { FileStorage } from "./store";
-import type { ToolRecord } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -154,5 +155,98 @@ describe("v2 -> v3 migration", () => {
 
   test("a malformed v3 file is rejected too", () => {
     expect(() => migrateRecordFileV2ToV3({ version: 3, records: [{ id: "x" }] })).toThrow(RecordMigrationError);
+  });
+});
+
+/** A fully shaped v3 record; overrides may still be made shape-invalid by the tests below. */
+function v3Record(overrides: Partial<RecordV3> = {}): RecordV3 {
+  return {
+    id: "rec-1",
+    name: "mytool",
+    source: "install",
+    url: "https://example.com/install.sh",
+    installedAt: "2026-10-09T00:00:00.000Z",
+    executable: "/home/.local/bin/mytool",
+    scriptSha256: "a".repeat(64),
+    capture: {
+      backend: "linux-strace",
+      completeness: "complete",
+      segments: [{ kind: "install", startedAt: "2026-10-09T00:00:00.000Z", endedAt: "2026-10-09T00:00:01.000Z" }],
+    },
+    privilege: "user",
+    caseSensitive: true,
+    owned: [{ path: "/home/.local/bin/mytool", kind: "file", installedHash: "b".repeat(64) }],
+    mutated: [],
+    deleted: [],
+    ...overrides,
+  };
+}
+
+/** A record-like object with shape-invalid overrides; `isV3Record` takes `unknown` by design. */
+function corrupt(overrides: Record<string, unknown>): unknown {
+  return { ...v3Record(), ...overrides };
+}
+
+describe("deep v3 record validation", () => {
+  test("accepts a fully shaped record and the partial record with no executable", () => {
+    expect(isV3Record(v3Record())).toBe(true);
+    // An empty executable is the v3 representation for a partial record with no discoverable one.
+    expect(isV3Record(v3Record({ executable: "", scriptSha256: "" }))).toBe(true);
+  });
+
+  test("rejects owned entries with a relative path, an unknown kind, or a foreign link target", () => {
+    expect(isV3Record(corrupt({ owned: [{ path: "bin/mytool", kind: "file" }] }))).toBe(false);
+    expect(isV3Record(corrupt({ owned: [{ path: "/x", kind: "socket" }] }))).toBe(false);
+    expect(isV3Record(corrupt({ owned: [{ path: "/x", kind: "file", linkTarget: "/y" }] }))).toBe(false);
+    expect(isV3Record(v3Record({ owned: [{ path: "/x", kind: "symlink", linkTarget: "../y" }] }))).toBe(true);
+  });
+
+  test("rejects a fingerprint or before-image reference that is not a sha256", () => {
+    expect(isV3Record(corrupt({ owned: [{ path: "/x", kind: "file", installedHash: "short" }] }))).toBe(false);
+    expect(isV3Record(corrupt({ mutated: [{ path: "/x", beforeBlob: "blob-1" }] }))).toBe(false);
+    expect(isV3Record(corrupt({ deleted: [{ path: "/x", beforeHash: "not-hex" }] }))).toBe(false);
+    expect(isV3Record(v3Record({ mutated: [{ path: "/x", beforeHash: "c".repeat(64), beforeBlob: "d".repeat(64) }] }))).toBe(
+      true,
+    );
+  });
+
+  test("rejects capture segments that are empty, of an unknown kind, or missing a start time", () => {
+    expect(isV3Record(corrupt({ capture: { backend: "x", completeness: "complete", segments: [] } }))).toBe(false);
+    expect(
+      isV3Record(
+        corrupt({ capture: { backend: "x", completeness: "complete", segments: [{ kind: "prune", startedAt: "t" }] } }),
+      ),
+    ).toBe(false);
+    expect(
+      isV3Record(
+        corrupt({ capture: { backend: "x", completeness: "complete", segments: [{ kind: "install", startedAt: "" }] } }),
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects managed fields with a relative shared root and accepts them without one", () => {
+    expect(isV3Record(corrupt({ managedBy: { manager: "npm", package: "mytool", globalRoot: ".npm-global" } }))).toBe(false);
+    expect(isV3Record(corrupt({ managedInstall: { kind: "pi", layout: "releases-v1", root: "pi" } }))).toBe(false);
+    expect(isV3Record(v3Record({ managedBy: { manager: "npm", package: "mytool" } }))).toBe(true);
+  });
+
+  test("a malformed nested v3 entry names the field at fault", () => {
+    try {
+      migrateRecordFileV2ToV3({ version: 3, records: [corrupt({ mutated: [{ path: "/x", beforeBlob: "blob-1" }] })] });
+      throw new Error("expected validation to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RecordMigrationError);
+      expect((error as RecordMigrationError).issues).toContain("records[0].mutated[0].beforeBlob must be a sha256 hex string");
+    }
+  });
+
+  test("a v2 file whose path cannot migrate to an absolute v3 entry fails closed", () => {
+    try {
+      migrateRecordFileV2ToV3({ version: 2, records: [{ ...record("ripgrep"), added: ["bin/ripgrep"] }] });
+      throw new Error("expected migration to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RecordMigrationError);
+      expect((error as RecordMigrationError).issues).toContain("records[0].owned[0].path must be an absolute path");
+    }
   });
 });

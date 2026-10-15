@@ -135,6 +135,19 @@ export function migrateRecordFileV2ToV3(value: unknown, options: LegacyMigration
     throw new RecordMigrationError("records file has malformed records", issues);
   }
 
+  // The migrated output must satisfy the same deep validation a v3 file is held to, so migration
+  // can never write a file the next load refuses to read. v2 stored bare path strings, so a
+  // relative one fails here instead of becoming a record uninstall might resolve against its own
+  // working directory.
+  const migratedIssues: string[] = [];
+  records.forEach((record, index) => {
+    for (const reason of recordV3Issues(record)) migratedIssues.push(`records[${index}].${reason}`);
+  });
+
+  if (migratedIssues.length > 0) {
+    throw new RecordMigrationError("records file has records that cannot migrate to valid v3", migratedIssues);
+  }
+
   return { version: 3, records };
 }
 
@@ -195,7 +208,7 @@ function requireStringArray(value: unknown, where: string, issues: string[]): st
   return value as string[];
 }
 
-/** Shallow structural validation of a v3 file, enough to reject a corrupt one before trusting it. */
+/** Deep structural validation of a v3 file, enough to reject a corrupt one before trusting it. */
 function validateRecordFileV3(value: Record<string, unknown>): RecordFileV3 {
   if (value.version !== 3) {
     throw new RecordMigrationError(`unsupported records version: ${String(value.version)}`);
@@ -206,7 +219,11 @@ function validateRecordFileV3(value: Record<string, unknown>): RecordFileV3 {
 
   const issues: string[] = [];
   value.records.forEach((entry, index) => {
-    if (!isV3Record(entry)) issues.push(`records[${index}] is not a valid v3 record`);
+    if (!isObject(entry)) {
+      issues.push(`records[${index}] is not an object`);
+      return;
+    }
+    for (const reason of recordV3Issues(entry)) issues.push(`records[${index}].${reason}`);
   });
 
   if (issues.length > 0) {
@@ -216,54 +233,176 @@ function validateRecordFileV3(value: Record<string, unknown>): RecordFileV3 {
   return { version: 3, records: value.records as RecordV3[] };
 }
 
-/** Structural validation of one v3 record, enough to reject a corrupt or foreign entry before trusting it. */
+/**
+ * Deep validation of one v3 record: nested entries, capture segments, fingerprints, before-image
+ * references, and absolute paths are all checked, because later code trusts them without
+ * re-checking. A relative or non-string entry path would be resolved against the caller's working
+ * directory by uninstall, a non-sha256 fingerprint would silently make verification incomparable,
+ * and a `beforeBlob` that is not a content address could never name a stored blob. A record that
+ * fails any check is rejected whole; nothing is dropped, guessed, or repaired in place.
+ */
 export function isV3Record(value: unknown): value is RecordV3 {
-  if (!isObject(value)) return false;
-  if (
-    typeof value.id !== "string" ||
-    typeof value.name !== "string" ||
-    (value.source !== "install" && value.source !== "find") ||
-    typeof value.url !== "string" ||
-    typeof value.installedAt !== "string" ||
-    typeof value.executable !== "string" ||
-    typeof value.scriptSha256 !== "string" ||
-    (value.privilege !== "user" && value.privilege !== "root") ||
-    typeof value.caseSensitive !== "boolean" ||
-    !Array.isArray(value.owned) ||
-    !Array.isArray(value.mutated) ||
-    !Array.isArray(value.deleted)
-  ) {
-    return false;
-  }
-
-  if (value.managedBy !== undefined && !isManagedPackage(value.managedBy)) return false;
-  if (value.managedInstall !== undefined && !isManagedInstall(value.managedInstall)) return false;
-
-  const capture = value.capture;
-  if (!isObject(capture)) return false;
-  if (typeof capture.backend !== "string") return false;
-  if (capture.completeness !== "complete" && capture.completeness !== "partial" && capture.completeness !== "heuristic") {
-    return false;
-  }
-  return Array.isArray(capture.segments);
+  return isObject(value) && recordV3Issues(value).length === 0;
 }
 
-/** Validates the optional `managedBy` field: a known manager plus a non-empty package spec. */
-function isManagedPackage(value: unknown): boolean {
-  if (!isObject(value)) return false;
-  if (typeof value.package !== "string" || value.package.length === 0) return false;
-  if (value.globalRoot !== undefined && (typeof value.globalRoot !== "string" || value.globalRoot.length === 0)) {
-    return false;
+/** Collects one reason per problem in a v3 record, so a rejection names the field at fault. */
+function recordV3Issues(value: Record<string, unknown>): string[] {
+  const issues: string[] = [];
+
+  requireNonEmptyString(value.id, "id", issues);
+  requireNonEmptyString(value.name, "name", issues);
+  if (value.source !== "install" && value.source !== "find") issues.push(`source must be "install" or "find"`);
+  requireString(value.url, "url", issues); // A `find` record has no URL.
+  requireNonEmptyString(value.installedAt, "installedAt", issues);
+  requireString(value.executable, "executable", issues); // Empty is the partial record with no executable.
+  requireString(value.scriptSha256, "scriptSha256", issues); // Empty for `find` and migrated v2 records.
+  if (value.privilege !== "user" && value.privilege !== "root") issues.push(`privilege must be "user" or "root"`);
+  if (typeof value.caseSensitive !== "boolean") issues.push("caseSensitive must be a boolean");
+  if (value.managedBy !== undefined) managedPackageIssues(value.managedBy, "managedBy", issues);
+  if (value.managedInstall !== undefined) managedInstallIssues(value.managedInstall, "managedInstall", issues);
+
+  captureIssues(value.capture, issues);
+  ownedIssues(value.owned, issues);
+  mutatedIssues(value.mutated, issues);
+  deletedIssues(value.deleted, issues);
+
+  return issues;
+}
+
+/** Validates `capture`: a backend, a completeness label, and at least one well-formed segment. */
+function captureIssues(value: unknown, issues: string[]): void {
+  if (!isObject(value)) {
+    issues.push("capture must be an object");
+    return;
   }
-  return value.manager === "bun" || value.manager === "npm" || value.manager === "pnpm" || value.manager === "yarn";
+  requireNonEmptyString(value.backend, "capture.backend", issues);
+  if (value.completeness !== "complete" && value.completeness !== "partial" && value.completeness !== "heuristic") {
+    issues.push(`capture.completeness must be "complete", "partial", or "heuristic"`);
+  }
+  if (!Array.isArray(value.segments) || value.segments.length === 0) {
+    issues.push("capture.segments must be a non-empty array");
+    return;
+  }
+  value.segments.forEach((segment, index) => {
+    const where = `capture.segments[${index}]`;
+    if (!isObject(segment)) {
+      issues.push(`${where} must be an object`);
+      return;
+    }
+    if (segment.kind !== "install" && segment.kind !== "trace" && segment.kind !== "find") {
+      issues.push(`${where}.kind must be "install", "trace", or "find"`);
+    }
+    requireNonEmptyString(segment.startedAt, `${where}.startedAt`, issues);
+    if (segment.endedAt !== undefined) requireNonEmptyString(segment.endedAt, `${where}.endedAt`, issues);
+    if (segment.partialReason !== undefined) {
+      requireNonEmptyString(segment.partialReason, `${where}.partialReason`, issues);
+    }
+  });
+}
+
+/** Validates every owned entry: an absolute path, a known kind, a symlink target only on symlinks, a sha256. */
+function ownedIssues(value: unknown, issues: string[]): void {
+  if (!Array.isArray(value)) {
+    issues.push("owned must be an array");
+    return;
+  }
+  value.forEach((entry, index) => {
+    const where = `owned[${index}]`;
+    if (!isObject(entry)) {
+      issues.push(`${where} must be an object`);
+      return;
+    }
+    requireAbsolutePath(entry.path, `${where}.path`, issues);
+    if (entry.kind !== "file" && entry.kind !== "directory" && entry.kind !== "symlink" && entry.kind !== "unknown") {
+      issues.push(`${where}.kind must be "file", "directory", "symlink", or "unknown"`);
+    }
+    if (entry.linkTarget !== undefined) {
+      requireNonEmptyString(entry.linkTarget, `${where}.linkTarget`, issues);
+      if (entry.kind !== "symlink") issues.push(`${where}.linkTarget is only valid on a symlink entry`);
+    }
+    if (entry.installedHash !== undefined) requireSha256(entry.installedHash, `${where}.installedHash`, issues);
+  });
+}
+
+/** Validates every mutation entry: an absolute path, sha256 fingerprints, and a real before-image address. */
+function mutatedIssues(value: unknown, issues: string[]): void {
+  if (!Array.isArray(value)) {
+    issues.push("mutated must be an array");
+    return;
+  }
+  value.forEach((entry, index) => {
+    const where = `mutated[${index}]`;
+    if (!isObject(entry)) {
+      issues.push(`${where} must be an object`);
+      return;
+    }
+    requireAbsolutePath(entry.path, `${where}.path`, issues);
+    if (entry.beforeHash !== undefined) requireSha256(entry.beforeHash, `${where}.beforeHash`, issues);
+    if (entry.installedHash !== undefined) requireSha256(entry.installedHash, `${where}.installedHash`, issues);
+    if (entry.beforeBlob !== undefined) requireSha256(entry.beforeBlob, `${where}.beforeBlob`, issues);
+  });
+}
+
+/** Validates every deletion entry: an absolute path, a sha256 fingerprint, and a real before-image address. */
+function deletedIssues(value: unknown, issues: string[]): void {
+  if (!Array.isArray(value)) {
+    issues.push("deleted must be an array");
+    return;
+  }
+  value.forEach((entry, index) => {
+    const where = `deleted[${index}]`;
+    if (!isObject(entry)) {
+      issues.push(`${where} must be an object`);
+      return;
+    }
+    requireAbsolutePath(entry.path, `${where}.path`, issues);
+    if (entry.beforeHash !== undefined) requireSha256(entry.beforeHash, `${where}.beforeHash`, issues);
+    if (entry.beforeBlob !== undefined) requireSha256(entry.beforeBlob, `${where}.beforeBlob`, issues);
+  });
+}
+
+/** Validates the optional `managedBy` field: a known manager, a package spec, and an absolute shared root. */
+function managedPackageIssues(value: unknown, where: string, issues: string[]): void {
+  if (!isObject(value)) {
+    issues.push(`${where} must be an object`);
+    return;
+  }
+  if (value.manager !== "bun" && value.manager !== "npm" && value.manager !== "pnpm" && value.manager !== "yarn") {
+    issues.push(`${where}.manager must be "bun", "npm", "pnpm", or "yarn"`);
+  }
+  requireNonEmptyString(value.package, `${where}.package`, issues);
+  if (value.globalRoot !== undefined) requireAbsolutePath(value.globalRoot, `${where}.globalRoot`, issues);
 }
 
 /** Validates the optional `managedInstall` field: a marker kind, layout, and absolute root. */
-function isManagedInstall(value: unknown): boolean {
-  if (!isObject(value)) return false;
-  if (typeof value.kind !== "string" || value.kind.length === 0) return false;
-  if (typeof value.layout !== "string" || value.layout.length === 0) return false;
-  return typeof value.root === "string" && value.root.length > 0;
+function managedInstallIssues(value: unknown, where: string, issues: string[]): void {
+  if (!isObject(value)) {
+    issues.push(`${where} must be an object`);
+    return;
+  }
+  requireNonEmptyString(value.kind, `${where}.kind`, issues);
+  requireNonEmptyString(value.layout, `${where}.layout`, issues);
+  requireAbsolutePath(value.root, `${where}.root`, issues);
+}
+
+/** Fingerprints and before-image addresses are sha256 hex, the only hash form Tret writes. */
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+
+function requireString(raw: unknown, where: string, issues: string[]): void {
+  if (typeof raw !== "string") issues.push(`${where} must be a string`);
+}
+
+function requireNonEmptyString(raw: unknown, where: string, issues: string[]): void {
+  if (typeof raw !== "string" || raw.length === 0) issues.push(`${where} must be a non-empty string`);
+}
+
+/** Entry paths are absolute, because uninstall resolves them without a working directory. */
+function requireAbsolutePath(raw: unknown, where: string, issues: string[]): void {
+  if (typeof raw !== "string" || !raw.startsWith("/")) issues.push(`${where} must be an absolute path`);
+}
+
+function requireSha256(raw: unknown, where: string, issues: string[]): void {
+  if (typeof raw !== "string" || !SHA256_PATTERN.test(raw)) issues.push(`${where} must be a sha256 hex string`);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
