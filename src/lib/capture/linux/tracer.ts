@@ -50,6 +50,10 @@ export type LinuxTracerFactory = (options: TracerAttachOptions) => Promise<Linux
  * "unsupported" set is traced so content/metadata changes the journal cannot represent are
  * reported instead of silently missed. `mmap` is filtered in the parser to shared writable
  * file-backed mappings only, so ordinary allocations do not flood the trace.
+ *
+ * Only genuine syscall names belong here: `strace` rejects the whole `-e trace=` set when any name
+ * is unknown (a libc wrapper such as `mkfifo` is not one — FIFO creation arrives as `mknodat`).
+ * `linux.smoke.test.ts` exercises this list against a real strace so an invalid name cannot ship.
  */
 export const STRACE_TRACE_SET = [
   "open",
@@ -94,7 +98,6 @@ export const STRACE_TRACE_SET = [
   "removexattr",
   "mknod",
   "mknodat",
-  "mkfifo",
   "link",
   "linkat",
 ].join(",");
