@@ -67,9 +67,9 @@ export interface Platform {
   scopeRoots: AbsolutePath[];
   /**
    * Whether a scoped capture also observes `$HOME` itself, bounded by the shared skip rules
-   * (`EXCLUDED_PATHS`, `EXCLUDED_DIR_NAMES`, `EXCLUDED_DIR_NAME_PATTERN`). macOS sets this so an
-   * installer's top-level dotfiles/dot-directories (`~/.claude.json`, `~/.claude/`) are captured;
-   * Linux keeps its narrower XDG scope and leaves it unset.
+   * (`EXCLUDED_PATHS`, `EXCLUDED_DIR_NAMES`, `EXCLUDED_DIR_NAME_PATTERN`). Both platform tables set
+   * this so an installer's top-level dotfiles/dot-directories outside the fixed tool roots
+   * (`~/.claude.json`, `~/.toolrc`, `~/.pi/`) are captured rather than missed.
    */
   captureHomeRoot?: boolean;
   /** Home-relative tool directories searched by `tret find` (the old `SEARCH_DIRS_IN_HOME`). */

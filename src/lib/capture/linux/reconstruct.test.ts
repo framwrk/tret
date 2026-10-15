@@ -216,6 +216,26 @@ describe("linux reconstruction: scope and unsupported operations", () => {
     expect(result.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual(["/h/keep"]);
   });
 
+  test("contents of skipped churn directories are dropped, like the baseline walk", async () => {
+    const { result } = await run(
+      [
+        { op: "mkdir", at: 1, pid: 9, path: "/h/node_modules" },
+        { op: "write", at: 2, pid: 9, path: "/h/node_modules/pkg/index.js" },
+        { op: "write", at: 3, pid: 9, path: "/h/.cache/tool/blob" },
+        { op: "write", at: 4, pid: 9, path: "/h/cache.log" },
+        { op: "write", at: 5, pid: 9, path: "/h/.mytool/dist/bundle.js" },
+      ],
+      { inspector: new FakeFsInspector([["/h/.mytool/dist/bundle.js", file(HASH_A)]]) },
+    );
+
+    // The skipped directory itself is recorded (a final path segment is never excluded), its
+    // contents are not — and a *file* whose name merely matches the cache pattern stays tracked.
+    const made = result.events.filter((event) => event.type === "mkdir").map((event) => event.path);
+    expect(made).toEqual(["/h/node_modules"]);
+    const written = result.events.filter((event) => event.type === "write").map((event) => event.path);
+    expect(written).toEqual(["/h/cache.log"]);
+  });
+
   test("unsupported syscalls are reported as diagnostics and create no events", async () => {
     const { result } = await run([
       {

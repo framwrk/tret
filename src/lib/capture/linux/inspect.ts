@@ -1,8 +1,8 @@
 import type { AbsolutePath, OwnedKind } from "../../../types";
-import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN } from "../../../constants";
 import { basename, dirname, join } from "node:path";
 import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { isExcludedDirName } from "../../../constants";
 import { normalizeAbsolutePath } from "./paths";
 
 /**
@@ -205,13 +205,8 @@ async function walk(dir: AbsolutePath, baseline: MemoryBaseline): Promise<void> 
     baseline.set(path, kind);
     // Mirror the snapshot walk: record an excluded directory but never descend into it, so a cache
     // or dependency tree costs one entry instead of a full recursive walk.
-    if (entry.isDirectory() && !isExcludedDir(entry.name)) await walk(path, baseline);
+    if (entry.isDirectory() && !isExcludedDirName(entry.name)) await walk(path, baseline);
   }
-}
-
-/** The snapshot walk's skip rules: a folder name is excluded by exact match or by pattern. */
-function isExcludedDir(name: string): boolean {
-  return EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name);
 }
 
 function kindOf(info: NodeInfo): OwnedKind {
