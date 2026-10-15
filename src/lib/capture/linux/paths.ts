@@ -1,4 +1,5 @@
 import type { AbsolutePath } from "../../../types";
+import { isExcludedDirName } from "../../../constants";
 
 /**
  * Path-boundary rules for the Linux capture pipeline. `normalizeAbsolutePath` collapses `.` and
@@ -30,4 +31,20 @@ export function inRoots(path: AbsolutePath, roots: AbsolutePath[]): boolean {
     const prefix = root.endsWith("/") ? root : `${root}/`;
     return path.startsWith(prefix);
   });
+}
+
+/**
+ * Whether an ancestor directory of `path` is one the shared exclusion rules skip at any depth
+ * (`EXCLUDED_DIR_NAMES`/`EXCLUDED_DIR_NAME_PATTERN`), matching the scoped snapshot walk. The final
+ * segment is deliberately not checked: an excluded directory is itself recorded (the baseline walk
+ * records it without descending), so a `mkdir` of `node_modules` stays an owned directory while its
+ * untracked payload does not.
+ */
+export function hasExcludedAncestor(path: AbsolutePath): boolean {
+  const segments = path.split("/");
+  for (let index = 1; index < segments.length - 1; index++) {
+    const segment = segments[index];
+    if (segment !== undefined && isExcludedDirName(segment)) return true;
+  }
+  return false;
 }

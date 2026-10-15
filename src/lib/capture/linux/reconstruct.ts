@@ -10,7 +10,7 @@ import type {
 } from "../events";
 import type { TracerRecord, TracerResult } from "./raw";
 import { basename, dirname } from "node:path";
-import { inRoots, normalizeAbsolutePath } from "./paths";
+import { hasExcludedAncestor, inRoots, normalizeAbsolutePath } from "./paths";
 
 /**
  * Turns tracer records into journal events. It runs after the window closes and inspects the final
@@ -188,6 +188,11 @@ async function checkPaths(
   for (const raw of paths) {
     const normalized = normalizeAbsolutePath(raw);
     if (normalized === undefined || !inRoots(normalized, roots)) return { kind: "out-of-scope" };
+    // Contents of shared churn directories (`node_modules`, caches, `dist`) are out of scope, like
+    // in the scoped snapshot walk and the baseline. The whole record is dropped even when only one
+    // of a rename's paths is affected: recording the other side alone cannot be told from a fresh
+    // create, and inventing an effect is worse than a missing one.
+    if (hasExcludedAncestor(normalized)) return { kind: "out-of-scope" };
     if (await escapesResolvedRoots(raw, normalized, inspector, roots, resolvedRoots, cache)) {
       return { kind: "escaped", path: raw };
     }

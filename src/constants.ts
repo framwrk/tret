@@ -138,3 +138,8 @@ export const EXCLUDED_DIR_NAMES = new Set([
  * caches (`~/.npm/_cacache`, `~/.cache`, `~/.bun/install/cache`) are shared by every installer, so no tool owns them.
  */
 export const EXCLUDED_DIR_NAME_PATTERN = /cache/i;
+
+/** Whether a directory basename is skipped at any depth by the shared exclusion rules. */
+export function isExcludedDirName(name: string): boolean {
+  return EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name);
+}

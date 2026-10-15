@@ -55,6 +55,17 @@ strace tracer only sees tracees' syscalls, and any record for a path outside the
 dropped by the parser and again by reconstruction. The integration fixture deliberately traces a
 file **outside** the roots and asserts it is not attributed.
 
+An install window's roots include `$HOME` itself (`captureHomeRoot`), exactly like macOS, so a tool
+that drops a dotfile or dot-directory outside the fixed XDG roots (`~/.pi`, `~/.toolrc`, `~/.bun`)
+is captured instead of the install being unobservable. Attributing under that root stays consistent
+with the existence baseline: the baseline walk records an excluded directory but never descends into
+it, so reconstruction drops records whose ancestor directories match the shared skip rules
+(`EXCLUDED_DIR_NAMES`/`EXCLUDED_DIR_NAME_PATTERN` — `node_modules`, caches, `dist`). A skipped
+directory itself is still recorded; only its contents are out of scope. (The macOS scoped engine
+applies name exclusions only to its `$HOME` root; the Linux baseline never walks excluded
+directories under any root, so Linux applies them everywhere or a pre-existing file under one would
+be misclassified as a create.)
+
 ## Descendant tracking and how it ends
 
 - **Scope.** The traced tree is the installer pid plus every process it forks, for as long as ptrace

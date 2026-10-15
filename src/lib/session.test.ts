@@ -260,6 +260,15 @@ describe("observation roots", () => {
     expect(roots).toEqual([...roots].sort());
   });
 
+  test("observe $HOME itself on Linux installs, so home-level tool files are captured", () => {
+    const roots = observationRoots(LINUX_PLATFORM, { home: "/home/tester" });
+
+    expect(roots).toContain("/home/tester");
+    expect(roots).toContain("/home/tester/.config");
+    expect(roots).toContain("/home/tester/.bashrc");
+    expect(roots).toEqual([...roots].sort());
+  });
+
   test("drop shared cache directories from an install window scope", () => {
     const roots = installObservationRoots(MACOS_PLATFORM, { home: "/Users/tester" });
 
