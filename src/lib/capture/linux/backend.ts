@@ -2,12 +2,13 @@ import type { Baseline, FsInspector } from "./inspect";
 import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../backend";
 import type { LinuxTracer, LinuxTracerFactory, TracerAttachOptions } from "./tracer";
 import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
-import { accessSync, readFileSync, statSync } from "node:fs";
+import { accessSync, existsSync, readFileSync, statSync } from "node:fs";
 import { attachFanotify, attachStrace } from "./tracer";
 import { dirname, join } from "node:path";
 import type { AbsolutePath } from "../../../types";
 import { FANOTIFY_HELPER } from "../../../constants";
 import type { Journal } from "../events";
+import type { TracerResult } from "./raw";
 import { X_OK } from "node:constants";
 import { reconstruct } from "./reconstruct";
 
@@ -34,6 +35,8 @@ export type LinuxCaptureBackendOptions = {
   name?: string;
   /** How long to wait for the tracer to detach before treating a live tracer as incomplete. */
   settleMs?: number;
+  /** Liveness probe for pids the tracer recorded; injectable so tests stay hermetic. */
+  processAlive?: (pid: number) => boolean;
 };
 
 export class LinuxCaptureBackend implements CaptureBackend {
@@ -43,12 +46,14 @@ export class LinuxCaptureBackend implements CaptureBackend {
   private readonly options: LinuxCaptureBackendOptions;
   private readonly inspector: FsInspector;
   private readonly settleMs: number;
+  private readonly processAlive: (pid: number) => boolean;
 
   constructor(options: LinuxCaptureBackendOptions = {}) {
     this.options = options;
     this.name = options.name ?? "linux-strace";
     this.inspector = options.inspector ?? new RealFsInspector();
     this.settleMs = options.settleMs ?? 200;
+    this.processAlive = options.processAlive ?? procProcessAlive;
   }
 
   async start(options: CaptureStartOptions): Promise<CaptureSession> {
@@ -58,13 +63,15 @@ export class LinuxCaptureBackend implements CaptureBackend {
 
     return {
       backend: tracer.name,
-      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, baseline),
+      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, baseline, options.pid),
     };
   }
 
-  private async stop(tracer: LinuxTracer, roots: AbsolutePath[], baseline: Baseline): Promise<Journal> {
+  private async stop(tracer: LinuxTracer, roots: AbsolutePath[], baseline: Baseline, rootPid: number): Promise<Journal> {
     // A live tracer at the close of the window means tracees (a daemonized or detached descendant)
-    // outlived the bounded install window; their later activity is not captured.
+    // outlived the bounded install window; their later activity is not captured. The observed root
+    // itself is excluded: for an install window it is the caller's own process, alive by
+    // construction, so only a *descendant* it kept running past the window lowers coverage.
     const settled = await waitForInactive(tracer, this.settleMs);
     const beforeStopLosses = tracer.losses();
     await tracer.stop();
@@ -82,7 +89,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     if (traced.unsupported.length > 0) {
       reasons.add(`unsupported syscalls may change files without journal events: ${traced.unsupported.join(", ")}`);
     }
-    if (!settled) {
+    if (!settled && hasLiveDescendants(traced, rootPid, this.processAlive)) {
       reasons.add(
         "capture closed while the tracer was still attached to live descendants (daemonized or detached processes were not observed to their end)",
       );
@@ -132,9 +139,10 @@ export async function defaultTracerFactory(attach: TracerAttachOptions): Promise
  * True when the kernel's Yama LSM forbids this unprivileged process from tracing its own parent — the
  * relationship `strace -f -p <parent>` needs. Under `ptrace_scope >= 1` a child may only trace its
  * descendants, so the attach can never succeed; detecting that up front keeps the caller's heuristic
- * fallback deterministic instead of racing the tracer's exit.
+ * fallback deterministic instead of racing the tracer's exit. Exported so callers and tests can
+ * predict which backend an install window will get.
  */
-function parentAttachRestricted(): boolean {
+export function parentAttachRestricted(): boolean {
   if (isRoot()) return false;
   try {
     const scope = Number.parseInt(readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim(), 10);
@@ -217,4 +225,27 @@ async function waitForInactive(tracer: LinuxTracer, settleMs: number): Promise<b
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/**
+ * Whether any traced process other than the observed root was still alive when the window closed.
+ * The root is excluded because an install window observes the caller's own process, which is alive
+ * by construction; a daemonized or detached descendant keeps its recorded pid alive past the
+ * window. Best-effort: a descendant that issued no traced syscall never appears in the records, and
+ * a reused pid reads as alive.
+ */
+function hasLiveDescendants(traced: TracerResult, rootPid: number, alive: (pid: number) => boolean): boolean {
+  const seen = new Set<number>();
+  for (const record of traced.records) {
+    const pid = record.pid;
+    if (pid === undefined || pid === rootPid || seen.has(pid)) continue;
+    seen.add(pid);
+    if (alive(pid)) return true;
+  }
+  return false;
+}
+
+/** Default liveness probe: `/proc/<pid>` exists. */
+function procProcessAlive(pid: number): boolean {
+  return existsSync(`/proc/${pid}`);
 }
