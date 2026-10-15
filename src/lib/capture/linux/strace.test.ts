@@ -178,6 +178,56 @@ describe("strace parsing: path resolution and scope", () => {
     const result = parseStraceOutput(text);
     expect(result.records[0]).toMatchObject({ op: "open", path: "/home/dir/child" });
   });
+
+  test("an annotated AT_FDCWD resolves against the tracee's directory, not the parser cwd", () => {
+    // strace -y pins the tracee's working directory in the annotation; `mkdir -p` walks a path with
+    // one `mkdirat(AT_FDCWD<parent>, "component")` per component, so the parser cwd would land every
+    // component in the wrong place (or drop all of them when it sits outside the roots).
+    const text = [
+      line(1, 1, 'mkdirat(AT_FDCWD</home/user>, ".pi", 0777) = 0'),
+      line(1, 2, 'mkdirat(AT_FDCWD</home/user/.pi>, "agent", 0777) = 0'),
+      line(1, 3, 'symlinkat("../lib/tool", AT_FDCWD</home/user/.pi/bin>, "tool") = 0'),
+    ].join("\n");
+    const result = parseStraceOutput(text, { cwd: "/elsewhere" });
+    expect(result.records.map((record) => record.path)).toEqual([
+      "/home/user/.pi",
+      "/home/user/.pi/agent",
+      "/home/user/.pi/bin/tool",
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  test("an annotated directory outside the roots drops the record instead of falling back to cwd", () => {
+    const text = [
+      line(1, 1, 'unlinkat(11</tmp/tret-install-abc>, "install.sh", 0) = 0'),
+      line(1, 2, 'mkdirat(AT_FDCWD</tmp/tret-install-abc>, "staging", 0700) = 0'),
+    ].join("\n");
+    const result = parseStraceOutput(text, { cwd: "/home/user", roots: ["/home/user"] });
+    expect(result.records).toEqual([]);
+    // Out of scope, not a coverage loss: the CLI's own temp directory is never observed.
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  test("a symlink target is kept verbatim, not resolved or root-filtered", () => {
+    // The kernel stores the target string uninterpreted; uninstall verifies it against `readlink`,
+    // so a relative or dangling target must survive exactly as written.
+    const text = [
+      line(1, 1, 'symlinkat("../lib/node_modules/acme/tool/cli.js", AT_FDCWD</home/u/.local/bin>, "acmetool") = 0'),
+      line(1, 2, 'symlink("/outside/elsewhere", "/home/u/.local/bin/other") = 0'),
+    ].join("\n");
+    const result = parseStraceOutput(text, { cwd: "/", roots: ["/home/u"] });
+    expect(result.records).toHaveLength(2);
+    expect(result.records[0]).toMatchObject({
+      op: "symlink",
+      path: "/home/u/.local/bin/acmetool",
+      target: "../lib/node_modules/acme/tool/cli.js",
+    });
+    expect(result.records[1]).toMatchObject({
+      op: "symlink",
+      path: "/home/u/.local/bin/other",
+      target: "/outside/elsewhere",
+    });
+  });
 });
 
 describe("strace parsing: string and argument helpers", () => {

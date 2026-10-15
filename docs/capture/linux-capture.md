@@ -46,7 +46,8 @@ for:
 - renames (`rename`/`renameat`/`renameat2`, fanotify `FAN_MOVED_FROM`/`FAN_MOVED_TO` paired);
 - unlinks (`unlink`/`unlinkat`, fanotify `FAN_DELETE`);
 - chmods (`chmod`/`fchmod`/`fchmodat`, fanotify `FAN_ATTRIB`);
-- symlinks (`symlink`/`symlinkat`), recorded by target and never followed;
+- symlinks (`symlink`/`symlinkat`), recorded by the target string exactly as the tracee wrote it
+  (relative, dangling, or pointing outside the roots) and never followed;
 - directory creation and removal (`mkdir`/`mkdirat`, `rmdir`, `unlinkat(AT_REMOVEDIR)`).
 
 Only paths under the `roots` passed to `start()` are attributed. This is defense in depth over the
@@ -84,10 +85,13 @@ be misclassified as a create.)
 - **uid transitions.** A `setuid`/`setgid` `execve` makes the process non-dumpable; an unprivileged
   tracer is detached and coverage stops. `strace` diagnostics mentioning `setuid`/`ptrace`/attach
   failures are folded into `partialReason`.
-- **Relative paths.** strace does not report a tracee's working directory. `StraceTracer` resolves
-  paths relative to a `cwd` option (install integration passes the installer's cwd); when a relative
-  path cannot be resolved it is dropped and becomes a diagnostic, which marks the journal `partial`
-  rather than guessing.
+- **Relative paths.** strace reports syscall arguments as the tracee passed them. With `-y` it also
+  annotates each dirfd, including `AT_FDCWD</dir>` — the tracee's working directory at that syscall —
+  so `StraceTracer` resolves a relative path against the annotated directory first (this is what
+  makes `mkdir -p`'s component-by-component `mkdirat(AT_FDCWD<...>, "name")` calls resolve
+  correctly). Only an unannotated dirfd falls back to the `cwd` option (install integration passes
+  the installer's cwd); a relative path with no known directory at all is dropped and becomes a
+  diagnostic, which marks the journal `partial` rather than guessing.
 - **Inherited fds.** `strace -y` annotates descriptors with their paths, so a `write` resolves to a
   path without a prior `open` in the journal. A write on an fd the tracer cannot resolve is a
   diagnostic and lowers completeness.

@@ -1,6 +1,6 @@
+import { LINUX_PLATFORM, MACOS_PLATFORM } from "./platform";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { LINUX_PLATFORM } from "./platform";
 import { findRelated } from "./related";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,6 +21,8 @@ function testHome(): string {
 const NAME = "tretfindtest";
 
 describe("findRelated", () => {
+  // The macOS table explicitly: this case asserts `Library/Preferences`, which only its search roots
+  // contain. The fourth test covers the Linux table's roots.
   test("finds tool-named entries in the standard directories and keeps only the top-most path", () => {
     const home = testHome();
     mkdirSync(join(home, `.${NAME}/bin`), { recursive: true });
@@ -31,7 +33,7 @@ describe("findRelated", () => {
     mkdirSync(join(home, "Library/Preferences"), { recursive: true });
     writeFileSync(join(home, `Library/Preferences/${NAME}.plist`), "");
 
-    expect(findRelated(NAME, join(home, `.${NAME}/bin/${NAME}`))).toEqual([
+    expect(findRelated(NAME, join(home, `.${NAME}/bin/${NAME}`), MACOS_PLATFORM)).toEqual([
       join(home, `.config/${NAME}`),
       join(home, `.local/bin/${NAME}`),
       join(home, `.${NAME}`),
