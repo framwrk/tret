@@ -72,10 +72,13 @@ be misclassified as a create.)
   keeps them traceable. This is not limited to direct children.
 - **Natural end.** When every tracee exits, `strace -f` exits; the journal is eligible to be
   `complete`.
-- **Bounded window.** `stop()` waits a short settle period for the tracer to detach. If the tracer is
-  **still attached to live tracees** when the window closes, a descendant (a daemon, a `setsid` child,
-  or a process that reparented to init) outlived the install window. Its later activity is not
-  captured, so the journal is marked `partial` with "live descendants".
+- **Bounded window.** `stop()` waits a short settle period for the tracer to detach. In parent mode
+  (`strace -p <caller>`) the tracer stays attached to the still-running root by construction, so the
+  check is instead whether any _other_ recorded pid is still alive: if one is, a descendant (a
+  daemon, a `setsid` child, or a process that reparented to init) outlived the install window. Its
+  later activity is not captured, so the journal is marked `partial` with "live descendants". The
+  probe is best-effort (`/proc/<pid>` exists): a descendant that issued no traced syscall never
+  appears in the records, and a reused pid reads as alive.
 - **Daemonized children.** A double-fork/`setsid` daemon is followed while it remains a tracee; it is
   only lost at the bounded-window boundary or a uid transition, and either case is reported.
 - **uid transitions.** A `setuid`/`setgid` `execve` makes the process non-dumpable; an unprivileged
@@ -119,7 +122,10 @@ with a `partialReason` joining every cause:
 1. no tracer loss reason (attach denied, ptrace/setuid drop, fanotify helper error/overflow);
 2. no unsupported syscall was observed;
 3. no parser diagnostic (unresolved relative path, unknown fd, unfinished syscall);
-4. the tracer detached on its own before the settle deadline (the whole tree exited).
+4. no descendant outlived the window: either the tracer detached on its own before the settle
+   deadline, or every recorded pid other than the observed root was already gone. The root is the
+   caller's own process — `strace -p <caller>` stays attached for as long as it runs — so its
+   liveness alone does not lower coverage.
 
 A record is never labelled `complete` when any of 1–4 fails, so uninstall and `tret list` can trust
 the label. `heuristic` is reserved for the macOS fallback; the Linux backend never emits it.
@@ -160,9 +166,10 @@ through the unprivileged and privileged backends and asserts identical normalize
 `linux.smoke.test.ts` is the one test that runs **real** `strace` (Linux-only; it skips when `strace`
 is absent). It runs a representative installer under `strace` as the tracer's own child — parent-mode
 ptrace, which the kernel permits without elevated privileges under Yama — and drives the output
-through the shipped parser, `reconstruct`, and the Linux backend. Two things only this test can
-catch: a trace-set name `strace` does not recognize (it refuses the whole `-e trace=` set, so every
-attachment would fail and silently fall back) and parser drift against genuine kernel output.
+through the shipped parser, `reconstruct`, and the Linux backend, and asserts the window is labelled
+`complete`. Two things only this test can catch: a trace-set name `strace` does not recognize (it
+refuses the whole `-e trace=` set, so every attachment would fail and silently fall back) and parser
+drift against genuine kernel output that would lower the label.
 
 Run everything with:
 

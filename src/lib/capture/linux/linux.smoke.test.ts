@@ -138,6 +138,8 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
     const journal = await session.stop();
 
     expect(journal.backend).toBe("linux-strace");
+    expect(journal.completeness).toBe("complete");
+    expect(journal.partialReason).toBeUndefined();
     const effects = normalizeJournal({
       journal,
       backups: { enabled: false, sizeLimitBytes: 1024 * 1024 },

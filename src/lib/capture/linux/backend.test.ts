@@ -8,7 +8,7 @@ import type { TracerAttachOptions } from "./tracer";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-function backendWith(tracer: FakeLinuxTracer) {
+function backendWith(tracer: FakeLinuxTracer, options: { processAlive?: (pid: number) => boolean } = {}) {
   const seen: TracerAttachOptions[] = [];
   const backend = new LinuxCaptureBackend({
     tracerFactory: async (options) => {
@@ -18,6 +18,7 @@ function backendWith(tracer: FakeLinuxTracer) {
     inspector: new FakeFsInspector([["/h/d", { kind: "directory" }]]),
     baseline: "none",
     settleMs: 10,
+    ...(options.processAlive === undefined ? {} : { processAlive: options.processAlive }),
   });
   return { backend, seen };
 }
@@ -77,13 +78,27 @@ describe("linux capture backend", () => {
     expect(journal.partialReason).toContain("relative path");
   });
 
-  test("a tracer still attached at stop means live descendants and is never complete", async () => {
+  test("a descendant still alive at stop means live descendants and is never complete", async () => {
     const tracer = new FakeLinuxTracer({ active: true });
-    const { backend } = backendWith(tracer);
+    tracer.push({ op: "mkdir", at: 1, pid: 99, path: "/h/d" });
+    const { backend } = backendWith(tracer, { processAlive: (pid) => pid === 99 });
     const journal = await (await capture(backend)).stop();
 
     expect(journal.completeness).toBe("partial");
     expect(journal.partialReason).toContain("live descendants");
+  });
+
+  test("a tracer still attached to the observed root alone stays complete", async () => {
+    const tracer = new FakeLinuxTracer({ active: true });
+    tracer.push({ op: "mkdir", at: 1, pid: 42, path: "/h/d" });
+    tracer.push({ op: "write", at: 2, pid: 7, path: "/h/d/f" });
+    const { backend } = backendWith(tracer, { processAlive: (pid) => pid === 42 });
+    const journal = await (await capture(backend)).stop();
+
+    // The root (pid 42) is the caller's own process, alive by construction; the descendant that did
+    // the work (pid 7) exited, so nothing outlived the window.
+    expect(journal.completeness).toBe("complete");
+    expect(journal.partialReason).toBeUndefined();
   });
 
   test("records outside the roots are dropped even if the tracer reports them", async () => {
