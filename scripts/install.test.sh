@@ -25,6 +25,13 @@ case "$(uname -m)" in
     ;;
 esac
 
+# The same per-platform hash tool install.sh picks.
+if command -v sha256sum >/dev/null 2>&1; then
+  HASH() { sha256sum "$@"; }
+else
+  HASH() { shasum -a 256 "$@"; }
+fi
+
 BINARY="tret-$OS-$ARCH"
 ARCHIVE="$BINARY.tar.gz"
 [ -f "$DIST/$ARCHIVE" ] || {
@@ -79,12 +86,31 @@ run_install >/dev/null
 [ -L "$FAKE_HOME/.local/bin/tret" ] || fail "symlink not created"
 [ "$(readlink "$FAKE_HOME/.local/bin/tret")" = "$FAKE_HOME/.tret/bin/tret" ] || fail "symlink points elsewhere"
 
+# Linux releases ship the fanotify helper beside the binary; when the manifest
+# has an entry for it, the install must have put it in place, executable.
+HELPER_SHA="$(grep " tret-fanotify-$OS-$ARCH\$" "$RELEASE/checksums.txt" | cut -d' ' -f1 || true)"
+if [ -n "$HELPER_SHA" ]; then
+  [ -x "$FAKE_HOME/.tret/bin/tret-fanotify" ] || fail "fanotify helper not installed as executable"
+  INSTALLED_HELPER_SHA="$(HASH "$FAKE_HOME/.tret/bin/tret-fanotify" | cut -d' ' -f1)"
+  [ "$INSTALLED_HELPER_SHA" = "$HELPER_SHA" ] || fail "installed helper does not match the release checksum"
+fi
+
 # Second run recognizes the verified binary and skips the reinstall.
 SECOND="$(run_install)"
 case "$SECOND" in
   *"already up to date"*) ;;
   *) fail "second run did not report up to date: $SECOND" ;;
 esac
+
+# A missing helper makes a rerun reinstall the pair instead of reporting up to
+# date; the binary and symlink must survive that.
+if [ -n "$HELPER_SHA" ]; then
+  rm "$FAKE_HOME/.tret/bin/tret-fanotify"
+  run_install >/dev/null
+  [ -x "$FAKE_HOME/.tret/bin/tret-fanotify" ] || fail "helper was not reinstalled"
+  [ -x "$FAKE_HOME/.tret/bin/tret" ] || fail "rerun removed the binary"
+  [ -L "$FAKE_HOME/.local/bin/tret" ] || fail "rerun removed the symlink"
+fi
 
 # A corrupted archive must fail verification instead of being installed.
 rm "$FAKE_HOME/.tret/bin/tret"
