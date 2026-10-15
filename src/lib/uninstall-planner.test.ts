@@ -307,6 +307,42 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
     ]);
   });
 
+  test("a restore carries the recorded pre-install mode of a mutation", async () => {
+    const target = {
+      ...record(),
+      owned: [],
+      mutated: [{ path: "/h/rc", installedHash: h("b"), beforeBlob: "blob-1", mode: 0o640 }],
+    };
+    const plan = await planFor(target, { "/h/rc": { exists: true, kind: "file", hash: h("b") } });
+
+    expect(plan.actions).toEqual([
+      {
+        action: "restore",
+        path: "/h/rc",
+        kind: "file",
+        beforeBlob: "blob-1",
+        mode: 0o640,
+        plannedState: { exists: true, kind: "file", hash: h("b") },
+      },
+    ]);
+  });
+
+  test("a restore carries the recorded pre-install mode of a deletion", async () => {
+    const target = { ...record(), owned: [], mutated: [], deleted: [{ path: "/h/gone", beforeBlob: "blob-2", mode: 0o600 }] };
+    const plan = await planFor(target, {});
+
+    expect(plan.actions).toEqual([
+      {
+        action: "restore",
+        path: "/h/gone",
+        kind: "file",
+        beforeBlob: "blob-2",
+        mode: 0o600,
+        plannedState: { exists: false },
+      },
+    ]);
+  });
+
   test("preserves a diverged mutation and reports a conflict", async () => {
     const target = {
       ...record(),

@@ -221,14 +221,14 @@ describe("macOS scoped snapshot diff", () => {
     const events = diffScopedSnapshots(before, after);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: "write", path: "/s/.config/tool.conf" });
-    expect(normalize(events).mutated).toEqual([{ path: "/s/.config/tool.conf", installedHash: HASH_B }]);
+    expect(normalize(events).mutated).toEqual([{ path: "/s/.config/tool.conf", installedHash: HASH_B, mode: 0o644 }]);
   });
 
   test("a deleted file becomes a deletion with no before-hash", () => {
     const before = snap([node("/s/.mytool/gone.txt", "file", { size: 9 })]);
     const events = diffScopedSnapshots(before, snap([]));
     expect(events).toMatchObject([{ type: "unlink", path: "/s/.mytool/gone.txt" }]);
-    expect(normalize(events).deleted).toEqual([{ path: "/s/.mytool/gone.txt" }]);
+    expect(normalize(events).deleted).toEqual([{ path: "/s/.mytool/gone.txt", mode: 0o644 }]);
   });
 
   test("a kind change is emitted as a removal before a creation", () => {
@@ -237,7 +237,7 @@ describe("macOS scoped snapshot diff", () => {
     const events = diffScopedSnapshots(before, after);
     expect(events.map((event) => event.type)).toEqual(["unlink", "mkdir"]);
     const effects = normalize(events);
-    expect(effects.mutated).toEqual([{ path: "/s/x" }]);
+    expect(effects.mutated).toEqual([{ path: "/s/x", mode: 0o644 }]);
     expect(effects.owned).toEqual([]);
     expect(effects.deleted).toEqual([]);
   });
@@ -247,7 +247,7 @@ describe("macOS scoped snapshot diff", () => {
     const after = snap([node("/s/mytool", "file", { mode: 0o755 })]);
     const events = diffScopedSnapshots(before, after);
     expect(events).toEqual([{ type: "chmod", path: "/s/mytool", before: { mode: 0o644 }, after: { mode: 0o755 } }]);
-    expect(normalize(events).mutated).toEqual([{ path: "/s/mytool" }]);
+    expect(normalize(events).mutated).toEqual([{ path: "/s/mytool", mode: 0o644 }]);
   });
 
   test("a created symlink is owned by its target, never followed", () => {

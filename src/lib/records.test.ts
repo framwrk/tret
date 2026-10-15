@@ -210,6 +210,14 @@ describe("deep v3 record validation", () => {
     );
   });
 
+  test("rejects permission bits that are not whole 0o7777 modes", () => {
+    expect(isV3Record(v3Record({ mutated: [{ path: "/x", mode: 0o640 }], deleted: [{ path: "/y", mode: 0 }] }))).toBe(true);
+    expect(isV3Record(corrupt({ mutated: [{ path: "/x", mode: 0.5 }] }))).toBe(false);
+    expect(isV3Record(corrupt({ mutated: [{ path: "/x", mode: 0o10000 }] }))).toBe(false);
+    expect(isV3Record(corrupt({ deleted: [{ path: "/x", mode: -1 }] }))).toBe(false);
+    expect(isV3Record(corrupt({ deleted: [{ path: "/x", mode: "600" }] }))).toBe(false);
+  });
+
   test("rejects capture segments that are empty, of an unknown kind, or missing a start time", () => {
     expect(isV3Record(corrupt({ capture: { backend: "x", completeness: "complete", segments: [] } }))).toBe(false);
     expect(

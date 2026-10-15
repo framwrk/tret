@@ -119,6 +119,8 @@ export type MutatedEntry = {
   installedHash?: string;
   /** Content-addressed blob id for the before-image; only set when backups were enabled (D2). */
   beforeBlob?: string;
+  /** Permission bits (`0o7777` max) before the install changed the path, when the capture knew them. */
+  mode?: number;
 };
 
 /** A pre-existing path the install removed, retaining the prior content when a before-image exists. */
@@ -126,6 +128,8 @@ export type DeletedEntry = {
   path: AbsolutePath;
   beforeHash?: string;
   beforeBlob?: string;
+  /** Permission bits (`0o7777` max) the path had before the install removed it, when known. */
+  mode?: number;
 };
 
 /** A package manager whose global mode Tret can delegate package removal to. */

@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 // Criterion 3, end to end through the shipped commands, in a throwaway $HOME: `install --backup`
-// captures before-image bytes for files it overwrites or deletes, and `uninstall --yes` restores
-// them; with backups off the same install records the changes but preserves the current files and
-// reports a conflict instead of inventing a restore. A file the user edits after install is never
-// overwritten, even with backups on.
+// captures before-image bytes and the prior permission bits for files it overwrites or deletes, and
+// `uninstall --yes` restores both without re-permissioning parent directories; with backups off the
+// same install records the changes but preserves the current files and reports a conflict instead of
+// inventing a restore. A file the user edits after install is never overwritten, even with backups on.
 
 const BUN = process.execPath;
 const TRET = join(import.meta.dir, "..", "..", "index.ts");
@@ -45,11 +45,12 @@ function serve(script: string): { url: string; stop: () => Promise<void> } {
   return { url: `http://127.0.0.1:${server.port}/install.sh`, stop: () => server.stop(true) };
 }
 
-/** Overwrites one pre-existing config, deletes another, and installs one executable. */
+/** Overwrites one pre-existing config (tightening its mode), deletes another, and installs one executable. */
 const INSTALL_SCRIPT = `#!/bin/bash
 set -e
 mkdir -p "$HOME/.config/mytool" "$HOME/.local/bin"
 printf 'installed-config\\n' > "$HOME/.config/mytool/keep.conf"
+chmod 600 "$HOME/.config/mytool/keep.conf"
 rm -f "$HOME/.config/mytool/gone.conf"
 printf '#!/bin/sh\\necho mytool\\n' > "$HOME/.local/bin/mytool"
 chmod +x "$HOME/.local/bin/mytool"
@@ -57,15 +58,24 @@ chmod +x "$HOME/.local/bin/mytool"
 
 const keepPath = (home: string) => join(home, ".config", "mytool", "keep.conf");
 const gonePath = (home: string) => join(home, ".config", "mytool", "gone.conf");
+const configDir = (home: string) => join(home, ".config", "mytool");
 
-/** Lays down the pre-existing files the installer will overwrite and delete. */
-function seedHome(home: string): void {
-  mkdirSync(join(home, ".config", "mytool"), { recursive: true });
-  writeFileSync(keepPath(home), "original-config\n");
-  writeFileSync(gonePath(home), "original-gone\n");
+/** Permission bits of a path, ignoring the file-type bits. */
+function modeOf(path: string): number {
+  return statSync(path).mode & 0o7777;
 }
 
-type StoredEntry = { path: string; beforeBlob?: string; installedHash?: string };
+/** Lays down the pre-existing files the installer will overwrite and delete, with distinct modes. */
+function seedHome(home: string): void {
+  mkdirSync(configDir(home), { recursive: true });
+  chmodSync(configDir(home), 0o750);
+  writeFileSync(keepPath(home), "original-config\n");
+  chmodSync(keepPath(home), 0o640);
+  writeFileSync(gonePath(home), "original-gone\n");
+  chmodSync(gonePath(home), 0o640);
+}
+
+type StoredEntry = { path: string; beforeBlob?: string; installedHash?: string; mode?: number };
 type StoredRecord = { name: string; owned: StoredEntry[]; mutated: StoredEntry[]; deleted: StoredEntry[] };
 type StoredFile = { version: number; records: StoredRecord[] };
 
@@ -92,6 +102,10 @@ describe("install --backup -> uninstall restores", () => {
       const gone = record.deleted.find((entry) => entry.path === gonePath(home));
       expect(kept?.beforeBlob).toBeDefined();
       expect(gone?.beforeBlob).toBeDefined();
+      // The pre-install mode travels in the record, not the mode the install tightened the file to.
+      expect(kept?.mode).toBe(0o640);
+      expect(gone?.mode).toBe(0o640);
+      expect(modeOf(keepPath(home))).toBe(0o600);
       // The blob is genuinely on disk under its content address, not just named in the record.
       expect(existsSync(join(home, ".tret", "objects", kept!.beforeBlob!))).toBe(true);
       expect(existsSync(join(home, ".tret", "objects", gone!.beforeBlob!))).toBe(true);
@@ -99,10 +113,15 @@ describe("install --backup -> uninstall restores", () => {
       // Dry run plans a restore without touching disk.
       expect(await runCli(["uninstall", "mytool", "--dry-run"], home)).toBe(0);
       expect(readFileSync(keepPath(home), "utf8")).toBe("installed-config\n");
+      expect(modeOf(keepPath(home))).toBe(0o600);
 
       expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
       expect(readFileSync(keepPath(home), "utf8")).toBe("original-config\n");
       expect(readFileSync(gonePath(home), "utf8")).toBe("original-gone\n");
+      // Contents, modes, and the shared parent directory all come back as they were.
+      expect(modeOf(keepPath(home))).toBe(0o640);
+      expect(modeOf(gonePath(home))).toBe(0o640);
+      expect(modeOf(configDir(home))).toBe(0o750);
       expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
       expect(readStore(home).records).toHaveLength(0);
     } finally {
@@ -127,8 +146,9 @@ describe("install --backup -> uninstall restores", () => {
       // Detect-only changes are reported but never block: the owned binary goes and the record drops.
       expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
       expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
-      // The detect-only files are left exactly as the install left them.
+      // The detect-only files are left exactly as the install left them, mode included.
       expect(readFileSync(keepPath(home), "utf8")).toBe("installed-config\n");
+      expect(modeOf(keepPath(home))).toBe(0o600);
       expect(existsSync(gonePath(home))).toBe(false);
       expect(readStore(home).records).toHaveLength(0);
     } finally {
