@@ -9,11 +9,19 @@
 #   tret-<os>-<arch>.tar.gz   the archive published in the release
 #   checksums.txt             SHA-256 for everything built here
 #
+# Linux targets additionally build the privileged fanotify capture helper
+# (tret-fanotify) and ship it inside the archive beside `tret`, plus a raw
+# `tret-fanotify-linux-<arch>` for direct download. The C helper needs Linux
+# kernel headers, so a cross-build of a Linux target from another host skips it
+# with a warning; the release workflow builds every target on a native runner,
+# where the helper is always compiled.
+#
 # Bun cross-compiles each target, so one host can produce the whole matrix; the
 # binaries are still native on the platform the archive lands on.
 set -euo pipefail
 
 ALL_TARGETS=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64")
+HELPER_SOURCE="src/lib/capture/linux/helper/tret-fanotify.c"
 
 if [ "$#" -gt 0 ]; then
   TARGETS=("$@")
@@ -57,7 +65,22 @@ for target in "${TARGETS[@]}"; do
   # The raw binary keeps its platform-specific name for checksums and direct
   # downloads; the archive carries a neutral `tret` so extraction is uniform.
   cp "$stage/tret" "$DIST/tret-$os-$arch"
-  COPYFILE_DISABLE=1 tar -czf "$DIST/tret-$os-$arch.tar.gz" -C "$stage" tret
+
+  archive=(tret)
+  if [ "$os" = "linux" ]; then
+    # The fanotify helper is Linux-only and is discovered beside the `tret`
+    # binary at runtime; it needs Linux headers, so it is only built natively.
+    if [ "$(uname -s)" = "Linux" ]; then
+      echo "building tret-fanotify-linux-$arch"
+      ${CC:-cc} -O2 -o "$stage/tret-fanotify" "$HELPER_SOURCE"
+      cp "$stage/tret-fanotify" "$DIST/tret-fanotify-linux-$arch"
+      archive+=(tret-fanotify)
+    else
+      echo "note: skipping tret-fanotify for $target (host $(uname -s) cannot build the Linux helper)" >&2
+    fi
+  fi
+
+  COPYFILE_DISABLE=1 tar -czf "$DIST/tret-$os-$arch.tar.gz" -C "$stage" "${archive[@]}"
 done
 
 # Rewrite checksums for exactly the artifacts present, so a subset build never
