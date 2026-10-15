@@ -340,6 +340,7 @@ function mutatedIssues(value: unknown, issues: string[]): void {
     if (entry.beforeHash !== undefined) requireSha256(entry.beforeHash, `${where}.beforeHash`, issues);
     if (entry.installedHash !== undefined) requireSha256(entry.installedHash, `${where}.installedHash`, issues);
     if (entry.beforeBlob !== undefined) requireSha256(entry.beforeBlob, `${where}.beforeBlob`, issues);
+    if (entry.mode !== undefined) requireMode(entry.mode, `${where}.mode`, issues);
   });
 }
 
@@ -358,6 +359,7 @@ function deletedIssues(value: unknown, issues: string[]): void {
     requireAbsolutePath(entry.path, `${where}.path`, issues);
     if (entry.beforeHash !== undefined) requireSha256(entry.beforeHash, `${where}.beforeHash`, issues);
     if (entry.beforeBlob !== undefined) requireSha256(entry.beforeBlob, `${where}.beforeBlob`, issues);
+    if (entry.mode !== undefined) requireMode(entry.mode, `${where}.mode`, issues);
   });
 }
 
@@ -403,6 +405,13 @@ function requireAbsolutePath(raw: unknown, where: string, issues: string[]): voi
 
 function requireSha256(raw: unknown, where: string, issues: string[]): void {
   if (typeof raw !== "string" || !SHA256_PATTERN.test(raw)) issues.push(`${where} must be a sha256 hex string`);
+}
+
+/** Permission bits only; `0o7777` is the most a POSIX mode can carry. */
+function requireMode(raw: unknown, where: string, issues: string[]): void {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 0o7777) {
+    issues.push(`${where} must be permission bits`);
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

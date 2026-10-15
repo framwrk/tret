@@ -41,10 +41,24 @@ export function readFileIfExists(path: string): Uint8Array | undefined {
  * directory, are flushed to disk, and are renamed over the destination in one step. A reader sees
  * either the previous file or the complete new one, never a partial write, and an interrupted write
  * leaves the destination untouched. `mode` is forced on the temporary file so restrictive
- * permissions survive the rename.
+ * permissions survive the rename, and the parent directory is made private first.
  */
 export function writeFileAtomic(path: string, data: Uint8Array | string, mode: number): void {
   ensurePrivateDir(dirname(path));
+  writeAtomic(path, data, mode);
+}
+
+/**
+ * Like `writeFileAtomic`, but never changes the permissions of directories that already exist:
+ * a missing parent is created private, while an existing one keeps its mode. Restoring a user file
+ * under `$HOME` or `~/.config` must not tighten a shared directory that every other program uses.
+ */
+export function writeFileAtomicPreservingParents(path: string, data: Uint8Array | string, mode: number): void {
+  mkdirSync(dirname(path), { recursive: true, mode: PRIVATE_DIR_MODE });
+  writeAtomic(path, data, mode);
+}
+
+function writeAtomic(path: string, data: Uint8Array | string, mode: number): void {
   const temp = temporaryPath(path);
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
   const fd = openSync(temp, "w", mode);

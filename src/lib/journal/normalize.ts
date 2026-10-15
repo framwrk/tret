@@ -38,8 +38,9 @@ type PathState = {
  * - A temporary file created (or written) and renamed over a destination becomes a change to the
  *   destination; the transient source leaves no entry and is reported as a `temp-rename` diagnostic.
  * - A path created and then removed before the install ends cancels out (`create-delete`).
- * - An overwrite or deletion keeps the prior hash (and, when backups allow and the bytes were
- *   actually captured, the prior content address as `beforeBlob`) only when the events carried it.
+ * - An overwrite or deletion keeps the prior hash, the prior permission bits, and — when backups
+ *   allow and the bytes were actually captured — the prior content address as `beforeBlob`, only
+ *   when the events carried them.
  * - A rename is a source removal plus a destination creation/replacement; the relationship is
  *   retained in a `rename` diagnostic.
  * - Content equality is decided by hash first; mtime/size are only a fast path used when no hash is
@@ -126,7 +127,13 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
         const state = stateFor(event.path);
         // A `before` is how a backend proves the file pre-existed; without one the path's prior
         // existence stays unknown until a rename or classification decides what to do with it.
-        if (state.initial === undefined && event.before) state.initial = fileNode(event.before);
+        if (state.initial === undefined) {
+          if (event.before) state.initial = fileNode(event.before);
+        } else if (state.initial !== null && event.before) {
+          // An earlier chmod may have proven existence with only the mode; the write's `before`
+          // carries the rest (hash, size), so fold it in without overwriting what was seen first.
+          state.initial = enrichInitial(state.initial, fileNode(event.before));
+        }
         state.current = fileNode(event.after);
         break;
       }
@@ -138,15 +145,20 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
         if (state.current) {
           state.current = { ...state.current, mode: event.after.mode };
         } else {
-          if (state.initial === undefined) state.initial = { kind: "file", mode: event.after.mode };
+          // First sighting of the path: with the prior mode known it is the pre-install state;
+          // without it, existence is still unproven and the mode stays unknown rather than
+          // claiming the post-chmod mode was the original (which a restore would re-apply).
+          if (state.initial === undefined) {
+            state.initial = event.before?.mode === undefined ? { kind: "file" } : { kind: "file", mode: event.before.mode };
+          }
           state.current = { kind: "file", mode: event.after.mode };
         }
         if (prior === undefined || prior !== event.after.mode) {
           state.modeChanged = true;
-          if (existedBefore) {
+          if (existedBefore && event.before?.mode === undefined) {
             diagnostics.push({
               code: "unsupported",
-              message: "a mode change is recorded but v3 cannot represent the mode for restore",
+              message: "a mode change was observed without the prior mode, so restore cannot put it back",
               paths: [event.path],
             });
           }
@@ -157,7 +169,11 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
         const state = stateFor(event.path);
         // A path we saw appear without proof it pre-existed (a lone write) is treated as created,
         // so write-then-delete cancels like create-then-delete; an unrecorded path is a deletion.
-        if (state.initial === undefined) state.initial = state.current === null ? nodeFrom(event.before) : null;
+        if (state.initial === undefined) {
+          state.initial = state.current === null ? nodeFrom(event.before) : null;
+        } else if (state.initial !== null) {
+          state.initial = enrichInitial(state.initial, nodeFrom(event.before));
+        }
         state.current = null;
         state.removed = "delete";
         break;
@@ -238,6 +254,22 @@ function nodeFrom(meta: NodeMetadata): NodeState {
   }
 }
 
+/**
+ * Fills missing metadata on the pre-install state from a later event's `before`. What was seen
+ * first always wins — a later event describes a state the install may already have touched — so a
+ * mode observed by an earlier chmod survives, while a hash the chmod could not carry is adopted.
+ */
+function enrichInitial(initial: NodeState, before: NodeState): NodeState {
+  return {
+    kind: initial.kind,
+    hash: initial.hash ?? before.hash,
+    size: initial.size ?? before.size,
+    mode: initial.mode ?? before.mode,
+    mtimeMs: initial.mtimeMs ?? before.mtimeMs,
+    target: initial.target ?? before.target,
+  };
+}
+
 /** Whether a surviving pre-existing path changed, by kind, content, or mode. */
 function changedFrom(before: NodeState, after: NodeState, modeChanged: boolean): boolean {
   if (modeChanged) return true;
@@ -278,6 +310,7 @@ function mutatedEntry(
   const entry: MutatedEntry = { path };
   if (before?.hash !== undefined) entry.beforeHash = before.hash;
   if (after.hash !== undefined) entry.installedHash = after.hash;
+  if (before?.mode !== undefined) entry.mode = before.mode;
   const blob = beforeImage(before, backups, available);
   if (blob !== undefined) entry.beforeBlob = blob;
   return entry;
@@ -291,6 +324,7 @@ function deletedEntry(
 ): DeletedEntry {
   const entry: DeletedEntry = { path };
   if (before.hash !== undefined) entry.beforeHash = before.hash;
+  if (before.mode !== undefined) entry.mode = before.mode;
   const blob = beforeImage(before, backups, available);
   if (blob !== undefined) entry.beforeBlob = blob;
   return entry;
