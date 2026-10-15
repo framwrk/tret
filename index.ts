@@ -1,4 +1,5 @@
 import { IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
+import { openRunLog, watchRunLog } from "./src/lib/runlog";
 import { DEFAULT_BACKUP_POLICY } from "./src/lib/store";
 import { checkForUpdate } from "./src/lib/updatecheck";
 import { find } from "./src/commands/find";
@@ -24,6 +25,10 @@ if (args.includes("--version")) {
   log(`${VERSION}`);
   process.exit(0);
 }
+
+// Each run writes its own log under ~/.tret/logs; a failure or crash points the user at that file.
+openRunLog(args);
+watchRunLog();
 
 switch (command) {
   case "add":
