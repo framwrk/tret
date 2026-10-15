@@ -95,19 +95,24 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
           push({ type: "create", path: target.path, after, pid: target.pid, at: target.at });
         } else if (target.truncated) {
           live.set(target.path, "existing");
-          push({ type: "write", path: target.path, after, pid: target.pid, at: target.at });
+          const before = existed ? baselineFile(baseline, target.path) : undefined;
+          push({ type: "write", path: target.path, before, after, pid: target.pid, at: target.at });
         } else if (existed) {
           live.set(target.path, "existing");
         }
         break;
       }
       case "write": {
-        // A write with no preceding create is either an overwrite or a create we never saw;
-        // normalize decides using the baseline metadata we cannot provide here.
-        live.set(target.path, live.get(target.path) === "created" ? "created" : "existing");
+        // A write with no preceding create is either an overwrite or a create we never saw. With a
+        // captured baseline (backups enabled) the pre-window metadata proves which and supplies the
+        // `before` a restore needs; without one, normalize decides from what the sequence proves.
+        const wasCreated = live.get(target.path) === "created";
+        live.set(target.path, wasCreated ? "created" : "existing");
+        const before = wasCreated ? undefined : baselineFile(baseline, target.path);
         push({
           type: "write",
           path: target.path,
+          before,
           after: await fileAfter(inspector, target.path),
           pid: target.pid,
           at: target.at,
@@ -269,7 +274,11 @@ async function fileAfter(inspector: FsInspector, path: AbsolutePath): Promise<Fi
 
 /** Final metadata for any node, or a kind-only fallback when the path is gone. */
 async function genericAfter(inspector: FsInspector, path: AbsolutePath): Promise<NodeMetadata | undefined> {
-  const info = await inspector.inspect(path);
+  return nodeMetadata(await inspector.inspect(path));
+}
+
+/** The journal metadata for an inspected node; `missing` has none. */
+function nodeMetadata(info: NodeInfo): NodeMetadata | undefined {
   switch (info.kind) {
     case "file":
       return fileMetadata(info);
@@ -282,17 +291,30 @@ async function genericAfter(inspector: FsInspector, path: AbsolutePath): Promise
   }
 }
 
-/** Best-effort before-state: baseline kind when the path is gone, else the current node. */
+/** The baseline's captured pre-window metadata for a file, when backups captured it. */
+function baselineFile(baseline: Baseline, path: AbsolutePath): FileMetadata | undefined {
+  const info = baseline.metadata(path);
+  return info === undefined || info.kind !== "file" ? undefined : fileMetadata(info);
+}
+
+/**
+ * The before-state of a removal or rename source: the pre-window metadata the baseline captured
+ * (backups enabled) when the path was not created in this window, else the current node when one
+ * still exists, else the baseline kind (or a file fallback) so a temporary path still collapses.
+ */
 async function beforeNode(
   inspector: FsInspector,
   path: AbsolutePath,
   baseline: Baseline,
   live: Map<AbsolutePath, LiveKind>,
 ): Promise<NodeMetadata> {
-  const info = await inspector.inspect(path);
-  if (info.kind !== "missing") return genericAfter(inspector, path) as Promise<NodeMetadata>;
-  const kind =
-    live.get(path) === "created" ? inferredKind(path, baseline) : (baseline.kind(path) ?? inferredKind(path, baseline));
+  const created = live.get(path) === "created";
+  const captured = created ? undefined : baseline.metadata(path);
+  const capturedNode = captured === undefined ? undefined : nodeMetadata(captured);
+  if (capturedNode !== undefined) return capturedNode;
+  const current = nodeMetadata(await inspector.inspect(path));
+  if (current !== undefined) return current;
+  const kind = created ? inferredKind(path, baseline) : (baseline.kind(path) ?? inferredKind(path, baseline));
   return kindOnly(kind);
 }
 

@@ -123,6 +123,7 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
     );
 
     const roots = [home];
+    const backups = { enabled: true, sizeLimitBytes: 1024 * 1024 };
     let tracer: ParentStraceTracer | undefined;
     const backend = new LinuxCaptureBackend({
       tracerFactory: async () => {
@@ -133,7 +134,7 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
       settleMs: 5000,
     });
 
-    const session = await backend.start({ pid: process.pid, privilege: "user", roots });
+    const session = await backend.start({ pid: process.pid, privilege: "user", roots, backups });
     await tracer?.wait();
     const journal = await session.stop();
 
@@ -142,8 +143,9 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
     expect(journal.partialReason).toBeUndefined();
     const effects = normalizeJournal({
       journal,
-      backups: { enabled: false, sizeLimitBytes: 1024 * 1024 },
+      backups,
       caseSensitive: true,
+      availableBeforeImages: new Set(journal.beforeImages?.keys() ?? []),
     });
 
     const owned = effects.owned.map((entry) => [entry.path, entry.kind]);
@@ -151,6 +153,15 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
     expect(owned).toContainEqual([join(home, "smoke/link"), "symlink"]);
     expect(effects.mutated.map((entry) => entry.path)).toContain(join(home, "existing.txt"));
     expect(effects.deleted.map((entry) => entry.path)).toContain(join(home, "to-delete.txt"));
+
+    // With backups enabled the baseline read the pre-window bytes, so both the overwritten and the
+    // deleted file carry a restorable before-image under their content address.
+    const mutated = effects.mutated.find((entry) => entry.path === join(home, "existing.txt"))!;
+    expect(mutated.beforeBlob).toBeDefined();
+    expect(new TextDecoder().decode(journal.beforeImages!.get(mutated.beforeBlob!))).toBe("before\n");
+    const deleted = effects.deleted.find((entry) => entry.path === join(home, "to-delete.txt"))!;
+    expect(deleted.beforeBlob).toBeDefined();
+    expect(new TextDecoder().decode(journal.beforeImages!.get(deleted.beforeBlob!))).toBe("gone\n");
 
     // Nothing outside the observe root may be attributed, even though strace saw the whole
     // installer tree (bash startup, dynamic linking) run outside it.

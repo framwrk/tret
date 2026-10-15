@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { captureBaseline } from "./inspect";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,6 +21,11 @@ async function makeRoot(): Promise<string> {
   return root;
 }
 
+/** sha256 content address, matching the before-image blob ids. */
+function sha256(text: string): string {
+  return new Bun.CryptoHasher("sha256").update(text).digest("hex");
+}
+
 describe("linux capture baseline", () => {
   test("records excluded directories but does not descend into them", async () => {
     const root = await makeRoot();
@@ -31,7 +36,7 @@ describe("linux capture baseline", () => {
     await mkdir(join(root, "cache", "blobs"), { recursive: true });
     await writeFile(join(root, "cache", "blobs", "junk"), "junk\n");
 
-    const baseline = await captureBaseline([root]);
+    const { baseline } = await captureBaseline([root]);
 
     // The root and its kept subtree are walked as before.
     expect(baseline.existed(root)).toBe(true);
@@ -48,5 +53,63 @@ describe("linux capture baseline", () => {
     expect(baseline.existed(join(root, "node_modules", "pkg", "junk"))).toBe(false);
     expect(baseline.existed(join(root, "cache", "blobs"))).toBe(false);
     expect(baseline.existed(join(root, "cache", "blobs", "junk"))).toBe(false);
+  });
+});
+
+describe("linux capture baseline: before-images", () => {
+  test("reads eligible file bytes and their prior metadata when backups are enabled", async () => {
+    const root = await makeRoot();
+    const file = join(root, "config");
+    await writeFile(file, "original-config\n");
+    await chmod(file, 0o640);
+
+    const { baseline, beforeImages } = await captureBaseline([root], {
+      backups: { enabled: true, sizeLimitBytes: 1024 },
+    });
+
+    // The pre-window hash/size/mode travel with the baseline, so a later overwrite can be told from
+    // a create and described with its prior bits...
+    expect(baseline.metadata(file)).toMatchObject({
+      kind: "file",
+      hash: sha256("original-config\n"),
+      size: 16,
+      mode: 0o640,
+    });
+    // ...and the bytes are kept under their content address for the eventual restore.
+    const hash = sha256("original-config\n");
+    expect(beforeImages.has(hash)).toBe(true);
+    expect(new TextDecoder().decode(beforeImages.get(hash))).toBe("original-config\n");
+  });
+
+  test("leaves over-limit and unreadable files kind-only", async () => {
+    const root = await makeRoot();
+    const big = join(root, "big");
+    await writeFile(big, "0123456789");
+    const blocked = join(root, "blocked");
+    await writeFile(blocked, "secret\n");
+
+    const { baseline, beforeImages } = await captureBaseline([root], {
+      backups: { enabled: true, sizeLimitBytes: 4 },
+      read: async (path) => (path === blocked ? undefined : new Uint8Array(await readFile(path))),
+    });
+
+    expect(beforeImages.size).toBe(0);
+    // Both are still recorded and attributable; only the before-image is unavailable.
+    expect(baseline.kind(big)).toBe("file");
+    expect(baseline.metadata(big)).toBeUndefined();
+    expect(baseline.kind(blocked)).toBe("file");
+    expect(baseline.metadata(blocked)).toBeUndefined();
+  });
+
+  test("reads no file content when backups are off", async () => {
+    const root = await makeRoot();
+    const file = join(root, "config");
+    await writeFile(file, "original-config\n");
+
+    const { baseline, beforeImages } = await captureBaseline([root]);
+
+    expect(beforeImages.size).toBe(0);
+    expect(baseline.kind(file)).toBe("file");
+    expect(baseline.metadata(file)).toBeUndefined();
   });
 });

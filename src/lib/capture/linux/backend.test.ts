@@ -1,11 +1,12 @@
 import { LinuxCaptureBackend, fanotifyHelperPath } from "./backend";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import type { CaptureSession } from "../backend";
 import { FakeFsInspector } from "./inspect";
 import { FakeLinuxTracer } from "./fake";
 import type { TracerAttachOptions } from "./tracer";
 import { join } from "node:path";
+import { normalizeJournal } from "../../journal/normalize";
 import { tmpdir } from "node:os";
 
 function backendWith(tracer: FakeLinuxTracer, options: { processAlive?: (pid: number) => boolean } = {}) {
@@ -109,6 +110,68 @@ describe("linux capture backend", () => {
     const journal = await (await capture(backend)).stop();
 
     expect(journal.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual(["/h/d"]);
+  });
+});
+
+describe("linux capture backend: before-images", () => {
+  test("captures pre-existing bytes and threads them into the journal when backups are enabled", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tret-backend-backup-"));
+    try {
+      const config = join(root, "config");
+      writeFileSync(config, "original\n");
+      chmodSync(config, 0o640);
+
+      const tracer = new FakeLinuxTracer();
+      const backend = new LinuxCaptureBackend({ tracerFactory: async () => tracer, settleMs: 10 });
+      const backups = { enabled: true, sizeLimitBytes: 1024 };
+      const session = await backend.start({ pid: 42, privilege: "user", roots: [root], backups });
+
+      // The installer overwrites the file; the fake tracer reports the write it performed.
+      writeFileSync(config, "installed\n");
+      tracer.push({ op: "write", at: 1, pid: 7, path: config });
+      const journal = await session.stop();
+
+      const originalHash = new Bun.CryptoHasher("sha256").update("original\n").digest("hex");
+      const installedHash = new Bun.CryptoHasher("sha256").update("installed\n").digest("hex");
+      const before = journal.events.find((event) => event.type === "write")?.before;
+      expect(before).toEqual({ kind: "file", hash: originalHash, size: 9, mode: 0o640, mtimeMs: expect.any(Number) });
+      expect(new TextDecoder().decode(journal.beforeImages?.get(originalHash))).toBe("original\n");
+
+      // End to end: the captured bytes gate the record's restore claim.
+      const effects = normalizeJournal({
+        journal,
+        backups,
+        caseSensitive: true,
+        availableBeforeImages: new Set(journal.beforeImages?.keys() ?? []),
+      });
+      expect(effects.mutated).toEqual([
+        { path: config, beforeHash: originalHash, installedHash, mode: 0o640, beforeBlob: originalHash },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("captures nothing when the window has no backup policy", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tret-backend-nobackup-"));
+    try {
+      const config = join(root, "config");
+      writeFileSync(config, "original\n");
+
+      const tracer = new FakeLinuxTracer();
+      const backend = new LinuxCaptureBackend({ tracerFactory: async () => tracer, settleMs: 10 });
+      const session = await backend.start({ pid: 42, privilege: "user", roots: [root] });
+
+      writeFileSync(config, "installed\n");
+      tracer.push({ op: "write", at: 1, pid: 7, path: config });
+      const journal = await session.stop();
+
+      expect(journal.beforeImages).toBeUndefined();
+      const write = journal.events.find((event) => event.type === "write");
+      expect(write?.type === "write" ? write.before : undefined).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

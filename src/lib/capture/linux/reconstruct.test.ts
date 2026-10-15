@@ -110,6 +110,51 @@ describe("linux reconstruction: pre-existing paths", () => {
     expect(effects.mutated).toEqual([{ path: "/h/.mytool/config", installedHash: HASH_B }]);
   });
 
+  test("an overwrite carries the baseline's captured before metadata and restores from its bytes", async () => {
+    const inspector = new FakeFsInspector([["/h/.mytool/config", file(HASH_B)]]);
+    const baseline = new MemoryBaseline();
+    baseline.setNode("/h/.mytool/config", { kind: "file", hash: HASH_A, size: 4, mode: 0o640 });
+    const { result } = await run(
+      [
+        { op: "open", at: 1, pid: 9, path: "/h/.mytool/config", created: true, truncated: true },
+        { op: "write", at: 2, pid: 9, path: "/h/.mytool/config" },
+      ],
+      { inspector, baseline },
+    );
+
+    // Both the truncating open and the write describe the pre-window state, so a restore can undo
+    // the install's edit even though the original bytes are already gone by reconstruction time.
+    const before = { kind: "file" as const, hash: HASH_A, size: 4, mode: 0o640 };
+    expect(result.events.filter((event) => event.type === "write").map((event) => event.before)).toEqual([before, before]);
+
+    const effects = normalizeJournal({
+      journal: { backend: "linux-strace", completeness: "complete", events: result.events },
+      backups: { enabled: true, sizeLimitBytes: 1024 },
+      caseSensitive: true,
+      availableBeforeImages: new Set([HASH_A]),
+    });
+    expect(effects.mutated).toEqual([
+      { path: "/h/.mytool/config", beforeHash: HASH_A, installedHash: HASH_B, mode: 0o640, beforeBlob: HASH_A },
+    ]);
+  });
+
+  test("an unlink of a captured pre-existing file carries its before metadata", async () => {
+    const baseline = new MemoryBaseline();
+    baseline.setNode("/h/old", { kind: "file", hash: HASH_A, size: 4, mode: 0o644 });
+    const { result } = await run([{ op: "unlink", at: 1, pid: 9, path: "/h/old" }], { baseline });
+
+    const unlinked = result.events.find((event) => event.type === "unlink");
+    expect(unlinked?.before).toEqual({ kind: "file", hash: HASH_A, size: 4, mode: 0o644 });
+
+    const effects = normalizeJournal({
+      journal: { backend: "linux-strace", completeness: "complete", events: result.events },
+      backups: { enabled: true, sizeLimitBytes: 1024 },
+      caseSensitive: true,
+      availableBeforeImages: new Set([HASH_A]),
+    });
+    expect(effects.deleted).toEqual([{ path: "/h/old", beforeHash: HASH_A, mode: 0o644, beforeBlob: HASH_A }]);
+  });
+
   test("an unlinked pre-existing file is a deletion with its baseline kind", async () => {
     const { effects } = await run([{ op: "unlink", at: 1, pid: 9, path: "/h/old" }], {
       baseline: new MemoryBaseline([["/h/old", "file"]]),

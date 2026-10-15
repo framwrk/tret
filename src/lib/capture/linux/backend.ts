@@ -1,4 +1,4 @@
-import type { Baseline, FsInspector } from "./inspect";
+import type { Baseline, CapturedBaseline, FsInspector } from "./inspect";
 import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../backend";
 import type { LinuxTracer, LinuxTracerFactory, TracerAttachOptions } from "./tracer";
 import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
@@ -6,6 +6,7 @@ import { accessSync, existsSync, readFileSync, statSync } from "node:fs";
 import { attachFanotify, attachStrace } from "./tracer";
 import { dirname, join } from "node:path";
 import type { AbsolutePath } from "../../../types";
+import type { BlobId } from "../../storage";
 import { FANOTIFY_HELPER } from "../../../constants";
 import type { Journal } from "../events";
 import type { TracerResult } from "./raw";
@@ -39,6 +40,12 @@ export type LinuxCaptureBackendOptions = {
   processAlive?: (pid: number) => boolean;
 };
 
+/** The pre-window baseline plus any before-image bytes the capture read alongside it. */
+type ResolvedBaseline = {
+  baseline: Baseline;
+  beforeImages: Map<BlobId, Uint8Array>;
+};
+
 export class LinuxCaptureBackend implements CaptureBackend {
   readonly name: string;
   readonly completeness = "complete" as const;
@@ -58,16 +65,21 @@ export class LinuxCaptureBackend implements CaptureBackend {
 
   async start(options: CaptureStartOptions): Promise<CaptureSession> {
     const attach: TracerAttachOptions = { pid: options.pid, roots: options.roots };
-    const baseline = await this.resolveBaseline(options.roots);
+    const resolved = await this.resolveBaseline(options);
     const tracer = await (this.options.tracerFactory ?? defaultTracerFactory)(attach);
 
     return {
       backend: tracer.name,
-      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, baseline, options.pid),
+      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, resolved, options.pid),
     };
   }
 
-  private async stop(tracer: LinuxTracer, roots: AbsolutePath[], baseline: Baseline, rootPid: number): Promise<Journal> {
+  private async stop(
+    tracer: LinuxTracer,
+    roots: AbsolutePath[],
+    resolved: ResolvedBaseline,
+    rootPid: number,
+  ): Promise<Journal> {
     // A live tracer at the close of the window means tracees (a daemonized or detached descendant)
     // outlived the bounded install window; their later activity is not captured. The observed root
     // itself is excluded: for an install window it is the caller's own process, alive by
@@ -79,7 +91,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     const result = await reconstruct({
       traced,
       inspector: this.inspector,
-      baseline,
+      baseline: resolved.baseline,
       roots,
       fallbackAt: Date.now(),
     });
@@ -102,17 +114,25 @@ export class LinuxCaptureBackend implements CaptureBackend {
       events: result.events,
     };
     if (reasons.size > 0) journal.partialReason = [...reasons].join("; ");
+    // Present only when the walk actually read bytes (backups enabled), so a caller's
+    // `availableBeforeImages` stays empty and no record advertises an unrestorable before-image.
+    if (resolved.beforeImages.size > 0) journal.beforeImages = resolved.beforeImages;
     return journal;
   }
 
-  private async resolveBaseline(roots: AbsolutePath[]): Promise<Baseline> {
+  private async resolveBaseline(options: CaptureStartOptions): Promise<ResolvedBaseline> {
     const configured = this.options.baseline;
     if (configured === undefined || configured === "capture") {
-      // The baseline is scoped to the observe roots and reads no content (see `captureBaseline`).
-      return captureBaseline(roots);
+      // The baseline is scoped to the observe roots; with backups enabled it also reads each
+      // eligible file once, for its before-image (see `captureBaseline`).
+      const captured: CapturedBaseline = await captureBaseline(
+        options.roots,
+        options.backups === undefined ? {} : { backups: options.backups },
+      );
+      return captured;
     }
-    if (configured === "none") return new MemoryBaseline();
-    return configured;
+    if (configured === "none") return { baseline: new MemoryBaseline(), beforeImages: new Map() };
+    return { baseline: configured, beforeImages: new Map() };
   }
 }
 
