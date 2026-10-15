@@ -1,9 +1,10 @@
 import type { Platform } from "./types";
+import { detectCaseBehavior } from "./case";
 
 /**
  * Linux platform table (plan section 8, D3). It replaces the macOS `/Applications` and `~/Library`
  * assumptions with the XDG and package-manager surfaces Linux installers write to. No Homebrew
- * scope is added. This table is not wired into the running commands yet; Phase 2 only freezes it.
+ * scope is added. The running commands select it through `currentPlatform()`.
  */
 export const LINUX_PLATFORM: Platform = {
   id: "linux",
@@ -35,6 +36,11 @@ export const LINUX_PLATFORM: Platform = {
     ".local/state",
     ".cargo/bin",
   ],
+  // Installs also observe `$HOME` itself, like macOS, so a tool that drops a dotfile or
+  // dot-directory outside the XDG roots (`.pi`, `.toolrc`, `.bun`) is captured instead of the
+  // install being unobservable. The shared skip rules and the scope filter keep caches, dependency
+  // trees and `node_modules` payloads out of the journal.
+  captureHomeRoot: true,
   searchRootsAbsolute: ["/usr/bin", "/usr/local/bin", "/opt"],
   sharedAbsolute: [
     "/",
@@ -92,7 +98,6 @@ export const LINUX_PLATFORM: Platform = {
   },
   case: {
     defaultCaseSensitive: true,
-    // Phase 2 stub: per-mount probing lands with storage/uninstall (D10).
-    detect: () => "sensitive",
+    detect: detectCaseBehavior,
   },
 };

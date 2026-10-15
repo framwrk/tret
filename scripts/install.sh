@@ -40,6 +40,11 @@ fi
 NAME="tret"
 DEST="$INSTALL_DIR/$NAME"
 
+# The privileged Linux capture helper (plan 02 item 3) ships beside the binary
+# in Linux archives; Linux releases list its checksum in checksums.txt.
+HELPER_NAME="tret-fanotify"
+HELPER_DEST="$INSTALL_DIR/$HELPER_NAME"
+
 # The command lives on PATH through a symlink in ~/.local/bin, the way the
 # pro tools do it: one standard, user-writable directory that is almost
 # always already on PATH, so no shell rc file ever needs editing.
@@ -82,10 +87,10 @@ mkdir -p "$INSTALL_DIR" 2>/dev/null || {
   exit 1
 }
 
-# Scratch directory for the downloads; removed on exit. A partial $DEST.tmp
-# from an interrupted install goes with it.
+# Scratch directory for the downloads; removed on exit. Partial temp files
+# from an interrupted install go with it.
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"; rm -f "$DEST.tmp"' EXIT
+trap 'rm -rf "$TMP"; rm -f "$DEST.tmp" "$HELPER_DEST.tmp"' EXIT
 
 # Resolve the newest release tag from the API: the /releases/latest redirect
 # skips pre-releases, and until 1.0 every tret release is one.
@@ -109,6 +114,14 @@ curl -fsSL "$BASE/checksums.txt" -o "$TMP/checksums.txt"
 EXPECTED="$(grep " $BINARY\$" "$TMP/checksums.txt" | cut -d' ' -f1)" ||
   { echo "No checksum entry for $BINARY in $TAG's checksums.txt." >&2; exit 1; }
 
+# Linux releases ship the privileged fanotify capture helper beside the binary
+# (plan 02 item 3). When this release has one for this platform, an up-to-date
+# binary still reinstalls the pair unless the installed helper also matches.
+HELPER_SHA=""
+if [ "$OS" = "linux" ]; then
+  HELPER_SHA="$(grep " tret-fanotify-$OS-$ARCH\$" "$TMP/checksums.txt" | cut -d' ' -f1 || true)"
+fi
+
 # A hash match means the newest release is already installed: say so and
 # skip the download. A locally built binary never matches and gets updated,
 # and so does a matching binary whose execute bit was lost. A directory at
@@ -126,8 +139,15 @@ ensure_link || exit 1
 if [ -f "$DEST" ] && [ -x "$DEST" ]; then
   INSTALLED="$(HASH "$DEST" 2>/dev/null | cut -d' ' -f1 || true)"
   if [ "$INSTALLED" = "$EXPECTED" ]; then
-    echo "tret is already up to date at $DEST (release $TAG)."
-    exit 0
+    HELPER_CURRENT=1
+    if [ -n "$HELPER_SHA" ]; then
+      HELPER_HASH="$(HASH "$HELPER_DEST" 2>/dev/null | cut -d' ' -f1 || true)"
+      [ "$HELPER_HASH" = "$HELPER_SHA" ] || HELPER_CURRENT=0
+    fi
+    if [ "$HELPER_CURRENT" = 1 ]; then
+      echo "tret is already up to date at $DEST (release $TAG)."
+      exit 0
+    fi
   fi
 fi
 
@@ -137,12 +157,16 @@ curl -fsSL "$BASE/$ARCHIVE" -o "$TMP/$ARCHIVE"
 # line, so a manifest that also lists the other targets still checks cleanly.
 (cd "$TMP" && grep " $ARCHIVE\$" checksums.txt | HASH -c -)
 
-# Extract the archive, then write the binary to a temp name in the target
+# Extract the archive, then write each file to a temp name in the target
 # directory and rename, so an interrupted install never leaves a truncated
-# binary at $DEST.
+# file behind. The fanotify helper is installed only when the release ships
+# one for this platform; older releases simply have no helper.
 mkdir -p "$TMP/extract"
 tar -xzf "$TMP/$ARCHIVE" -C "$TMP/extract"
 install -m 755 "$TMP/extract/$NAME" "$DEST.tmp" && mv -f "$DEST.tmp" "$DEST"
+if [ -n "$HELPER_SHA" ]; then
+  install -m 755 "$TMP/extract/$HELPER_NAME" "$HELPER_DEST.tmp" && mv -f "$HELPER_DEST.tmp" "$HELPER_DEST"
+fi
 
 # Say what '$NAME' actually resolves to now, so the closing hints are truthful.
 RESOLVED="$(command -v "$NAME" || true)"

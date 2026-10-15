@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import type { Platform, ShellConfigEntry } from "./platform";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import type { AbsolutePath } from "../types";
-import { MACOS_PLATFORM } from "./platform";
+import { currentPlatform } from "./platform";
 import { join } from "node:path";
 
 export type RcCleaning = {
@@ -8,13 +9,40 @@ export type RcCleaning = {
   failed: AbsolutePath[];
 };
 
-/** Absolute paths of the shell config files the active platform may clean; directories are excluded. */
-export function shellConfigPaths(platform = MACOS_PLATFORM): AbsolutePath[] {
+/**
+ * Absolute paths of the shell config files the active platform may clean. A file entry is the file
+ * itself; a directory entry (for example `/etc/profile.d` on Linux) expands to the snippet files
+ * directly inside it, so the directory is never read or written as a file.
+ */
+export function shellConfigPaths(platform: Platform = currentPlatform()): AbsolutePath[] {
   const home = Bun.env.HOME;
   if (!home) throw new Error("HOME is not set");
-  return platform.shellConfigs
-    .filter((config) => config.kind === "file")
-    .map((config) => (config.scope === "home" ? join(home, config.path) : config.path));
+  const files: AbsolutePath[] = [];
+  for (const config of platform.shellConfigs) {
+    for (const file of configFiles(config, home)) files.push(file);
+  }
+  return files;
+}
+
+/** The files one shell config entry covers. */
+function configFiles(config: ShellConfigEntry, home: AbsolutePath): AbsolutePath[] {
+  const path = config.scope === "home" ? join(home, config.path) : config.path;
+  if (config.kind === "file") return [path];
+  return snippetFiles(path);
+}
+
+/** Regular files directly inside a snippet directory; subdirectories and symlinks are left alone. */
+function snippetFiles(dir: AbsolutePath): AbsolutePath[] {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(dir, entry.name))
+    .sort();
 }
 
 /**
@@ -24,7 +52,13 @@ export function shellConfigPaths(platform = MACOS_PLATFORM): AbsolutePath[] {
  * files are edited, which keeps cleanup tied to the edits attributed to the install. With
  * `dryRun` nothing is written.
  */
-export function removeRcLines(name: string, dirs: AbsolutePath[], dryRun: boolean, only?: AbsolutePath[]): RcCleaning {
+export function removeRcLines(
+  name: string,
+  dirs: AbsolutePath[],
+  dryRun: boolean,
+  only?: AbsolutePath[],
+  platform: Platform = currentPlatform(),
+): RcCleaning {
   const cleaned: RcCleaning["cleaned"] = [];
   const failed: AbsolutePath[] = [];
   const wanted = only === undefined ? undefined : new Set(only);
@@ -32,70 +66,79 @@ export function removeRcLines(name: string, dirs: AbsolutePath[], dryRun: boolea
   const home = Bun.env.HOME;
   if (!home) throw new Error("HOME is not set");
 
-  for (const config of MACOS_PLATFORM.shellConfigs) {
-    // Directory entries (for example `/etc/profile.d`) are handled by a later phase.
-    if (config.kind !== "file") {
-      continue;
-    }
-    const file = config.scope === "home" ? join(home, config.path) : config.path;
-    if (wanted !== undefined && !wanted.has(file)) {
-      continue;
-    }
-    if (!existsSync(file)) {
-      continue;
-    }
-
-    let lines: string[];
-    try {
-      lines = readFileSync(file, "utf8").split("\n");
-    } catch {
-      failed.push(file);
-      continue;
-    }
-
-    const kept: string[] = [];
-    for (let index = 0; index < lines.length; index++) {
-      const line = lines[index];
-      if (line === undefined) {
+  for (const config of platform.shellConfigs) {
+    for (const file of configFiles(config, home)) {
+      if (wanted !== undefined && !wanted.has(file)) {
         continue;
       }
-
-      if (!mentionsDir(line, dirs, home)) {
-        kept.push(line);
+      if (!existsSync(file)) {
         continue;
       }
-
-      cleaned.push({ file, line });
-
-      // The installer's comment naming the tool above the PATH line is only a label for it.
-      const previous = lines[index - 1];
-      if (
-        previous !== undefined &&
-        previous.trim().startsWith("#") &&
-        previous.toLowerCase().includes(name.toLowerCase()) &&
-        kept[kept.length - 1] === previous
-      ) {
-        kept.pop();
-        cleaned.push({ file, line: previous });
-      }
-    }
-
-    if (kept.length === lines.length) {
-      continue;
-    }
-
-    if (dryRun) {
-      continue;
-    }
-
-    try {
-      writeFileSync(file, kept.join("\n"));
-    } catch {
-      failed.push(file);
+      cleanFile(file, name, dirs, home, dryRun, cleaned, failed);
     }
   }
 
   return { cleaned, failed };
+}
+
+/** Removes the attributed lines from one existing config file. */
+function cleanFile(
+  file: AbsolutePath,
+  name: string,
+  dirs: AbsolutePath[],
+  home: AbsolutePath,
+  dryRun: boolean,
+  cleaned: RcCleaning["cleaned"],
+  failed: AbsolutePath[],
+): void {
+  let lines: string[];
+  try {
+    lines = readFileSync(file, "utf8").split("\n");
+  } catch {
+    failed.push(file);
+    return;
+  }
+
+  const kept: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line === undefined) {
+      continue;
+    }
+
+    if (!mentionsDir(line, dirs, home)) {
+      kept.push(line);
+      continue;
+    }
+
+    cleaned.push({ file, line });
+
+    // The installer's comment naming the tool above the PATH line is only a label for it.
+    const previous = lines[index - 1];
+    if (
+      previous !== undefined &&
+      previous.trim().startsWith("#") &&
+      previous.toLowerCase().includes(name.toLowerCase()) &&
+      kept[kept.length - 1] === previous
+    ) {
+      kept.pop();
+      cleaned.push({ file, line: previous });
+    }
+  }
+
+  if (kept.length === lines.length) {
+    return;
+  }
+
+  if (dryRun) {
+    return;
+  }
+
+  try {
+    writeFileSync(file, kept.join("\n"));
+  } catch {
+    failed.push(file);
+  }
 }
 
 /**

@@ -118,6 +118,27 @@ describe("findDelegatedRemovalConflicts", () => {
     ]);
   });
 
+  test("folds case for a delegated scope only when a record's filesystem is case-insensitive (D10)", () => {
+    const scope = join(globalRoot, "node_modules", "@ACME", "tool");
+    const claimed = join(packageScope, "dist", "cli.js");
+    const removing = record({ id: "rec-acme", name: "acme", managedBy: npmPackage });
+    const other = record({ id: "rec-other", name: "other", owned: [{ path: claimed, kind: "file" }] });
+
+    // Both records are case-sensitive: `@ACME` and `@acme` are different trees.
+    expect(findDelegatedRemovalConflicts([scope], [removing, other], removing, HOME)).toEqual([]);
+
+    // The other record's filesystem was case-insensitive, so its claim is inside the scope.
+    expect(findDelegatedRemovalConflicts([scope], [removing, { ...other, caseSensitive: false }], removing, HOME)).toEqual([
+      { scope, path: claimed, recordName: "other" },
+    ]);
+
+    // The record being removed recorded a case-insensitive filesystem, so it must fold too.
+    const removingInsensitive = { ...removing, caseSensitive: false };
+    expect(findDelegatedRemovalConflicts([scope], [removingInsensitive, other], removingInsensitive, HOME)).toEqual([
+      { scope, path: claimed, recordName: "other" },
+    ]);
+  });
+
   test("does not treat a partial record's empty executable as a claim", () => {
     // `resolve("")` is the working directory, so a bare empty path would spuriously match this scope.
     const removing = record({ id: "rec-acme", name: "acme", managedBy: npmPackage });
