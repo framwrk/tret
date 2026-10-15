@@ -7,6 +7,8 @@
 //   still record the mutation while leaving `beforeBlob` unset and the entry non-restorable (D2).
 // - The records file is written with a temp-file-and-rename and validated on read; a corrupt file
 //   raises instead of being overwritten, so a failed read or migration never erases user records.
+// - Record updates run under an exclusive lock file, so two simultaneous `tret` processes cannot
+//   each read the same snapshot and overwrite one another's record (plan 01 item 5).
 // - Garbage collection deletes only blobs no record references, tolerates an interrupted run, and
 //   can spare blobs written inside a grace window so an in-flight install cannot lose one.
 //
@@ -15,13 +17,13 @@
 
 import type { BlobId, BlobRef, Storage } from "./storage";
 import { OBJECTS_PATH, RECORDS_PATH } from "../constants";
-import { PRIVATE_FILE_MODE, isErrno, isTemporaryName, readFileIfExists, writeFileAtomic } from "./atomic";
+import { PRIVATE_FILE_MODE, ensurePrivateDir, isErrno, isTemporaryName, readFileIfExists, writeFileAtomic } from "./atomic";
 import type { RecordFileV3, RecordV3 } from "../types";
 import { RecordMigrationError, isV3Record, migrateRecordFileV2ToV3 } from "./records";
-import { readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { BackupPolicy } from "./capture/normalize";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import { referencedBlobs } from "./storage";
 
 /** Default cap on one before-image; larger files are recorded as mutations but not stored (D2). */
@@ -38,6 +40,15 @@ export const DEFAULT_BACKUP_POLICY: BackupPolicy = {
 
 /** Default GC grace window; see `FileStorageOptions.gcGraceMs`. */
 export const DEFAULT_GC_GRACE_MS = 0;
+
+/** Default bounded wait for the records lock; see `FileStorageOptions.lockTimeoutMs`. */
+export const DEFAULT_RECORDS_LOCK_TIMEOUT_MS = 5000;
+
+/** Default age at which a records lock is presumed abandoned; see `FileStorageOptions.lockStaleMs`. */
+export const DEFAULT_RECORDS_LOCK_STALE_MS = 10_000;
+
+/** How long to wait between records-lock attempts. */
+const RECORDS_LOCK_RETRY_MS = 25;
 
 const BLOB_ID_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -86,6 +97,17 @@ export class InvalidRecordError extends Error {
   }
 }
 
+/** Raised when another process holds the records lock past the configured wait. */
+export class RecordsLockedError extends Error {
+  readonly path: string;
+
+  constructor(path: string) {
+    super(`records are locked by another tret process: ${path}`);
+    this.name = "RecordsLockedError";
+    this.path = path;
+  }
+}
+
 export type FileStorageOptions = {
   /** Directory whose `.tret` subdirectory holds records and blobs; defaults to `$HOME`. */
   homeDir?: string;
@@ -96,13 +118,18 @@ export type FileStorageOptions = {
    * concurrent install after the record snapshot is not swept. Defaults to `DEFAULT_GC_GRACE_MS`.
    */
   gcGraceMs?: number;
+  /** Bounded wait for the records lock before an update fails closed; defaults to `DEFAULT_RECORDS_LOCK_TIMEOUT_MS`. */
+  lockTimeoutMs?: number;
+  /** Age at which an existing records lock is presumed abandoned by a crashed writer; defaults to `DEFAULT_RECORDS_LOCK_STALE_MS`. */
+  lockStaleMs?: number;
   /** Clock in milliseconds, injectable so grace windows and quarantine names are testable. */
   now?: () => number;
 };
 
 /**
  * Records and blobs on disk. The record file lives at `~/.tret/records.json` and blobs under
- * `~/.tret/objects/`; both use owner-only permissions and atomic writes.
+ * `~/.tret/objects/`; both use owner-only permissions and atomic writes, and every record update
+ * holds the `records.json.lock` file so concurrent commands serialize instead of losing records.
  */
 export class FileStorage implements Storage {
   /** The home directory this store is rooted at. */
@@ -115,12 +142,16 @@ export class FileStorage implements Storage {
   readonly objectsDir: string;
 
   private readonly gcGraceMs: number;
+  private readonly lockTimeoutMs: number;
+  private readonly lockStaleMs: number;
   private readonly now: () => number;
 
   constructor(options: FileStorageOptions = {}) {
     this.homeDir = options.homeDir ?? process.env.HOME ?? homedir();
     this.backups = options.backups ?? DEFAULT_BACKUP_POLICY;
     this.gcGraceMs = options.gcGraceMs ?? DEFAULT_GC_GRACE_MS;
+    this.lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_RECORDS_LOCK_TIMEOUT_MS;
+    this.lockStaleMs = options.lockStaleMs ?? DEFAULT_RECORDS_LOCK_STALE_MS;
     this.now = options.now ?? Date.now;
     this.recordsPath = join(this.homeDir, RECORDS_PATH);
     this.objectsDir = join(this.homeDir, OBJECTS_PATH);
@@ -165,21 +196,28 @@ export class FileStorage implements Storage {
     return file.records;
   }
 
-  /** Atomically persists one record, replacing any record with the same id. */
+  /**
+   * Atomically persists one record, replacing any record with the same id. Runs under the records
+   * lock, so a concurrent save or removal cannot be lost between this read and write.
+   */
   async saveRecord(record: RecordV3): Promise<void> {
     if (!isV3Record(record)) throw new InvalidRecordError();
-    const records = await this.loadRecords();
-    const next = records.filter((existing) => existing.id !== record.id);
-    next.push(record);
-    this.writeRecords(next);
+    await this.withRecordsLock(async () => {
+      const records = await this.loadRecords();
+      const next = records.filter((existing) => existing.id !== record.id);
+      next.push(record);
+      this.writeRecords(next);
+    });
   }
 
-  /** Removes one record by id; an unknown id is a no-op and leaves the file untouched. */
+  /** Removes one record by id under the records lock; an unknown id is a no-op and leaves the file untouched. */
   async removeRecord(id: string): Promise<void> {
-    const records = await this.loadRecords();
-    const next = records.filter((existing) => existing.id !== id);
-    if (next.length === records.length) return;
-    this.writeRecords(next);
+    await this.withRecordsLock(async () => {
+      const records = await this.loadRecords();
+      const next = records.filter((existing) => existing.id !== id);
+      if (next.length === records.length) return;
+      this.writeRecords(next);
+    });
   }
 
   /**
@@ -295,6 +333,51 @@ export class FileStorage implements Storage {
   private writeRecords(records: RecordV3[]): void {
     const file: RecordFileV3 = { version: 3, records };
     writeFileAtomic(this.recordsPath, JSON.stringify(file, null, 2), PRIVATE_FILE_MODE);
+  }
+
+  /**
+   * Runs one read-modify-write under an exclusive lock file beside the records, so two `tret`
+   * processes cannot both read the same snapshot and have the later write discard the earlier
+   * record. The file is created with `wx`, which is atomic: exactly one contender wins and the
+   * others see `EEXIST`. A lock left by a crashed writer is reclaimed once it is older than
+   * `lockStaleMs` — comfortably longer than any real update — and a lock that cannot be taken
+   * within `lockTimeoutMs` fails the write instead of proceeding unlocked.
+   */
+  private async withRecordsLock<T>(work: () => Promise<T>): Promise<T> {
+    const lockPath = `${this.recordsPath}.lock`;
+    ensurePrivateDir(dirname(this.recordsPath));
+    const deadline = this.now() + this.lockTimeoutMs;
+
+    for (;;) {
+      try {
+        writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx", mode: PRIVATE_FILE_MODE });
+        break;
+      } catch (error) {
+        if (!isErrno(error, "EEXIST")) throw error;
+        if (this.lockIsStale(lockPath)) {
+          rmSync(lockPath, { force: true });
+          continue;
+        }
+        if (this.now() >= deadline) throw new RecordsLockedError(lockPath);
+        await Bun.sleep(RECORDS_LOCK_RETRY_MS);
+      }
+    }
+
+    try {
+      return await work();
+    } finally {
+      rmSync(lockPath, { force: true });
+    }
+  }
+
+  /** Whether a lock file is older than `lockStaleMs`; a lock released in the meantime is not stale. */
+  private lockIsStale(lockPath: string): boolean {
+    try {
+      return this.now() - statSync(lockPath).mtimeMs > this.lockStaleMs;
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return false;
+      throw error;
+    }
   }
 
   private listObjects(): Array<{ name: string; isFile(): boolean }> {
