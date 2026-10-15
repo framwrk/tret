@@ -23,9 +23,12 @@ produce the journal shape consumed by `reconstruct.ts` and `normalizeJournal`.
 | `FanotifyTracer` (`tret-fanotify` helper) | `linux-fanotify`         | `CAP_SYS_ADMIN` / root         | only when already root |
 
 `defaultTracerFactory` selects fanotify only when the process already holds root (`getuid() == 0`)
-**and** `$TRET_FANOTIFY` points at a present helper; otherwise it uses strace. Tret never escalates
-with `sudo` on the user's behalf (D8). Running under `sudo` is the user's choice, and the record
-carries `privilege: "root"` for sudo-aware uninstall.
+**and** a helper executable is present; otherwise it uses strace. The helper is found as
+`$TRET_FANOTIFY` when that override is set, otherwise as `tret-fanotify` next to the running binary
+(a release archive ships it beside `tret`), with `~/.tret/bin/tret-fanotify` as the fallback for a
+dev run driving an installed release; a candidate must be an executable regular file. Tret never
+escalates with `sudo` on the user's behalf (D8). Running under `sudo` is the user's choice, and the
+record carries `privilege: "root"` for sudo-aware uninstall.
 
 The strace tracer is the zero-privilege, same-uid mechanism required by D7. `strace -f` follows
 `fork`/`vfork`/`clone`, double-fork and `setsid` descendants because ptrace tracks tracees directly,

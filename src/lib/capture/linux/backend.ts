@@ -2,10 +2,13 @@ import type { Baseline, FsInspector } from "./inspect";
 import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../backend";
 import type { LinuxTracer, LinuxTracerFactory, TracerAttachOptions } from "./tracer";
 import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
+import { accessSync, readFileSync, statSync } from "node:fs";
 import { attachFanotify, attachStrace } from "./tracer";
-import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AbsolutePath } from "../../../types";
+import { FANOTIFY_HELPER } from "../../../constants";
 import type { Journal } from "../events";
+import { X_OK } from "node:constants";
 import { reconstruct } from "./reconstruct";
 
 /**
@@ -170,10 +173,35 @@ function isAttachFailure(reason: string): boolean {
   return /could not (?:start|attach)|Operation not permitted/i.test(reason);
 }
 
-/** The fanotify helper path when it is present; Tret never installs or elevates it itself. */
-function fanotifyHelperPath(): string | undefined {
-  const configured = process.env.TRET_FANOTIFY;
-  return configured !== undefined && existsSync(configured) ? configured : undefined;
+/**
+ * Locates the privileged fanotify helper (plan 02 item 3). An explicit `$TRET_FANOTIFY` override
+ * wins; otherwise the helper shipped next to the running binary is used — a release archive places
+ * `tret-fanotify` beside `tret`, so a root run does not have to discover and configure a private
+ * path. `$HOME/.tret/bin/tret-fanotify` is the fallback for a dev run driving an installed release.
+ * Returns undefined when no executable candidate exists; the caller then stays on strace.
+ */
+export function fanotifyHelperPath(
+  env: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  home: string | undefined = Bun.env.HOME,
+): string | undefined {
+  const candidates: string[] = [];
+  const configured = env.TRET_FANOTIFY;
+  if (configured !== undefined && configured.length > 0) candidates.push(configured);
+  candidates.push(join(dirname(execPath), FANOTIFY_HELPER));
+  if (home !== undefined) candidates.push(join(home, ".tret", "bin", FANOTIFY_HELPER));
+  return candidates.find(isExecutableFile);
+}
+
+/** True when `path` is a regular file this user can execute. */
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Convenience predicate used by install integration to decide whether a privileged tracer is viable. */

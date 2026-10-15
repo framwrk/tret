@@ -1,9 +1,12 @@
+import { LinuxCaptureBackend, fanotifyHelperPath } from "./backend";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import type { CaptureSession } from "../backend";
 import { FakeFsInspector } from "./inspect";
 import { FakeLinuxTracer } from "./fake";
-import { LinuxCaptureBackend } from "./backend";
 import type { TracerAttachOptions } from "./tracer";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 function backendWith(tracer: FakeLinuxTracer) {
   const seen: TracerAttachOptions[] = [];
@@ -91,5 +94,49 @@ describe("linux capture backend", () => {
     const journal = await (await capture(backend)).stop();
 
     expect(journal.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual(["/h/d"]);
+  });
+});
+
+describe("fanotify helper discovery", () => {
+  function executableHelper(dir: string): string {
+    const helper = join(dir, "tret-fanotify");
+    writeFileSync(helper, "");
+    chmodSync(helper, 0o755);
+    return helper;
+  }
+
+  test("finds the helper shipped next to the running binary", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tret-helper-"));
+    const helper = executableHelper(dir);
+
+    expect(fanotifyHelperPath({}, join(dir, "tret"), undefined)).toBe(helper);
+  });
+
+  test("prefers an explicit TRET_FANOTIFY override", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tret-helper-"));
+    const helper = executableHelper(dir);
+
+    expect(fanotifyHelperPath({ TRET_FANOTIFY: helper }, "/nope/tret", undefined)).toBe(helper);
+  });
+
+  test("falls back to the installed-binary directory for a dev run", () => {
+    const home = mkdtempSync(join(tmpdir(), "tret-helper-"));
+    const bin = join(home, ".tret/bin");
+    mkdirSync(bin, { recursive: true });
+    const helper = join(bin, "tret-fanotify");
+    writeFileSync(helper, "");
+    chmodSync(helper, 0o755);
+
+    expect(fanotifyHelperPath({}, "/nope/tret", home)).toBe(helper);
+  });
+
+  test("returns undefined for a missing or non-executable helper", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tret-helper-"));
+    const plain = join(dir, "tret-fanotify");
+    writeFileSync(plain, "");
+    chmodSync(plain, 0o644);
+
+    expect(fanotifyHelperPath({}, "/nope/tret", undefined)).toBeUndefined();
+    expect(fanotifyHelperPath({ TRET_FANOTIFY: plain }, "/nope/tret", undefined)).toBeUndefined();
   });
 });
