@@ -160,6 +160,19 @@ describe("strace parsing: path resolution and scope", () => {
     expect(result.records.map((record) => record.op)).toEqual(["mkdir", "unlink"]);
   });
 
+  test("the roots filter collapses `.` and `..` before deciding scope", () => {
+    const text = [
+      line(1, 1, 'mkdir("/home/a/../keep", 0755) = 0'),
+      line(1, 2, 'mkdir("/home/a/../../etc/escape", 0755) = 0'),
+      line(1, 3, 'mkdir("/../top", 0755) = 0'),
+    ].join("\n");
+    const result = parseStraceOutput(text, { roots: ["/home"] });
+    expect(result.records.map((record) => record.op)).toEqual(["mkdir"]);
+    // The traced spelling is kept for reconstruction to resolve against symlinks; only the scope
+    // decision here is lexical.
+    expect(result.records[0]).toMatchObject({ path: "/home/a/../keep" });
+  });
+
   test("a dirfd-relative path resolves against the annotated directory", () => {
     const text = line(1, 1, 'openat(5</home/dir>, "child", O_CREAT) = 6</home/dir/child>');
     const result = parseStraceOutput(text);
