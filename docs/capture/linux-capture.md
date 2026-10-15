@@ -67,6 +67,11 @@ applies name exclusions only to its `$HOME` root; the Linux baseline never walks
 directories under any root, so Linux applies them everywhere or a pre-existing file under one would
 be misclassified as a create.)
 
+`tret install --observe <path>` adds one absolute root to the window and `--observe-exclude <path>`
+drops one of the table's default roots, for that one install only (D3 user additions/removals). The
+parser drops records outside the resolved roots, so an added root is attributed and an excluded one
+is not.
+
 ## Descendant tracking and how it ends
 
 - **Scope.** The traced tree is the installer pid plus every process it forks, for as long as ptrace

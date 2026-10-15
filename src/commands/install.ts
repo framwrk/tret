@@ -24,6 +24,7 @@ import { formatCoverage, runBoundedSession } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
 import { MacosHeuristicCaptureBackend } from "../lib/capture/macos";
+import type { ObservationRootsOptions } from "../lib/platform";
 import type { Platform } from "../lib/platform";
 import { captureBackendFor } from "../lib/capture/current";
 import { diff } from "../lib/diff";
@@ -31,6 +32,7 @@ import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
 import { removeRcLines } from "../lib/shellconfig";
+import { resolve } from "node:path";
 import { runInstaller } from "../lib/installer";
 import { runLogPhase } from "../lib/runlog";
 import { snapshot } from "../lib/snapshot";
@@ -44,6 +46,11 @@ export type InstallOptions = {
   /** Observation roots override (D3); defaults to the platform's bounded install roots. */
   roots?: AbsolutePath[];
   /**
+   * Capture-scope additions/exclusions from `--observe`/`--observe-exclude` (D3); applied on top of
+   * the platform's roots so one install can cover an unusual installer without widening the defaults.
+   */
+  observe?: Pick<ObservationRootsOptions, "include" | "exclude">;
+  /**
    * Before-image backup policy (D2); off by default. When enabled, pre-existing file contents are
    * captured (within the size limit) and stored so uninstall can restore them.
    */
@@ -51,6 +58,37 @@ export type InstallOptions = {
   /** Clock; injectable so a test can pin `installedAt` and the window timestamps. */
   now?: () => number;
 };
+
+/**
+ * Splits the capture-scope flags out of the `install` arguments. `--observe <path>` adds an absolute
+ * path to this install's observation roots and `--observe-exclude <path>` drops one of the platform's
+ * default roots, so a user can account for an installer that writes outside the defaults without
+ * widening every capture. The value is resolved lexically to a canonical path, so a trailing slash
+ * (shell completion) cannot leave the root itself uncovered. Returns the misuse message instead of
+ * throwing; `index.ts` prints it in the usual Error shape.
+ */
+export function parseObserveFlags(
+  args: string[],
+): { scope: { include: AbsolutePath[]; exclude: AbsolutePath[] }; rest: string[] } | { error: string } {
+  const include: AbsolutePath[] = [];
+  const exclude: AbsolutePath[] = [];
+  const rest: string[] = [];
+
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg !== "--observe" && arg !== "--observe-exclude") {
+      rest.push(arg);
+      continue;
+    }
+    const value = args[index + 1];
+    if (value === undefined) return { error: `${arg} requires an absolute path` };
+    if (!value.startsWith("/")) return { error: `${arg} requires an absolute path: ${value}` };
+    (arg === "--observe" ? include : exclude).push(resolve(value));
+    index++;
+  }
+
+  return { scope: { include, exclude }, rest };
+}
 
 export async function install(
   url?: string,
@@ -126,7 +164,7 @@ export async function install(
   // Every path the window can record sits under one of the observation roots, so the record's
   // single case flag is resolved from the roots themselves (D10). The same flag keys the capture
   // backend's path comparison, so its journal and normalization agree on path identity.
-  const roots = options.roots ?? installObservationRoots(platform);
+  const roots = options.roots ?? installObservationRoots(platform, options.observe);
   const caseSensitive = caseSensitiveForPaths(platform, roots);
 
   // The installer runs inside a bounded capture window. With capture on, the journal is the sole
@@ -295,16 +333,17 @@ async function observeInstall(
 }
 
 /**
- * Roots for the heuristic fallback: the install scope plus `$HOME`, so a tool that drops state at the
- * home top level is still observed, minus the unbounded system trees `/opt` and `/usr/bin`. The
- * scoped-snapshot engine scans a non-home root whole and, with `--backup`, reads every pre-existing
- * file to keep its bytes; those two trees are shared multi-GB surfaces (a runner's tool cache and
- * system binaries), so keeping them would replay the very stall the baseline walk now prunes. The
- * narrower `/usr/local/bin` install surface stays.
+ * Roots for the heuristic fallback: the install scope minus the unbounded system trees `/opt` and
+ * `/usr/bin`. The scoped-snapshot engine scans a non-home root whole and, with `--backup`, reads
+ * every pre-existing file to keep its bytes; those two trees are shared multi-GB surfaces (a
+ * runner's tool cache and system binaries), so keeping them would replay the very stall the
+ * baseline walk now prunes. `$HOME` is already part of the install scope on every platform
+ * (`captureHomeRoot`), so it is not re-added here: an explicit `--observe-exclude $HOME` must narrow
+ * the fallback the same way it narrows a real capture. The narrower `/usr/local/bin` install surface
+ * stays.
  */
-function heuristicFallbackRoots(roots: AbsolutePath[]): AbsolutePath[] {
+export function heuristicFallbackRoots(roots: AbsolutePath[]): AbsolutePath[] {
   const scoped = new Set(roots);
-  if (Bun.env.HOME) scoped.add(Bun.env.HOME);
   scoped.delete("/opt");
   scoped.delete("/usr/bin");
   return [...scoped].sort();

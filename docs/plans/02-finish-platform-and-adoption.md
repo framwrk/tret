@@ -29,7 +29,7 @@ Make the macOS and Linux platform tables drive the real commands consistently, e
 
 ## Outcome
 
-Implemented on `platform/p1-finish-platform` (items 1–6 complete; 7–8 outstanding):
+Implemented on `platform/p1-finish-platform` (items 1–8 complete):
 
 - Item 1: `find`, the snapshot scope, and the shared-path guards read the running platform table, so Linux searches its XDG and package-manager surfaces and protects `/usr`, `/etc`, and the other shared system trees instead of the macOS list.
 - Item 2: shell-config cleanup walks the active table's entries, including the Linux-only `.bash_login`, fish's `config.fish`, and directory entries (`/etc/profile.d` is reported, never edited as a file).
@@ -37,6 +37,8 @@ Implemented on `platform/p1-finish-platform` (items 1–6 complete; 7–8 outsta
 - Item 4: a Linux smoke test runs a representative installer through the shipped `strace` backend, parser, and reconstruction on genuine kernel output, skipping cleanly where the kernel or the missing `strace` refuses it; hermetic fake-tracer tests keep the edge cases deterministic.
 - Item 5: with `--backup`, the Linux capture reads each eligible pre-existing file's bytes and prior mode at window start and attaches them as before-images; a restore is claimed only for bytes storage actually holds.
 - Item 6: case behavior is probed read-only per filesystem (a case-flipped spelling of the deepest existing ancestor); `install` and `find` resolve one conservative record-wide flag over every observed path, the capture backends key paths with that same flag, and uninstall folds case in shared-ownership and delegated-removal overlap checks whenever either record was on a case-insensitive filesystem. The platform defaults remain only as the last resort when nothing can be probed.
+- Item 7: `tret find` fingerprints every node under an adopted directory (files by content hash, symlinks by target and never followed) and records a node that is neither a regular file, directory, nor symlink as present-but-unverifiable instead of reading it, so a FIFO cannot hang the walk. Uninstall then removes the verified files and the directories that empty, while a changed file or unrelated survivor becomes a conflict naming that exact path instead of leaving an opaque, permanently stuck folder record.
+- Item 8: `tret install --observe <path>` adds an absolute root to that install's capture scope and `--observe-exclude <path>` drops one of the platform's default roots, both repeatable and documented in the README, `tret help`, and the capture docs. The heuristic fallback follows the resolved roots exactly (it no longer re-adds `$HOME`), so the scope a record covers does not depend on which backend attached.
 
 ## Dependencies and boundaries
 
