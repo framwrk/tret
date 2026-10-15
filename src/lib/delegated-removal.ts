@@ -28,8 +28,12 @@ export function findDelegatedRemovalConflicts(
     for (const record of records) {
       if (record === removingRecord) continue;
 
+      // A scope and a claim that differ only by case name the same tree wherever either record's
+      // filesystem is case-insensitive (D10), so the overlap check folds then and only then;
+      // missing that overlap would let a recursive removal touch another record's tree.
+      const foldCase = !removingRecord.caseSensitive || !record.caseSensitive;
       const claim = recordClaims(record, home).find((candidate) =>
-        candidate.recursive ? scopesOverlap(candidate.path, scope) : isWithinScope(candidate.path, scope),
+        candidate.recursive ? scopesOverlap(candidate.path, scope, foldCase) : isWithinScope(candidate.path, scope, foldCase),
       );
       if (claim !== undefined) {
         conflicts.push({ scope, path: claim.path, recordName: record.name });
@@ -59,13 +63,17 @@ function* recordClaims(record: RecordV3, home: AbsolutePath | undefined): Genera
   }
 }
 
-function isWithinScope(path: AbsolutePath, scope: AbsolutePath): boolean {
-  const normalizedPath = resolve(path);
-  const normalizedScope = resolve(scope);
+function isWithinScope(path: AbsolutePath, scope: AbsolutePath, foldCase: boolean): boolean {
+  const normalize = (value: AbsolutePath): string => {
+    const resolved = resolve(value);
+    return foldCase ? resolved.toLowerCase() : resolved;
+  };
+  const normalizedPath = normalize(path);
+  const normalizedScope = normalize(scope);
   const childPrefix = normalizedScope.endsWith(sep) ? normalizedScope : `${normalizedScope}${sep}`;
   return normalizedPath === normalizedScope || normalizedPath.startsWith(childPrefix);
 }
 
-function scopesOverlap(first: AbsolutePath, second: AbsolutePath): boolean {
-  return isWithinScope(first, second) || isWithinScope(second, first);
+function scopesOverlap(first: AbsolutePath, second: AbsolutePath, foldCase: boolean): boolean {
+  return isWithinScope(first, second, foldCase) || isWithinScope(second, first, foldCase);
 }

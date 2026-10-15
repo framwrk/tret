@@ -1,10 +1,10 @@
 import { IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
+import { install, parseObserveFlags } from "./src/commands/install";
 import { openRunLog, watchRunLog } from "./src/lib/runlog";
 import { DEFAULT_BACKUP_POLICY } from "./src/lib/store";
 import { checkForUpdate } from "./src/lib/updatecheck";
 import { find } from "./src/commands/find";
 import { forget } from "./src/commands/forget";
-import { install } from "./src/commands/install";
 import { list } from "./src/commands/list";
 import { log } from "./src/lib/utilities";
 import { uninstall } from "./src/commands/uninstall";
@@ -39,10 +39,18 @@ switch (command) {
     const separator = args.indexOf("--");
     const own = separator === -1 ? args : args.slice(0, separator);
     const scriptArgs = separator === -1 ? [] : args.slice(separator + 1);
-    await install(own.slice(1).join(" "), own.includes("--force"), scriptArgs, {
+    const observed = parseObserveFlags(own.slice(1));
+    if ("error" in observed) {
+      log("Error");
+      log(`\t${observed.error}`);
+      process.exit(1);
+    }
+    await install(observed.rest.join(" "), own.includes("--force"), scriptArgs, {
       capture: !own.includes("--no-capture"),
       // D2: backups are off unless the user opts in; a captured before-image makes restore reachable.
       backups: own.includes("--backup") ? { ...DEFAULT_BACKUP_POLICY, enabled: true } : undefined,
+      // D3: --observe/--observe-exclude scope this one install; an empty scope keeps the defaults.
+      observe: observed.scope.include.length > 0 || observed.scope.exclude.length > 0 ? observed.scope : undefined,
     });
     break;
   }
@@ -126,6 +134,8 @@ function help(): void {
   log(
     `\t--backup      install: capture before-images of overwritten or deleted files so uninstall can restore them (off by default)`,
   );
+  log(`\t--observe <path>          install: also observe this absolute path in the install's capture window (repeatable)`);
+  log(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);
   log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
   log(`\t--yes         uninstall: skip the confirmation prompt`);
   log(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);

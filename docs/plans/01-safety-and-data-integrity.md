@@ -1,6 +1,6 @@
 # Plan: Safety and data integrity
 
-**Status:** Proposed  
+**Status:** Done — implemented and merged to `main` in #11  
 **Priority:** P0 — address before expanding destructive workflows
 
 ## Goal
@@ -25,6 +25,17 @@ Make sure Tret only removes files that still match its evidence, preserves recov
 - Failed installs remain inspectable and removable, and a failed download never removes the existing installation.
 - Concurrent record writes retain every successful record, and malformed nested records fail closed.
 - Regression tests reproduce each reviewed safety issue through the planner/applier or CLI, not only through isolated helper tests.
+
+## Outcome
+
+Complete on `main`, merged with #11. Items 1 (change classification) and 4 (narrow shell cleanup) had landed earlier; items 2, 3, 5, and 6 were implemented on `safety/p0-hardening`:
+
+- Item 2: traced paths are normalized lexically and their parent resolved through symlinks before recording; a resolved escape is dropped with a diagnostic.
+- Item 3: mutations and deletions carry the pre-install permission bits; a restore writes the before-image with that mode and never re-permissions an existing parent directory.
+- Item 5: `saveRecord`/`removeRecord` serialize their read-modify-write through `records.json.lock`, reclaim a stale lock, and fail closed after a bounded wait.
+- Item 6: v3 records are validated deeply on load and before write; malformed nested data is rejected without overwriting the original records file.
+
+One boundary remains and is owned by [Platform support and adoption](02-finish-platform-and-adoption.md): Linux captures carry no before-images yet, so content and mode restoration applies to captures that know the prior state.
 
 ## Dependencies and boundaries
 

@@ -71,6 +71,7 @@ jobs:
           dist/tret-darwin-x64 dist/tret-darwin-x64.tar.gz
           dist/tret-linux-arm64 dist/tret-linux-arm64.tar.gz
           dist/tret-linux-x64 dist/tret-linux-x64.tar.gz
+          dist/tret-fanotify-linux-arm64 dist/tret-fanotify-linux-x64
           dist/checksums.txt
           --title "${{ github.ref_name }}" --generate-notes
           ${{ startsWith(github.ref_name, 'v0.') && '--prerelease' || '' }}

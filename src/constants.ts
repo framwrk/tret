@@ -25,6 +25,12 @@ export const UPDATE_CHECK_PATH = ".tret/update-check.json";
 /** The binary `tret update` replaces and the update check hashes, relative to `$HOME`. */
 export const INSTALLED_BINARY = ".tret/bin/tret";
 
+/**
+ * Name of the privileged Linux capture helper (plan 02 item 3). A release archive ships it next to
+ * the `tret` binary, so it is discovered from the running executable's directory.
+ */
+export const FANOTIFY_HELPER = "tret-fanotify";
+
 // Runtime mode
 
 /**
@@ -132,3 +138,8 @@ export const EXCLUDED_DIR_NAMES = new Set([
  * caches (`~/.npm/_cacache`, `~/.cache`, `~/.bun/install/cache`) are shared by every installer, so no tool owns them.
  */
 export const EXCLUDED_DIR_NAME_PATTERN = /cache/i;
+
+/** Whether a directory basename is skipped at any depth by the shared exclusion rules. */
+export function isExcludedDirName(name: string): boolean {
+  return EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name);
+}

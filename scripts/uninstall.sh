@@ -7,13 +7,19 @@ INSTALL_DIR="$HOME/.tret/bin"
 RECORDS="$HOME/.tret"
 
 DEST="$INSTALL_DIR/tret"
+HELPER="$INSTALL_DIR/tret-fanotify"
 LINK="$HOME/.local/bin/tret"
 
-# Collect what is actually ours to remove: the binary, and the symlink only
-# when it points at that binary (a foreign file at the link path stays).
+# Collect what is actually ours to remove: the binary, the privileged capture
+# helper shipped beside it, and the symlink only when it points at the binary
+# (a foreign file at the link path stays).
 TO_REMOVE=""
 if [ -f "$DEST" ]; then
   TO_REMOVE="$DEST"
+fi
+if [ -f "$HELPER" ]; then
+  [ -n "$TO_REMOVE" ] && TO_REMOVE="$TO_REMOVE, "
+  TO_REMOVE="${TO_REMOVE}$HELPER"
 fi
 if [ -L "$LINK" ] && [ "$(readlink "$LINK" || true)" = "$DEST" ]; then
   [ -n "$TO_REMOVE" ] && TO_REMOVE="$TO_REMOVE, "
@@ -27,6 +33,7 @@ if [ -n "$TO_REMOVE" ]; then
     case "$ANSWER" in
       y|Y|yes|Yes|YES)
         [ -f "$DEST" ] && rm "$DEST" && echo "Removed $DEST"
+        [ -f "$HELPER" ] && rm "$HELPER" && echo "Removed $HELPER"
         if [ -L "$LINK" ]; then
           rm "$LINK"
           echo "Removed $LINK"

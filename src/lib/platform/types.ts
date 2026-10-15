@@ -42,6 +42,9 @@ export type ArtifactNaming = {
   hashCommand: string;
 };
 
+/** What one filesystem case probe could prove (D10); `unknown` falls back to the platform default. */
+export type CaseDetection = "sensitive" | "insensitive" | "unknown";
+
 /**
  * Filesystem case behavior for one platform (D10). The platform provides a default; the real
  * answer is probed per mount at install time and stored on the record. `detect` returns
@@ -50,8 +53,8 @@ export type ArtifactNaming = {
 export type CaseBehavior = {
   /** Value assumed when a mount cannot be probed (the last-resort default). */
   defaultCaseSensitive: boolean;
-  /** Probes the mount containing `path`; Phase 2 is a stub returning the platform default. */
-  detect: (path: AbsolutePath) => "sensitive" | "insensitive" | "unknown";
+  /** Read-only probe of the filesystem holding `path`; see `detectCaseBehavior`. */
+  detect: (path: AbsolutePath) => CaseDetection;
 };
 
 /**
@@ -67,9 +70,9 @@ export interface Platform {
   scopeRoots: AbsolutePath[];
   /**
    * Whether a scoped capture also observes `$HOME` itself, bounded by the shared skip rules
-   * (`EXCLUDED_PATHS`, `EXCLUDED_DIR_NAMES`, `EXCLUDED_DIR_NAME_PATTERN`). macOS sets this so an
-   * installer's top-level dotfiles/dot-directories (`~/.claude.json`, `~/.claude/`) are captured;
-   * Linux keeps its narrower XDG scope and leaves it unset.
+   * (`EXCLUDED_PATHS`, `EXCLUDED_DIR_NAMES`, `EXCLUDED_DIR_NAME_PATTERN`). Both platform tables set
+   * this so an installer's top-level dotfiles/dot-directories outside the fixed tool roots
+   * (`~/.claude.json`, `~/.toolrc`, `~/.pi/`) are captured rather than missed.
    */
   captureHomeRoot?: boolean;
   /** Home-relative tool directories searched by `tret find` (the old `SEARCH_DIRS_IN_HOME`). */
