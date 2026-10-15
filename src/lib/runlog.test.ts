@@ -48,9 +48,20 @@ describe("run log", () => {
 
   test("masks secrets in the header and in output", () => {
     const home = useTestHome();
-    const path = openRunLog(["install", "https://user:hunter2@example.com/i.sh?token=abc123", "--", "--api-key=zzz"], home);
+    const path = openRunLog(
+      [
+        "install",
+        "https://user:hunter2@example.com/i.sh?token=abc123&X-Amz-Signature=signature-secret&X-Amz-Credential=credential-secret",
+        "--",
+        "--api-key=zzz",
+        "--api-key",
+        "space-secret",
+      ],
+      home,
+    );
     runLogLine("Authorization: Bearer topsecret");
     runLogLine("password: letmein");
+    runLogLine("signed https://storage.example/file?X-Goog-Signature=url-signature&sig=short-signature");
     closeRunLog(0);
 
     const text = readFileSync(path!, "utf8");
@@ -59,8 +70,14 @@ describe("run log", () => {
     expect(text).not.toContain("zzz");
     expect(text).not.toContain("topsecret");
     expect(text).not.toContain("letmein");
+    expect(text).not.toContain("signature-secret");
+    expect(text).not.toContain("credential-secret");
+    expect(text).not.toContain("space-secret");
+    expect(text).not.toContain("url-signature");
+    expect(text).not.toContain("short-signature");
     expect(text).toContain("https://<redacted>@example.com");
-    expect(text).toContain('--api-key=<redacted>"');
+    expect(text).toContain("--api-key=<redacted> --api-key <redacted>");
+    expect(text).toContain("signed https://storage.example/file?X-Goog-Signature=<redacted>&sig=<redacted>");
   });
 
   test("keeps the installer output tail only for a failed run, including a trailing partial line", () => {

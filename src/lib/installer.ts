@@ -23,14 +23,15 @@ export async function runInstaller(script: string, args: string[] = []): Promise
     // The output is copied to the same place tret prints: the terminal when stdout is one, else the
     // controlling terminal, else stderr.
     return await new Promise<number>((resolve) => {
-      const child = spawn(path, args, { stdio: ["inherit", "pipe", "pipe"] });
+      // Keep stderr attached to the terminal when it is one, so installers still see the same TTY.
+      // In non-interactive runs, pipe it to retain the failure tail and forward synchronously.
+      const child = spawn(path, args, { stdio: ["inherit", "pipe", process.stderr.isTTY ? "inherit" : "pipe"] });
       child.stdout?.on("data", (chunk: Buffer) => {
         writeOutput(chunk);
         runLogOutput(chunk);
       });
-      // stderr is piped only so the run log can keep its tail; it still reaches the same stderr.
       child.stderr?.on("data", (chunk: Buffer) => {
-        process.stderr.write(chunk);
+        writeSync(2, chunk);
         runLogOutput(chunk);
       });
       child.once("close", (code) => resolve(code ?? 1));

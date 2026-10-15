@@ -598,10 +598,11 @@ describe("install -> list -> uninstall", () => {
       const result = await runCliResult(["install", server.url, "--force"], home);
 
       expect(result.code).toBe(0);
-      // The previous record's evidence is heuristic, so the caveat leads the forced removal.
+      // The previous record's evidence is heuristic, so its planned removal is labeled up front.
       const output = `${result.stdout}\n${result.stderr}`;
       expect(output).toContain("reinstalling mytool: removing the previous install first");
-      expect(output).toContain("note: these paths were only observed during a bounded window");
+      expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
+      expect(output).toContain(`remove ${join(home, ".local", "bin", "mytool")} (observed, not proven)`);
     } finally {
       await server.stop();
     }

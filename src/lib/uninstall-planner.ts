@@ -64,9 +64,9 @@ export type UninstallPlan = {
   actions: UninstallAction[];
   /**
    * How much the record's capture proves about the paths this plan may remove or restore (D11). Set
-   * from `capture.completeness`, so a `remove`/`restore` on an `observed` record is labeled as resting
-   * on a fingerprint match rather than on process attribution. It never changes what the planner
-   * allows; verification does that, identically for both labels.
+   * from `capture.completeness`, so a `remove`/`restore` on an `observed` record is labeled as not
+   * proven to belong to the tool. It never changes what the planner allows; verification does that,
+   * identically for both labels.
    */
   confidence: OwnershipConfidence;
   /** True when any action needs sudo for a root-owned entry (D8). */
