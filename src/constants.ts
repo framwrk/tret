@@ -47,6 +47,9 @@ export const RECORDS_PATH = ".tret/records.json";
  */
 export const OBJECTS_PATH = ".tret/objects";
 
+/** Where each run writes its log file, relative to `$HOME`. */
+export const LOGS_PATH = ".tret/logs";
+
 // Snapshot walk
 
 /**

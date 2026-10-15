@@ -1,5 +1,6 @@
 import { chmodSync, mkdtempSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { runLogOutput } from "./runlog";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { ttyOutput } from "./utilities";
@@ -22,8 +23,16 @@ export async function runInstaller(script: string, args: string[] = []): Promise
     // The output is copied to the same place tret prints: the terminal when stdout is one, else the
     // controlling terminal, else stderr.
     return await new Promise<number>((resolve) => {
-      const child = spawn(path, args, { stdio: ["inherit", "pipe", "inherit"] });
-      child.stdout?.on("data", (chunk: Buffer) => writeOutput(chunk));
+      const child = spawn(path, args, { stdio: ["inherit", "pipe", "pipe"] });
+      child.stdout?.on("data", (chunk: Buffer) => {
+        writeOutput(chunk);
+        runLogOutput(chunk);
+      });
+      // stderr is piped only so the run log can keep its tail; it still reaches the same stderr.
+      child.stderr?.on("data", (chunk: Buffer) => {
+        process.stderr.write(chunk);
+        runLogOutput(chunk);
+      });
       child.once("close", (code) => resolve(code ?? 1));
       child.once("error", () => resolve(1));
     });

@@ -33,6 +33,7 @@ import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
 import { removeRcLines } from "../lib/shellconfig";
 import { runInstaller } from "../lib/installer";
+import { runLogPhase } from "../lib/runlog";
 import { snapshot } from "../lib/snapshot";
 
 /** Options for `install`; the command line uses the defaults, tests inject capture seams. */
@@ -102,6 +103,7 @@ export async function install(
   }
 
   // Fetch and validate the replacement before a forced reinstall removes the current install.
+  runLogPhase("fetch-script");
   const script = await fetchScript(url);
   if (script === undefined) {
     log("Error");
@@ -117,6 +119,7 @@ export async function install(
   // A --force reinstall is an uninstall then install: the old tool and its record go first through
   // the same verified planner an explicit uninstall uses, so no stale owned path survives it.
   if (existing && force) {
+    runLogPhase("remove-previous");
     await removePrevious(storage, existing, records);
   }
 
@@ -126,6 +129,7 @@ export async function install(
   // The installer runs inside a bounded capture window. With capture on, the journal is the sole
   // effects source, so no global snapshot runs. `--no-capture` (or a backend that cannot attach)
   // falls back to the legacy snapshot/diff, whose hash-less entries uninstall treats as unverified.
+  runLogPhase("run-installer");
   const window = await observeInstall(platform, script, scriptArgs, options, backups);
   log(
     window.coverage
@@ -194,6 +198,7 @@ export async function install(
     ...(managedBy === undefined ? {} : { managedBy }),
     ...(managedInstall === undefined ? {} : { managedInstall }),
   };
+  runLogPhase("save-record");
   await storage.saveRecord(record);
 
   if (failed) {

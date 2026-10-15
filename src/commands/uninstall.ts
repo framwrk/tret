@@ -18,6 +18,7 @@ import {
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import { FileStorage } from "../lib/store";
+import { runLogPhase } from "../lib/runlog";
 
 /** The shell-config work an uninstall may do, kept separate from the file plan. */
 type ShellCleanup = {
@@ -77,6 +78,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   const lineClean = new Set(shell.files);
   const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
   const planner = new VerifiedUninstallPlanner();
+  runLogPhase("plan");
   const plan = await planner.plan(fileRecord, {
     otherRecords: records,
     force,
@@ -176,6 +178,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     log(`\tmanaged install ${label}: ${removal.detail}`);
   }
 
+  runLogPhase("apply");
   const result = await applyUninstallPlan(plan, { storage });
   // Conflicts, already-absent paths, and detect-only changes were described in the plan above; only
   // report the outcomes the plan did not announce (removals, restores, and anything that failed at apply).
