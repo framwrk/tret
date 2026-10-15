@@ -1,10 +1,10 @@
-import type { AbsolutePath, OwnedEntry, RecordV3 } from "../types";
 import { caseSensitiveForPaths, currentPlatform, processPrivilege } from "../lib/platform";
 import { detectManagedInstall, withoutManagedInstallPaths } from "../lib/managed-install";
 import { FileStorage } from "../lib/store";
+import type { RecordV3 } from "../types";
+import { adoptedEntries } from "../lib/adoption";
 import { detectManagedPackage } from "../lib/package-manager";
 import { findRelated } from "../lib/related";
-import { inspectPath } from "../lib/uninstall-planner";
 import { log } from "../lib/utilities";
 import { randomUUID } from "node:crypto";
 import { resolveCommand } from "../lib/executable";
@@ -52,7 +52,10 @@ export async function find(name: string | undefined): Promise<void> {
 
   const platform = currentPlatform();
   const installedAt = new Date().toISOString();
-  const found = paths.map(ownedEntry);
+  // Folders bring their contents with them: every node inside an adopted directory is fingerprinted
+  // so a later uninstall can empty it file by file instead of reporting an opaque `not-empty`.
+  const found = adoptedEntries(paths);
+  if (found.length > paths.length) log(`\tinventoried ${found.length} paths inside those folders`);
   // Adoption can also recognize a package-manager global shim, so a found tool uninstalls through
   // the manager rather than by deleting shared global state.
   const managedBy = detectManagedPackage(executable, found);
@@ -87,15 +90,6 @@ export async function find(name: string | undefined): Promise<void> {
 
   await storage.saveRecord(record);
   log(`recorded ${name}`);
-}
-
-/** Fingerprints one adopted path with its kind, symlink target, and content hash (D4 evidence). */
-function ownedEntry(path: AbsolutePath): OwnedEntry {
-  const verification = inspectPath(path);
-  const entry: OwnedEntry = { path, kind: verification.kind ?? "unknown" };
-  if (verification.linkTarget !== undefined) entry.linkTarget = verification.linkTarget;
-  if (verification.hash !== undefined) entry.installedHash = verification.hash;
-  return entry;
 }
 
 function message(error: unknown): string {

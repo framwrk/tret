@@ -1,7 +1,10 @@
 import type { UninstallAction, UninstallPlan, UninstallPlanner, UninstallVerification } from "./uninstall-planner";
-import { VerifiedUninstallPlanner, formatUninstallPlan } from "./uninstall-planner";
+import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "./uninstall-planner";
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import type { RecordV3 } from "../types";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 function record(): RecordV3 {
   return {
@@ -398,6 +401,20 @@ describe("VerifiedUninstallPlanner restore and delete", () => {
 
     expect(plan.actions).toEqual([{ action: "detected", path: "/h/gone", kind: "deleted" }]);
     expect(plan.incomplete).toBe(false);
+  });
+});
+
+describe("inspectPath non-regular nodes", () => {
+  test("reports a FIFO as present but unverifiable, without reading it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tret-fifo-"));
+    try {
+      const fifo = join(dir, "pipe");
+      expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+
+      expect(inspectPath(fifo)).toEqual({ exists: true, uid: process.getuid?.() });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
