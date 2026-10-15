@@ -1,8 +1,9 @@
 import type { AbsolutePath, OwnedKind } from "../../../types";
 import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN } from "../../../constants";
-import { lstat, readFile, readdir, readlink } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { normalizeAbsolutePath } from "./paths";
 
 /**
  * The before/after metadata `reconstruct.ts` needs for one path. It mirrors the journal metadata
@@ -21,6 +22,13 @@ export interface FsInspector {
    * (a baseline pass), which avoids reading file contents.
    */
   inspect(path: AbsolutePath, options?: { hash?: boolean }): Promise<NodeInfo>;
+  /**
+   * Resolves `path` as far as it exists on disk: `realpath` of the deepest existing ancestor,
+   * rejoined with the remaining (not yet existing) tail and lexically normalized. This is how the
+   * capture pipeline checks that a traced path's parent does not leave the observe roots through a
+   * symlinked component.
+   */
+  resolve(path: AbsolutePath): Promise<AbsolutePath>;
 }
 
 /** Reads the real filesystem; symlinks are reported by target and never followed. */
@@ -62,14 +70,42 @@ export class RealFsInspector implements FsInspector {
     }
     return info;
   }
+
+  /**
+   * Walks up from `path` until an ancestor resolves, then rejoins the untouched tail. The tail has
+   * no symlinked components (it does not exist yet), so re-joining it is kernel-accurate; the final
+   * join is lexically normalized because the tail may still contain `..` segments.
+   */
+  async resolve(path: AbsolutePath): Promise<AbsolutePath> {
+    const tail: string[] = [];
+    let candidate = path;
+    for (;;) {
+      try {
+        const resolved = await realpath(candidate);
+        return finalizeResolved(tail.length === 0 ? resolved : join(resolved, ...tail), path);
+      } catch {
+        const parent = dirname(candidate);
+        if (parent === candidate) return finalizeResolved(path, path);
+        tail.unshift(basename(candidate));
+        candidate = parent;
+      }
+    }
+  }
 }
 
-/** In-memory inspector for tests: pre-seed node metadata keyed by absolute path. */
+/** Lexically normalizes a resolved path; the raw path is the fallback for an unnormalizable input. */
+function finalizeResolved(resolved: string, raw: AbsolutePath): AbsolutePath {
+  return normalizeAbsolutePath(resolved) ?? raw;
+}
+
+/** In-memory inspector for tests: pre-seed node metadata and symlinked-ancestor resolutions. */
 export class FakeFsInspector implements FsInspector {
   private readonly nodes: Map<AbsolutePath, NodeInfo>;
+  private readonly resolutions: Map<AbsolutePath, AbsolutePath>;
 
   constructor(nodes: Iterable<[AbsolutePath, NodeInfo]> = []) {
     this.nodes = new Map(nodes);
+    this.resolutions = new Map();
   }
 
   set(path: AbsolutePath, info: NodeInfo): this {
@@ -77,8 +113,30 @@ export class FakeFsInspector implements FsInspector {
     return this;
   }
 
+  /** Seeds what `resolve` reports for a path or one of its ancestors (a symlink target). */
+  setResolution(path: AbsolutePath, resolved: AbsolutePath): this {
+    this.resolutions.set(path, resolved);
+    return this;
+  }
+
   async inspect(path: AbsolutePath): Promise<NodeInfo> {
     return this.nodes.get(path) ?? { kind: "missing" };
+  }
+
+  /** Resolves through the longest seeded ancestor; an unseeded path resolves to its normalized self. */
+  async resolve(path: AbsolutePath): Promise<AbsolutePath> {
+    const tail: string[] = [];
+    let candidate = path;
+    for (;;) {
+      const resolved = this.resolutions.get(candidate);
+      if (resolved !== undefined) {
+        return normalizeAbsolutePath(join(resolved, ...tail)) ?? resolved;
+      }
+      const parent = dirname(candidate);
+      if (parent === candidate) return normalizeAbsolutePath(path) ?? path;
+      tail.unshift(basename(candidate));
+      candidate = parent;
+    }
   }
 }
 

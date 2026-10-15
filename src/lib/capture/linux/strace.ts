@@ -1,4 +1,5 @@
 import type { TracerRecord, TracerResult } from "./raw";
+import { inRoots, normalizeAbsolutePath } from "./paths";
 import type { AbsolutePath } from "../../../types";
 
 /**
@@ -23,8 +24,10 @@ export type ParseStraceOptions = {
   /** Directory used to resolve `AT_FDCWD`-relative paths; defaults to `/`. */
   cwd?: AbsolutePath;
   /**
-   * Only records whose path falls under one of these roots are kept. Empty or omitted means "keep
-   * everything", which the backend uses when it wants to attribute the whole traced tree.
+   * Only records whose path falls under one of these roots after lexical `.`/`..` normalization are
+   * kept. Empty or omitted means "keep everything", which the backend uses when it wants to
+   * attribute the whole traced tree. The filter is lexical; `reconstruct.ts` resolves symlinked
+   * components against the real filesystem before a path is recorded.
    */
   roots?: AbsolutePath[];
 };
@@ -587,19 +590,18 @@ function pidKey(pid: number | undefined): string {
   return pid === undefined ? "?" : String(pid);
 }
 
+/**
+ * Applies the observe-root filter to a traced path and keeps the path as traced. The filter decides
+ * on the lexically normalized form (`..` at the root stays at the root); the traced spelling is
+ * preserved because `reconstruct.ts` resolves symlinked components against the real filesystem
+ * before the path is recorded, and that resolution needs the original segments.
+ */
 function normalizeRoot(path: string, options: ParseStraceOptions): AbsolutePath | undefined {
+  const normalized = normalizeAbsolutePath(path);
+  if (normalized === undefined) return undefined;
   const roots = options.roots;
-  if (!roots || roots.length === 0) return path;
-  return inRoots(path, roots) ? path : undefined;
-}
-
-/** Whether `path` is `root` itself or a descendant of it, without matching `/usr` for `/usrx`. */
-export function inRoots(path: AbsolutePath, roots: AbsolutePath[]): boolean {
-  return roots.some((root) => {
-    if (path === root) return true;
-    const prefix = root.endsWith("/") ? root : `${root}/`;
-    return path.startsWith(prefix);
-  });
+  if (roots === undefined || roots.length === 0) return path;
+  return inRoots(normalized, roots) ? path : undefined;
 }
 
 function joinPath(base: string, relative: string): AbsolutePath {
