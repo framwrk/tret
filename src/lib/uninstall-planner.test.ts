@@ -474,7 +474,7 @@ describe("dry-run parity", () => {
     expect(first.actions.map((action) => action.action)).toEqual(["remove", "conflict", "remove", "restore", "restore"]);
     expect(first.confidence).toBe("observed");
     expect(dry).toEqual([
-      "note: these paths were only observed during a bounded window, not proven to come from the installer",
+      "note: these paths are observed, not proven to belong to this tool",
       "would remove /h/dir/tool (observed, not proven)",
       "conflict /h/bin/changed (modified)",
       "would remove /h/dir (observed, not proven)",
@@ -482,7 +482,7 @@ describe("dry-run parity", () => {
       "would restore /h/gone (observed, not proven)",
     ]);
     expect(real).toEqual([
-      "note: these paths were only observed during a bounded window, not proven to come from the installer",
+      "note: these paths are observed, not proven to belong to this tool",
       "remove /h/dir/tool (observed, not proven)",
       "keep /h/bin/changed (modified)",
       "remove /h/dir (observed, not proven)",
@@ -505,6 +505,20 @@ describe("dry-run parity", () => {
       { action: "remove", path: "/h/bin/tool", kind: "file", plannedState: { exists: true, kind: "file", hash: h("b") } },
     ]);
     expect(formatUninstallPlan(plan, "dry-run")).toEqual(["would remove /h/bin/tool"]);
+  });
+
+  test("an observed plan with no destructive actions omits the caveat", async () => {
+    const target = {
+      ...record(),
+      owned: [{ path: "/h/bin/tool", kind: "file" as const, installedHash: h("b") }],
+    };
+
+    const plan = await planFor(target, {
+      "/h/bin/tool": { exists: true, kind: "file", hash: h("changed") },
+    });
+
+    expect(plan.actions.map((action) => action.action)).toEqual(["conflict"]);
+    expect(formatUninstallPlan(plan, "dry-run")).toEqual(["conflict /h/bin/tool (modified)"]);
   });
 });
 

@@ -2,6 +2,7 @@ import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, Di
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
 import type { BoundedSessionResult, SessionCoverage } from "../lib/session";
 import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
+import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { caseSensitiveFor, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
 import {
@@ -24,11 +25,9 @@ import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
 import { MacosHeuristicCaptureBackend } from "../lib/capture/macos";
 import type { Platform } from "../lib/platform";
-import { VerifiedUninstallPlanner } from "../lib/uninstall-planner";
 import { captureBackendFor } from "../lib/capture/current";
 import { diff } from "../lib/diff";
 import { normalizeJournal } from "../lib/journal/normalize";
-import { ownershipNote } from "../lib/ownership";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
 import { removeRcLines } from "../lib/shellconfig";
@@ -432,10 +431,10 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     process.exit(1);
   }
 
-  // Label the previous install's evidence before anything is removed, so a forced reinstall does not
-  // silently present observed-only paths as proven installer output (D11).
-  const ownershipCaveat = ownershipNote(plan.confidence);
-  if (ownershipCaveat !== undefined) log(`\t${ownershipCaveat}`);
+  // Show the same labeled plan as uninstall before a forced reinstall removes anything (D11).
+  for (const line of formatUninstallPlan(plan, "apply")) {
+    log(`\t${line}`);
+  }
 
   // The package manager goes first, mirroring `uninstall`: only once it reports the package gone
   // does Tret remove the rest. A failed removal aborts the reinstall with nothing else touched, so

@@ -2,12 +2,12 @@ import type { CaptureCompleteness, OwnershipConfidence } from "../types";
 
 // Ownership confidence (D11).
 //
-// A record's `capture.completeness` already says how much of the installer's process tree a backend
-// could prove. This module turns that into the one label a user needs when Tret proposes a
-// destructive action: whether each path is *proven* to have come from the installer's observed tree,
-// or only *observed* to differ across a bounded window, where unrelated activity looks the same as
-// installer output. Nothing here changes what Tret is allowed to remove; verification decides that
-// and treats both labels identically. The label only keeps the evidence honest in the output.
+// A record's `capture.completeness` says how much evidence a capture provides. This module turns it
+// into the one label a user needs when Tret proposes a destructive action: whether the capture
+// attributes a path to the installer's process tree, or whether the path is only observed and not
+// proven to belong to the tool. The latter also covers `find` records, which have no install window
+// or journal. Nothing here changes what Tret is allowed to remove; verification decides that and
+// treats both labels identically. The label only keeps the evidence honest in the output.
 //
 // Deriving it instead of storing it keeps one source of truth: a record whose completeness is edited
 // cannot keep claiming a confidence its evidence no longer supports. A `partial` window is `observed`
@@ -33,5 +33,5 @@ export function ownershipMarker(confidence: OwnershipConfidence): string {
  */
 export function ownershipNote(confidence: OwnershipConfidence): string | undefined {
   if (confidence === "proven") return undefined;
-  return "note: these paths were only observed during a bounded window, not proven to come from the installer";
+  return "note: these paths are observed, not proven to belong to this tool";
 }
