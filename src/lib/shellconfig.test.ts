@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { removeRcLines, shellConfigPaths } from "./shellconfig";
+import { LINUX_PLATFORM } from "./platform";
+import type { Platform } from "./platform";
 import { join } from "node:path";
-import { removeRcLines } from "./shellconfig";
 import { tmpdir } from "node:os";
 
 const HOME_BACKUP = process.env.HOME;
@@ -116,5 +118,40 @@ describe("shellconfig", () => {
 
     expect(rc.cleaned).toEqual([]);
     expect(readFileSync(file, "utf8")).toBe(userLine);
+  });
+
+  test("cleans the fish config from the Linux table", () => {
+    const home = testHome();
+    mkdirSync(join(home, ".config/fish"), { recursive: true });
+    const fish = join(home, ".config/fish/config.fish");
+    writeFileSync(fish, `set -gx PATH ${home}/.mytool/bin $PATH\n`);
+
+    const rc = removeRcLines("mytool", [join(home, ".mytool")], false, [fish], LINUX_PLATFORM);
+
+    expect(rc.cleaned.map((cleaned) => cleaned.file)).toEqual([fish]);
+    expect(rc.failed).toEqual([]);
+    expect(readFileSync(fish, "utf8")).toBe("");
+  });
+
+  test("expands a directory entry to its snippet files and never edits the directory as a file", () => {
+    const home = testHome();
+    const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
+    const mine = join(snippets, "mytool.sh");
+    const other = join(snippets, "other.sh");
+    writeFileSync(mine, `export PATH=${home}/.mytool/bin:$PATH\n`);
+    writeFileSync(other, "export PATH=/usr/local/bin:$PATH\n");
+    const platform: Platform = {
+      ...LINUX_PLATFORM,
+      shellConfigs: [{ shell: "sh", scope: "absolute", path: snippets, kind: "directory" }],
+    };
+
+    expect(shellConfigPaths(platform)).toEqual([mine, other]);
+
+    const rc = removeRcLines("mytool", [join(home, ".mytool")], false, undefined, platform);
+
+    expect(rc.cleaned.map((cleaned) => cleaned.file)).toEqual([mine]);
+    expect(rc.failed).toEqual([]);
+    expect(readFileSync(mine, "utf8")).toBe("");
+    expect(readFileSync(other, "utf8")).toBe("export PATH=/usr/local/bin:$PATH\n");
   });
 });
