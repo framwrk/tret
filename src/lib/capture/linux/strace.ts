@@ -9,9 +9,10 @@ import type { AbsolutePath } from "../../../types";
  * a Linux ptrace tracer (plan section 8, phase 4 conformance tests).
  *
  * Coverage caveats the parser reports instead of hiding:
- * - Paths relative to `AT_FDCWD` are resolved against the supplied `cwd` because strace does not
- *   report a tracee's working directory; a relative path with no known directory is dropped with a
- *   diagnostic.
+ * - A relative path is resolved against the `-y` annotation strace printed for its dirfd — including
+ *   `AT_FDCWD</dir>`, which pins the tracee's working directory at that syscall. Only when strace
+ *   printed no usable annotation does the parser fall back to the supplied `cwd`; a relative path
+ *   with no known directory at all is dropped with a diagnostic.
  * - Unknown fds in `write`-family calls become a diagnostic (the fd map is reset when strace cannot
  *   report an `open` we parsed, for example a write inherited across a `fork` we did not trace).
  * - Syscalls that can change content or metadata in a way the journal cannot represent (`mmap`
@@ -21,7 +22,10 @@ import type { AbsolutePath } from "../../../types";
 
 /** Options that affect relative-path resolution and which syscalls are considered in scope. */
 export type ParseStraceOptions = {
-  /** Directory used to resolve `AT_FDCWD`-relative paths; defaults to `/`. */
+  /**
+   * Fallback directory for relative paths whose dirfd strace could not annotate (a bare
+   * `AT_FDCWD` or an unknown descriptor); a `-y` annotation always wins.
+   */
   cwd?: AbsolutePath;
   /**
    * Only records whose path falls under one of these roots after lexical `.`/`..` normalization are
@@ -216,10 +220,10 @@ class StraceParser {
         if (!failed) this.emitChmod(at, pid, this.resolvePathAt(args[0], args[1], pid), args[2]);
         return;
       case "symlink":
-        if (!failed) this.emitSymlink(at, pid, this.resolvePath(args[1]), this.resolvePath(args[0]));
+        if (!failed) this.emitSymlink(at, pid, this.resolvePath(args[1]), decodeLinkTarget(args[0]));
         return;
       case "symlinkat":
-        if (!failed) this.emitSymlink(at, pid, this.resolvePathAt(args[1], args[2], pid), this.resolvePath(args[0]));
+        if (!failed) this.emitSymlink(at, pid, this.resolvePathAt(args[1], args[2], pid), decodeLinkTarget(args[0]));
         return;
       case "mkdir":
         if (!failed) this.emitMkdir(at, pid, this.resolvePath(args[0]), args[1]);
@@ -372,16 +376,32 @@ class StraceParser {
 
   private absolute(value: AbsolutePath, dirfd: string | undefined, pid?: number): AbsolutePath | undefined {
     if (value.startsWith("/")) return normalizeRoot(value, this.options);
-    let base = this.options.cwd;
-    if (dirfd !== undefined && dirfd !== "AT_FDCWD") {
-      const dir = this.resolveFd(pid, dirfd);
-      if (dir !== undefined) base = dir;
-    }
+    const base = this.baseDir(dirfd, pid);
     if (base === undefined) {
       this.diagnostics.push(`relative path with no known directory: ${value}`);
       return undefined;
     }
     return normalizeRoot(joinPath(base, value), this.options);
+  }
+
+  /**
+   * The directory a relative path is resolved against, in order of evidence: the `-y` annotation
+   * strace printed for the fd (`5</dir>`, `AT_FDCWD</dir>` — the tracee's working directory at the
+   * moment of the syscall), the fd map for a bare descriptor whose `open` was recorded, and finally
+   * the parser's `cwd` guess. The annotation is returned untested so the caller root-filters the
+   * joined path: a directory outside the observe roots then drops the record as out of scope instead
+   * of silently resolving it against `cwd`.
+   */
+  private baseDir(dirfd: string | undefined, pid: number | undefined): AbsolutePath | undefined {
+    if (dirfd === undefined || dirfd === "AT_FDCWD") return this.options.cwd;
+    const annotated = fdAnnotation(dirfd);
+    if (annotated !== undefined && annotated.length > 0) return annotated;
+    const fd = fdNumber(dirfd);
+    if (fd !== undefined) {
+      const mapped = this.fds.get(pidKey(pid))?.get(fd);
+      if (mapped !== undefined) return mapped;
+    }
+    return this.options.cwd;
   }
 }
 
@@ -562,6 +582,24 @@ function fdNumber(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   const match = /^(\d+)/.exec(raw.trim());
   return match ? Number(match[1]) : undefined;
+}
+
+/** The path strace's `-y` annotation attached to a dirfd or `AT_FDCWD` (`5</dir>`, `AT_FDCWD</dir>`). */
+function fdAnnotation(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const match = /^(?:\d+|AT_FDCWD)<([^>]*)>/.exec(raw.trim());
+  return match ? (match[1] ?? "") : undefined;
+}
+
+/**
+ * A symlink target, kept exactly as the tracee wrote it. The kernel stores the string
+ * uninterpreted — it may be relative to the link's own directory, dangle, or point outside the
+ * observe roots — and uninstall later verifies the record against `readlink`, so resolving or
+ * root-filtering it would corrupt or drop the entry.
+ */
+function decodeLinkTarget(raw: string | undefined): AbsolutePath | undefined {
+  if (raw === undefined) return undefined;
+  return decodeStraceString(raw);
 }
 
 function fdFromReturn(ret: string): number | undefined {

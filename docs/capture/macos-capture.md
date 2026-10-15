@@ -58,7 +58,11 @@ bounded roots.
   `~/Library`, `~/Desktop`, `~/Documents`, `~/Downloads`, `node_modules`, and cache-shaped
   directories are neither recorded nor descended. Because `EXCLUDED_PATHS` skips `Library`, the
   explicit `~/Library/*` roots above remain the only `~/Library` access, so nothing is scanned twice.
-  Linux leaves `captureHomeRoot` unset, so its scope stays XDG-only.
+  Linux sets the same signal, so its install windows also observe `$HOME`
+  (`docs/capture/linux-capture.md`).
+
+`tret install --observe <path>` adds one absolute root and `--observe-exclude <path>` drops one of
+the table's roots, for that one install only (D3 user additions/removals).
 
 Capture roots are curated **separately** from `tret find`'s `searchRootsInHome`. Those search roots
 stay broad (they include `~/Library` subtrees) so `find` can adopt a tool's files by hand; capture
@@ -117,7 +121,7 @@ The backend reports these limits in its completeness label; they are not silentl
 | Symlinks               | Recorded by target, never followed; a target change reads as a replacement.                                                                                                                                                                                                                                                                                                                                                             |
 | Daemonized descendants | Writes inside the scope before `stop()` are seen; writes after the window are not, and without a PID the backend cannot say a change came from the installer's tree.                                                                                                                                                                                                                                                                    |
 | Unreadable scope       | A permission-denied **subdirectory** (`EACCES`/`EPERM`, e.g. the TCC-protected `~/Library/Application Support/AddressBook`) is pruned quietly, because the installer runs as the same unprivileged user and could not have written there either. A root that exists but cannot be read, or a file that cannot be hashed, still sets `partialReason` (completeness stays `heuristic`).                                                   |
-| Case behavior          | Uses the platform table's default (macOS: case-insensitive) for path identity, matching journal normalization (D10). Per-mount probing is a later stub; when it lands, the resolved `caseSensitive` flag is stored on the record.                                                                                                                                                                                                       |
+| Case behavior          | Compares paths with the record-wide probed flag (D10): `tret install` probes every observation root before the window and hands the same flag to this backend and to journal normalization, then stores it on the record. A read-only probe (no temp names) checks a case-flipped spelling of the deepest existing ancestor; the macOS default (case-insensitive) applies only when no root can be probed.                              |
 
 With backups off, mutations and deletions are non-restorable: uninstall can still remove owned files
 whose `installedHash` matches, but it reports a conflict rather than restore a heuristic mutation.

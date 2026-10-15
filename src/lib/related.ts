@@ -1,21 +1,22 @@
 import type { AbsolutePath } from "../types";
-import { MACOS_PLATFORM } from "./platform";
+import type { Platform } from "./platform";
+import { currentPlatform } from "./platform";
 import { join } from "node:path";
 import { readdirSync } from "node:fs";
 
 /**
  * Finds every file and folder that belongs to a tool: the executable it runs as, its dot folder
- * under `$HOME`, and tool-named entries in the standard tool directories. Only the top-most path
- * of a nest is returned, matching what `diff()` records for an install.
+ * under `$HOME`, and tool-named entries in the standard tool directories of the active platform.
+ * Only the top-most path of a nest is returned, matching what `diff()` records for an install.
  */
-export function findRelated(name: string, executable: AbsolutePath): AbsolutePath[] {
+export function findRelated(name: string, executable: AbsolutePath, platform: Platform = currentPlatform()): AbsolutePath[] {
   const home = Bun.env.HOME;
   if (!home) throw new Error("HOME is not set");
 
   const found = new Set<AbsolutePath>([executable]);
   addToolEntries(home, name, found);
-  for (const dir of MACOS_PLATFORM.searchRootsInHome) addToolEntries(join(home, dir), name, found);
-  for (const dir of MACOS_PLATFORM.searchRootsAbsolute) addToolEntries(dir, name, found);
+  for (const dir of platform.searchRootsInHome) addToolEntries(join(home, dir), name, found);
+  for (const dir of platform.searchRootsAbsolute) addToolEntries(dir, name, found);
   return topMost([...found].sort());
 }
 

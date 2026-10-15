@@ -1,11 +1,16 @@
-import type { Baseline, FsInspector } from "./inspect";
+import type { Baseline, CapturedBaseline, FsInspector } from "./inspect";
 import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../backend";
 import type { LinuxTracer, LinuxTracerFactory, TracerAttachOptions } from "./tracer";
 import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
+import { accessSync, existsSync, readFileSync, statSync } from "node:fs";
 import { attachFanotify, attachStrace } from "./tracer";
-import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AbsolutePath } from "../../../types";
+import type { BlobId } from "../../storage";
+import { FANOTIFY_HELPER } from "../../../constants";
 import type { Journal } from "../events";
+import type { TracerResult } from "./raw";
+import { X_OK } from "node:constants";
 import { reconstruct } from "./reconstruct";
 
 /**
@@ -31,6 +36,14 @@ export type LinuxCaptureBackendOptions = {
   name?: string;
   /** How long to wait for the tracer to detach before treating a live tracer as incomplete. */
   settleMs?: number;
+  /** Liveness probe for pids the tracer recorded; injectable so tests stay hermetic. */
+  processAlive?: (pid: number) => boolean;
+};
+
+/** The pre-window baseline plus any before-image bytes the capture read alongside it. */
+type ResolvedBaseline = {
+  baseline: Baseline;
+  beforeImages: Map<BlobId, Uint8Array>;
 };
 
 export class LinuxCaptureBackend implements CaptureBackend {
@@ -40,28 +53,37 @@ export class LinuxCaptureBackend implements CaptureBackend {
   private readonly options: LinuxCaptureBackendOptions;
   private readonly inspector: FsInspector;
   private readonly settleMs: number;
+  private readonly processAlive: (pid: number) => boolean;
 
   constructor(options: LinuxCaptureBackendOptions = {}) {
     this.options = options;
     this.name = options.name ?? "linux-strace";
     this.inspector = options.inspector ?? new RealFsInspector();
     this.settleMs = options.settleMs ?? 200;
+    this.processAlive = options.processAlive ?? procProcessAlive;
   }
 
   async start(options: CaptureStartOptions): Promise<CaptureSession> {
     const attach: TracerAttachOptions = { pid: options.pid, roots: options.roots };
-    const baseline = await this.resolveBaseline(options.roots);
+    const resolved = await this.resolveBaseline(options);
     const tracer = await (this.options.tracerFactory ?? defaultTracerFactory)(attach);
 
     return {
       backend: tracer.name,
-      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, baseline),
+      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, resolved, options.pid),
     };
   }
 
-  private async stop(tracer: LinuxTracer, roots: AbsolutePath[], baseline: Baseline): Promise<Journal> {
+  private async stop(
+    tracer: LinuxTracer,
+    roots: AbsolutePath[],
+    resolved: ResolvedBaseline,
+    rootPid: number,
+  ): Promise<Journal> {
     // A live tracer at the close of the window means tracees (a daemonized or detached descendant)
-    // outlived the bounded install window; their later activity is not captured.
+    // outlived the bounded install window; their later activity is not captured. The observed root
+    // itself is excluded: for an install window it is the caller's own process, alive by
+    // construction, so only a *descendant* it kept running past the window lowers coverage.
     const settled = await waitForInactive(tracer, this.settleMs);
     const beforeStopLosses = tracer.losses();
     await tracer.stop();
@@ -69,7 +91,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     const result = await reconstruct({
       traced,
       inspector: this.inspector,
-      baseline,
+      baseline: resolved.baseline,
       roots,
       fallbackAt: Date.now(),
     });
@@ -79,7 +101,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     if (traced.unsupported.length > 0) {
       reasons.add(`unsupported syscalls may change files without journal events: ${traced.unsupported.join(", ")}`);
     }
-    if (!settled) {
+    if (!settled && hasLiveDescendants(traced, rootPid, this.processAlive)) {
       reasons.add(
         "capture closed while the tracer was still attached to live descendants (daemonized or detached processes were not observed to their end)",
       );
@@ -92,17 +114,25 @@ export class LinuxCaptureBackend implements CaptureBackend {
       events: result.events,
     };
     if (reasons.size > 0) journal.partialReason = [...reasons].join("; ");
+    // Present only when the walk actually read bytes (backups enabled), so a caller's
+    // `availableBeforeImages` stays empty and no record advertises an unrestorable before-image.
+    if (resolved.beforeImages.size > 0) journal.beforeImages = resolved.beforeImages;
     return journal;
   }
 
-  private async resolveBaseline(roots: AbsolutePath[]): Promise<Baseline> {
+  private async resolveBaseline(options: CaptureStartOptions): Promise<ResolvedBaseline> {
     const configured = this.options.baseline;
     if (configured === undefined || configured === "capture") {
-      // The baseline is scoped to the observe roots and reads no content (see `captureBaseline`).
-      return captureBaseline(roots);
+      // The baseline is scoped to the observe roots; with backups enabled it also reads each
+      // eligible file once, for its before-image (see `captureBaseline`).
+      const captured: CapturedBaseline = await captureBaseline(
+        options.roots,
+        options.backups === undefined ? {} : { backups: options.backups },
+      );
+      return captured;
     }
-    if (configured === "none") return new MemoryBaseline();
-    return configured;
+    if (configured === "none") return { baseline: new MemoryBaseline(), beforeImages: new Map() };
+    return { baseline: configured, beforeImages: new Map() };
   }
 }
 
@@ -129,9 +159,10 @@ export async function defaultTracerFactory(attach: TracerAttachOptions): Promise
  * True when the kernel's Yama LSM forbids this unprivileged process from tracing its own parent — the
  * relationship `strace -f -p <parent>` needs. Under `ptrace_scope >= 1` a child may only trace its
  * descendants, so the attach can never succeed; detecting that up front keeps the caller's heuristic
- * fallback deterministic instead of racing the tracer's exit.
+ * fallback deterministic instead of racing the tracer's exit. Exported so callers and tests can
+ * predict which backend an install window will get.
  */
-function parentAttachRestricted(): boolean {
+export function parentAttachRestricted(): boolean {
   if (isRoot()) return false;
   try {
     const scope = Number.parseInt(readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim(), 10);
@@ -170,10 +201,35 @@ function isAttachFailure(reason: string): boolean {
   return /could not (?:start|attach)|Operation not permitted/i.test(reason);
 }
 
-/** The fanotify helper path when it is present; Tret never installs or elevates it itself. */
-function fanotifyHelperPath(): string | undefined {
-  const configured = process.env.TRET_FANOTIFY;
-  return configured !== undefined && existsSync(configured) ? configured : undefined;
+/**
+ * Locates the privileged fanotify helper (plan 02 item 3). An explicit `$TRET_FANOTIFY` override
+ * wins; otherwise the helper shipped next to the running binary is used — a release archive places
+ * `tret-fanotify` beside `tret`, so a root run does not have to discover and configure a private
+ * path. `$HOME/.tret/bin/tret-fanotify` is the fallback for a dev run driving an installed release.
+ * Returns undefined when no executable candidate exists; the caller then stays on strace.
+ */
+export function fanotifyHelperPath(
+  env: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  home: string | undefined = Bun.env.HOME,
+): string | undefined {
+  const candidates: string[] = [];
+  const configured = env.TRET_FANOTIFY;
+  if (configured !== undefined && configured.length > 0) candidates.push(configured);
+  candidates.push(join(dirname(execPath), FANOTIFY_HELPER));
+  if (home !== undefined) candidates.push(join(home, ".tret", "bin", FANOTIFY_HELPER));
+  return candidates.find(isExecutableFile);
+}
+
+/** True when `path` is a regular file this user can execute. */
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Convenience predicate used by install integration to decide whether a privileged tracer is viable. */
@@ -189,4 +245,27 @@ async function waitForInactive(tracer: LinuxTracer, settleMs: number): Promise<b
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/**
+ * Whether any traced process other than the observed root was still alive when the window closed.
+ * The root is excluded because an install window observes the caller's own process, which is alive
+ * by construction; a daemonized or detached descendant keeps its recorded pid alive past the
+ * window. Best-effort: a descendant that issued no traced syscall never appears in the records, and
+ * a reused pid reads as alive.
+ */
+function hasLiveDescendants(traced: TracerResult, rootPid: number, alive: (pid: number) => boolean): boolean {
+  const seen = new Set<number>();
+  for (const record of traced.records) {
+    const pid = record.pid;
+    if (pid === undefined || pid === rootPid || seen.has(pid)) continue;
+    seen.add(pid);
+    if (alive(pid)) return true;
+  }
+  return false;
+}
+
+/** Default liveness probe: `/proc/<pid>` exists. */
+function procProcessAlive(pid: number): boolean {
+  return existsSync(`/proc/${pid}`);
 }

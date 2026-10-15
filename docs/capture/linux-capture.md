@@ -23,9 +23,12 @@ produce the journal shape consumed by `reconstruct.ts` and `normalizeJournal`.
 | `FanotifyTracer` (`tret-fanotify` helper) | `linux-fanotify`         | `CAP_SYS_ADMIN` / root         | only when already root |
 
 `defaultTracerFactory` selects fanotify only when the process already holds root (`getuid() == 0`)
-**and** `$TRET_FANOTIFY` points at a present helper; otherwise it uses strace. Tret never escalates
-with `sudo` on the user's behalf (D8). Running under `sudo` is the user's choice, and the record
-carries `privilege: "root"` for sudo-aware uninstall.
+**and** a helper executable is present; otherwise it uses strace. The helper is found as
+`$TRET_FANOTIFY` when that override is set, otherwise as `tret-fanotify` next to the running binary
+(a release archive ships it beside `tret`), with `~/.tret/bin/tret-fanotify` as the fallback for a
+dev run driving an installed release; a candidate must be an executable regular file. Tret never
+escalates with `sudo` on the user's behalf (D8). Running under `sudo` is the user's choice, and the
+record carries `privilege: "root"` for sudo-aware uninstall.
 
 The strace tracer is the zero-privilege, same-uid mechanism required by D7. `strace -f` follows
 `fork`/`vfork`/`clone`, double-fork and `setsid` descendants because ptrace tracks tracees directly,
@@ -43,7 +46,8 @@ for:
 - renames (`rename`/`renameat`/`renameat2`, fanotify `FAN_MOVED_FROM`/`FAN_MOVED_TO` paired);
 - unlinks (`unlink`/`unlinkat`, fanotify `FAN_DELETE`);
 - chmods (`chmod`/`fchmod`/`fchmodat`, fanotify `FAN_ATTRIB`);
-- symlinks (`symlink`/`symlinkat`), recorded by target and never followed;
+- symlinks (`symlink`/`symlinkat`), recorded by the target string exactly as the tracee wrote it
+  (relative, dangling, or pointing outside the roots) and never followed;
 - directory creation and removal (`mkdir`/`mkdirat`, `rmdir`, `unlinkat(AT_REMOVEDIR)`).
 
 Only paths under the `roots` passed to `start()` are attributed. This is defense in depth over the
@@ -52,25 +56,47 @@ strace tracer only sees tracees' syscalls, and any record for a path outside the
 dropped by the parser and again by reconstruction. The integration fixture deliberately traces a
 file **outside** the roots and asserts it is not attributed.
 
+An install window's roots include `$HOME` itself (`captureHomeRoot`), exactly like macOS, so a tool
+that drops a dotfile or dot-directory outside the fixed XDG roots (`~/.pi`, `~/.toolrc`, `~/.bun`)
+is captured instead of the install being unobservable. Attributing under that root stays consistent
+with the existence baseline: the baseline walk records an excluded directory but never descends into
+it, so reconstruction drops records whose ancestor directories match the shared skip rules
+(`EXCLUDED_DIR_NAMES`/`EXCLUDED_DIR_NAME_PATTERN` — `node_modules`, caches, `dist`). A skipped
+directory itself is still recorded; only its contents are out of scope. (The macOS scoped engine
+applies name exclusions only to its `$HOME` root; the Linux baseline never walks excluded
+directories under any root, so Linux applies them everywhere or a pre-existing file under one would
+be misclassified as a create.)
+
+`tret install --observe <path>` adds one absolute root to the window and `--observe-exclude <path>`
+drops one of the table's default roots, for that one install only (D3 user additions/removals). The
+parser drops records outside the resolved roots, so an added root is attributed and an excluded one
+is not.
+
 ## Descendant tracking and how it ends
 
 - **Scope.** The traced tree is the installer pid plus every process it forks, for as long as ptrace
   keeps them traceable. This is not limited to direct children.
 - **Natural end.** When every tracee exits, `strace -f` exits; the journal is eligible to be
   `complete`.
-- **Bounded window.** `stop()` waits a short settle period for the tracer to detach. If the tracer is
-  **still attached to live tracees** when the window closes, a descendant (a daemon, a `setsid` child,
-  or a process that reparented to init) outlived the install window. Its later activity is not
-  captured, so the journal is marked `partial` with "live descendants".
+- **Bounded window.** `stop()` waits a short settle period for the tracer to detach. In parent mode
+  (`strace -p <caller>`) the tracer stays attached to the still-running root by construction, so the
+  check is instead whether any _other_ recorded pid is still alive: if one is, a descendant (a
+  daemon, a `setsid` child, or a process that reparented to init) outlived the install window. Its
+  later activity is not captured, so the journal is marked `partial` with "live descendants". The
+  probe is best-effort (`/proc/<pid>` exists): a descendant that issued no traced syscall never
+  appears in the records, and a reused pid reads as alive.
 - **Daemonized children.** A double-fork/`setsid` daemon is followed while it remains a tracee; it is
   only lost at the bounded-window boundary or a uid transition, and either case is reported.
 - **uid transitions.** A `setuid`/`setgid` `execve` makes the process non-dumpable; an unprivileged
   tracer is detached and coverage stops. `strace` diagnostics mentioning `setuid`/`ptrace`/attach
   failures are folded into `partialReason`.
-- **Relative paths.** strace does not report a tracee's working directory. `StraceTracer` resolves
-  paths relative to a `cwd` option (install integration passes the installer's cwd); when a relative
-  path cannot be resolved it is dropped and becomes a diagnostic, which marks the journal `partial`
-  rather than guessing.
+- **Relative paths.** strace reports syscall arguments as the tracee passed them. With `-y` it also
+  annotates each dirfd, including `AT_FDCWD</dir>` — the tracee's working directory at that syscall —
+  so `StraceTracer` resolves a relative path against the annotated directory first (this is what
+  makes `mkdir -p`'s component-by-component `mkdirat(AT_FDCWD<...>, "name")` calls resolve
+  correctly). Only an unannotated dirfd falls back to the `cwd` option (install integration passes
+  the installer's cwd); a relative path with no known directory at all is dropped and becomes a
+  diagnostic, which marks the journal `partial` rather than guessing.
 - **Inherited fds.** `strace -y` annotates descriptors with their paths, so a `write` resolves to a
   path without a prior `open` in the journal. A write on an fd the tracer cannot resolve is a
   diagnostic and lowers completeness.
@@ -105,7 +131,10 @@ with a `partialReason` joining every cause:
 1. no tracer loss reason (attach denied, ptrace/setuid drop, fanotify helper error/overflow);
 2. no unsupported syscall was observed;
 3. no parser diagnostic (unresolved relative path, unknown fd, unfinished syscall);
-4. the tracer detached on its own before the settle deadline (the whole tree exited).
+4. no descendant outlived the window: either the tracer detached on its own before the settle
+   deadline, or every recorded pid other than the observed root was already gone. The root is the
+   caller's own process — `strace -p <caller>` stays attached for as long as it runs — so its
+   liveness alone does not lower coverage.
 
 A record is never labelled `complete` when any of 1–4 fails, so uninstall and `tret list` can trust
 the label. `heuristic` is reserved for the macOS fallback; the Linux backend never emits it.
@@ -114,16 +143,23 @@ the label. `heuristic` is reserved for the macOS fallback; the Linux backend nev
 
 Reconstruction runs after the window and inspects final filesystem state. It records content hashes
 only when bytes were actually read; a path that no longer exists (a temp file, an unlink, a rename
-source) falls back to existence/kind. Because an overwrite destroys the prior bytes before a
-post-hoc tracer can read them, the strace backend records mutations without a before-image unless a
-scoped baseline or a future entry-stop tracer supplies one. The macOS heuristic fallback captures
-before-image bytes at window start when backups are enabled (`--backup`); the Linux backend does not
-yet, so a `--backup` install on Linux stays detect-only and `normalizeJournal` treats the missing
-`before` as "detectable, not restorable" rather than inventing one.
+source) falls back to existence/kind, or to the baseline metadata below.
 
-The existence baseline (`captureBaseline`) walks the observe roots once and stores path → kind only.
-It reads no file content, so it cannot become the global content diff the rewrite replaces; it exists
-solely to tell a create from an overwrite and to describe a removed node's kind.
+Because an overwrite destroys the prior bytes before a post-hoc tracer can read them, before-images
+are captured at window start. When `--backup` is enabled, the baseline walk reads each pre-existing
+regular file that fits the backup size limit once, keeps its bytes under their sha256 content
+address, and stores the file's prior hash, size, mode, and mtime alongside its kind; reconstruction
+attaches that metadata as the `before` of an overwrite, truncating open, unlink, or rename source,
+so the record is restorable with its prior permission bits. Over-limit or unreadable files stay
+kind-only: the change is still recorded, just not restorable. This mirrors the macOS heuristic
+fallback's window-start capture (`docs/capture/macos-capture.md`).
+
+With backups off (the default, D2) the baseline walk stays existence-only and reads no file content,
+so it cannot become the global content diff this rewrite replaces; it exists solely to tell a create
+from an overwrite and to describe a removed node's kind. `normalizeJournal` treats a missing
+`before` as "detectable, not restorable" rather than inventing one, and `install` drops any restore
+claim whose blob was not actually stored (`storeBeforeImages`), so a record never advertises a
+restore `getBlob` cannot perform.
 
 ## Integration fixture
 
@@ -142,6 +178,14 @@ temp-rename and create-delete diagnostics. `linux.conformance.test.ts` feeds one
 through the unprivileged and privileged backends and asserts identical normalized effects.
 `strace.test.ts` covers syscall parsing, path resolution, scope filtering and unsupported syscalls;
 `reconstruct.test.ts` covers event→effect conversion; `backend.test.ts` covers completeness.
+
+`linux.smoke.test.ts` is the one test that runs **real** `strace` (Linux-only; it skips when `strace`
+is absent). It runs a representative installer under `strace` as the tracer's own child — parent-mode
+ptrace, which the kernel permits without elevated privileges under Yama — and drives the output
+through the shipped parser, `reconstruct`, and the Linux backend, and asserts the window is labelled
+`complete`. Two things only this test can catch: a trace-set name `strace` does not recognize (it
+refuses the whole `-e trace=` set, so every attachment would fail and silently fall back) and parser
+drift against genuine kernel output that would lower the label.
 
 Run everything with:
 

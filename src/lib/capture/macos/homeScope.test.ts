@@ -15,12 +15,12 @@ import { tmpdir } from "node:os";
 const NO_BACKUPS = { enabled: false, sizeLimitBytes: 1024 * 1024 };
 
 describe("macOS home root scope (defect #3)", () => {
-  test("$HOME is an observation root for macOS only", () => {
+  test("$HOME is an observation root on both platform tables", () => {
     expect(MACOS_PLATFORM.captureHomeRoot).toBe(true);
-    expect(LINUX_PLATFORM.captureHomeRoot).toBeUndefined();
+    expect(LINUX_PLATFORM.captureHomeRoot).toBe(true);
 
     expect(macosHeuristicRoots({ home: "/Users/tester" })).toContain("/Users/tester");
-    expect(observationRoots(LINUX_PLATFORM, { home: "/home/tester" })).not.toContain("/home/tester");
+    expect(observationRoots(LINUX_PLATFORM, { home: "/home/tester" })).toContain("/home/tester");
   });
 
   test("the home bounds reuse the shared skip rules", () => {

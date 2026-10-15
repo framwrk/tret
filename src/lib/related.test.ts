@@ -1,3 +1,4 @@
+import { LINUX_PLATFORM, MACOS_PLATFORM } from "./platform";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { findRelated } from "./related";
@@ -20,6 +21,8 @@ function testHome(): string {
 const NAME = "tretfindtest";
 
 describe("findRelated", () => {
+  // The macOS table explicitly: this case asserts `Library/Preferences`, which only its search roots
+  // contain. The fourth test covers the Linux table's roots.
   test("finds tool-named entries in the standard directories and keeps only the top-most path", () => {
     const home = testHome();
     mkdirSync(join(home, `.${NAME}/bin`), { recursive: true });
@@ -30,7 +33,7 @@ describe("findRelated", () => {
     mkdirSync(join(home, "Library/Preferences"), { recursive: true });
     writeFileSync(join(home, `Library/Preferences/${NAME}.plist`), "");
 
-    expect(findRelated(NAME, join(home, `.${NAME}/bin/${NAME}`))).toEqual([
+    expect(findRelated(NAME, join(home, `.${NAME}/bin/${NAME}`), MACOS_PLATFORM)).toEqual([
       join(home, `.config/${NAME}`),
       join(home, `.local/bin/${NAME}`),
       join(home, `.${NAME}`),
@@ -59,5 +62,21 @@ describe("findRelated", () => {
       join(home, `.${NAME}rc`),
       join(home, `tools/${NAME}`),
     ]);
+  });
+
+  test("searches the active platform's roots, not the macOS ones", () => {
+    const home = testHome();
+    mkdirSync(join(home, ".cargo/bin"), { recursive: true });
+    mkdirSync(join(home, ".local/share/applications"), { recursive: true });
+    mkdirSync(join(home, "Library/Preferences"), { recursive: true });
+    writeFileSync(join(home, `.cargo/bin/${NAME}`), "");
+    writeFileSync(join(home, `.local/share/applications/${NAME}.desktop`), "");
+    writeFileSync(join(home, `Library/Preferences/${NAME}.plist`), "");
+
+    const found = findRelated(NAME, join(home, `.cargo/bin/${NAME}`), LINUX_PLATFORM);
+
+    expect(found).toContain(join(home, ".cargo/bin", NAME));
+    expect(found).toContain(join(home, ".local/share/applications", `${NAME}.desktop`));
+    expect(found).not.toContain(join(home, `Library/Preferences/${NAME}.plist`));
   });
 });

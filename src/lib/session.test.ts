@@ -6,6 +6,7 @@ import { FakeCaptureBackend } from "./capture/fake";
 import type { Journal } from "./capture/events";
 import { LINUX_PLATFORM } from "./platform";
 import { MACOS_PLATFORM } from "./platform";
+import { MacosHeuristicCaptureBackend } from "./capture/macos";
 import type { RecordV3 } from "../types";
 import { captureBackendFor } from "./capture/current";
 import { isV3Record } from "./records";
@@ -248,6 +249,12 @@ describe("captureBackendFor", () => {
     expect(captureBackendFor(MACOS_PLATFORM).name).toBe("macos-heuristic");
     expect(captureBackendFor(MACOS_PLATFORM).completeness).toBe("heuristic");
   });
+
+  test("hands the probed case flag to the macOS fallback, so its keys match normalization (D10)", () => {
+    const backend = captureBackendFor(MACOS_PLATFORM, true);
+    expect(backend).toBeInstanceOf(MacosHeuristicCaptureBackend);
+    expect((backend as MacosHeuristicCaptureBackend).caseSensitive).toBe(true);
+  });
 });
 
 describe("observation roots", () => {
@@ -260,10 +267,31 @@ describe("observation roots", () => {
     expect(roots).toEqual([...roots].sort());
   });
 
+  test("observe $HOME itself on Linux installs, so home-level tool files are captured", () => {
+    const roots = observationRoots(LINUX_PLATFORM, { home: "/home/tester" });
+
+    expect(roots).toContain("/home/tester");
+    expect(roots).toContain("/home/tester/.config");
+    expect(roots).toContain("/home/tester/.bashrc");
+    expect(roots).toEqual([...roots].sort());
+  });
+
   test("drop shared cache directories from an install window scope", () => {
     const roots = installObservationRoots(MACOS_PLATFORM, { home: "/Users/tester" });
 
     expect(roots).toContain("/Users/tester/.config");
     expect(roots).not.toContain("/Users/tester/.cache");
+  });
+
+  test("apply user additions and exclusions to the install scope (D3)", () => {
+    const roots = installObservationRoots(MACOS_PLATFORM, {
+      home: "/Users/tester",
+      include: ["/srv/tool-state"],
+      exclude: ["/Users/tester/.local/share"],
+    });
+
+    expect(roots).toContain("/srv/tool-state");
+    expect(roots).not.toContain("/Users/tester/.local/share");
+    expect(roots).toEqual([...roots].sort());
   });
 });
