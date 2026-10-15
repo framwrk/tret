@@ -1,5 +1,6 @@
 import { closeSync, openSync, readSync, writeSync } from "node:fs";
 import { IS_DEV } from "../constants";
+import { runLogLine } from "./runlog";
 
 /** The controlling terminal's file descriptor, opened on first use; undefined when there is none. */
 let ttyFd: number | undefined;
@@ -19,6 +20,7 @@ export function ttyOutput(): number | undefined {
 /** Prints a message; with `devOnly` the message prints only when running from source, not a compiled binary. */
 export function log(message: string, devOnly = false): void {
   if (!devOnly || IS_DEV) {
+    runLogLine(message);
     // stdout stays empty whenever it is not a terminal: a pasted `tret install curl ... | bash`
     // pipes tret's stdout into bash, which would execute every printed line. Write to the
     // controlling terminal instead, so the piped paste form doesn't paint every line red as
