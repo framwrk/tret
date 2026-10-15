@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { heuristicFallbackRoots, parseObserveFlags } from "./install";
+import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -9,6 +11,14 @@ import { tmpdir } from "node:os";
 
 const BUN = process.execPath;
 const TRET = join(import.meta.dir, "..", "..", "index.ts");
+
+/**
+ * Whether an install here gets the real Linux window instead of the heuristic fallback: Linux with
+ * strace present and a kernel that lets an unprivileged tracer attach to its parent (Yama
+ * `ptrace_scope >= 1` — the stock Ubuntu/CI setting — forbids it). A real window proves the install
+ * (`complete`); the fallback only observes it (`heuristic`).
+ */
+const REAL_CAPTURE = process.platform === "linux" && Bun.which("strace") !== null && (isRoot() || !parentAttachRestricted());
 
 const homes: string[] = [];
 
@@ -165,6 +175,28 @@ printf '#!/bin/sh\\necho pi\\n' > "$HOME/.pi/agent/bin/pi"
 chmod +x "$HOME/.pi/agent/bin/pi"
 `;
 
+// A tool whose state lives outside every default capture root (the test passes its temp directory
+// via `--observe`) plus a normal executable, so the install itself succeeds without the flag too.
+function outsideScopeScript(extra: string): string {
+  return `#!/bin/bash
+set -e
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\\necho observetool\\n' > "$HOME/.local/bin/observetool"
+chmod +x "$HOME/.local/bin/observetool"
+printf 'state\\n' > '${extra}/state.txt'
+`;
+}
+
+// A dotfile directly under `$HOME` (covered only by the home root) plus an executable under the
+// curated `.local/bin` root, so excluding `$HOME` still leaves something to observe.
+const HOME_TOP_LEVEL_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\\necho observetool\\n' > "$HOME/.local/bin/observetool"
+chmod +x "$HOME/.local/bin/observetool"
+printf 'rc\\n' > "$HOME/.observetoolrc"
+`;
+
 type StoredRecord = {
   id: string;
   name: string;
@@ -193,7 +225,7 @@ describe("install -> list -> uninstall", () => {
       const record = file.records.find((entry) => entry.name === "mytool");
       expect(record).toBeDefined();
       expect(record?.source).toBe("install");
-      expect(record?.capture.completeness).toBe("heuristic");
+      expect(record?.capture.completeness).toBe(REAL_CAPTURE ? "complete" : "heuristic");
       expect(
         record?.owned.some((entry) => entry.path.endsWith("/.local/bin/mytool") && entry.installedHash !== undefined),
       ).toBe(true);
@@ -589,7 +621,7 @@ describe("install -> list -> uninstall", () => {
     }
   });
 
-  test("--force labels the previous install's observed paths before removing them", async () => {
+  test("--force plans the previous install's removal with its capture's evidence label", async () => {
     const home = makeHome();
     const server = serveResponses({ body: INSTALL_SCRIPT }, { body: INSTALL_SCRIPT });
     try {
@@ -598,11 +630,18 @@ describe("install -> list -> uninstall", () => {
       const result = await runCliResult(["install", server.url, "--force"], home);
 
       expect(result.code).toBe(0);
-      // The previous record's evidence is heuristic, so its planned removal is labeled up front.
       const output = `${result.stdout}\n${result.stderr}`;
       expect(output).toContain("reinstalling mytool: removing the previous install first");
-      expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
-      expect(output).toContain(`remove ${join(home, ".local", "bin", "mytool")} (observed, not proven)`);
+      const binary = join(home, ".local", "bin", "mytool");
+      if (REAL_CAPTURE) {
+        // A real window proves the previous install, so the same plan carries no caveat.
+        expect(output).not.toContain("observed, not proven");
+        expect(output).toContain(`remove ${binary}`);
+      } else {
+        // The previous record's evidence is heuristic, so its planned removal is labeled up front.
+        expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
+        expect(output).toContain(`remove ${binary} (observed, not proven)`);
+      }
     } finally {
       await server.stop();
     }
@@ -631,6 +670,102 @@ describe("managed install removal failure", () => {
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
       expect(records[0]?.managedInstall).toBeDefined();
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe("capture scope flags", () => {
+  test("parseObserveFlags extracts scope flags and leaves the command alone", () => {
+    expect(
+      parseObserveFlags([
+        "curl",
+        "-fsSL",
+        "https://example.com/install.sh",
+        "--observe",
+        "/srv/a",
+        "--observe",
+        "/srv/b/",
+        "--observe-exclude",
+        "/usr/local/bin",
+      ]),
+    ).toEqual({
+      // The trailing slash is canonicalized so the root itself stays covered.
+      scope: { include: ["/srv/a", "/srv/b"], exclude: ["/usr/local/bin"] },
+      rest: ["curl", "-fsSL", "https://example.com/install.sh"],
+    });
+  });
+
+  test("parseObserveFlags rejects a missing or relative path", () => {
+    expect(parseObserveFlags(["--observe"])).toEqual({ error: "--observe requires an absolute path" });
+    expect(parseObserveFlags(["--observe-exclude", "var/log"])).toEqual({
+      error: "--observe-exclude requires an absolute path: var/log",
+    });
+  });
+
+  test("the heuristic fallback trims the unbounded trees and never re-adds $HOME", () => {
+    expect(heuristicFallbackRoots(["/opt", "/usr/bin", "/usr/local/bin"])).toEqual(["/usr/local/bin"]);
+  });
+
+  test("--observe adds a root so a write outside the defaults is owned", async () => {
+    const home = makeHome();
+    const extra = mkdtempSync(join(tmpdir(), "tret-observe-"));
+    homes.push(extra);
+    const server = serve(outsideScopeScript(extra));
+    try {
+      expect(await runCli(["install", server.url, "--observe", extra], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "observetool");
+      expect(record).toBeDefined();
+      expect(record?.owned.some((entry) => entry.path === join(extra, "state.txt"))).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a write outside the defaults is not owned without --observe", async () => {
+    const home = makeHome();
+    const extra = mkdtempSync(join(tmpdir(), "tret-observe-"));
+    homes.push(extra);
+    const server = serve(outsideScopeScript(extra));
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "observetool");
+      expect(record).toBeDefined();
+      expect(record?.owned.some((entry) => entry.path === join(extra, "state.txt"))).toBe(false);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--observe-exclude drops a default root for this one install", async () => {
+    const home = makeHome();
+    const server = serve(HOME_TOP_LEVEL_SCRIPT);
+    try {
+      expect(await runCli(["install", server.url, "--observe-exclude", home], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "observetool");
+      expect(record).toBeDefined();
+      // The executable under the curated `.local/bin` root stays owned; the home-top-level dotfile
+      // is not, because the `$HOME` root was dropped for this window.
+      expect(record?.owned.some((entry) => entry.path === join(home, ".local", "bin", "observetool"))).toBe(true);
+      expect(record?.owned.some((entry) => entry.path === join(home, ".observetoolrc"))).toBe(false);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a relative --observe path is refused before the installer runs", async () => {
+    const home = makeHome();
+    const server = serve(INSTALL_SCRIPT);
+    try {
+      const result = await runCliResult(["install", server.url, "--observe", "state"], home);
+
+      expect(result.code).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("--observe requires an absolute path: state");
+      expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
     } finally {
       await server.stop();
     }

@@ -1,5 +1,5 @@
 import type { AbsolutePath, Privilege } from "../../types";
-import type { CpuArch, Platform, PlatformId } from "./types";
+import type { CaseDetection, CpuArch, Platform, PlatformId } from "./types";
 import { LINUX_PLATFORM } from "./linux";
 import { MACOS_PLATFORM } from "./macos";
 
@@ -27,13 +27,16 @@ export function hostArch(): CpuArch {
 }
 
 /**
- * Resolves a record's `caseSensitive` flag from the platform probe for `path`, falling back to the
- * platform's last-resort default when the mount cannot be probed (D10).
+ * Resolves the one case flag a record covers from every path it observes (D10). A record can span
+ * mounts, so the reduction is deliberately conservative: any case-sensitive path makes the whole
+ * record case-sensitive, because wrongly merging two distinct paths loses one of them, while
+ * wrongly keeping both spellings apart only records duplicate work. Paths that could not be probed
+ * defer to the ones that could, and, as a last resort, to the platform default.
  */
-export function caseSensitiveFor(platform: Platform, path?: AbsolutePath): boolean {
-  const detected = path === undefined ? "unknown" : platform.case.detect(path);
-  if (detected === "sensitive") return true;
-  if (detected === "insensitive") return false;
+export function caseSensitiveForPaths(platform: Platform, paths: AbsolutePath[]): boolean {
+  const detected: CaseDetection[] = paths.map((path) => platform.case.detect(path));
+  if (detected.includes("sensitive")) return true;
+  if (detected.includes("insensitive")) return false;
   return platform.case.defaultCaseSensitive;
 }
 

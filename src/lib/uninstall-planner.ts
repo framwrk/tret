@@ -83,7 +83,7 @@ export type UninstallPlan = {
 
 /** Inputs the planner verifies against before deciding anything. */
 export type UninstallPlanContext = {
-  /** Other records that also claim paths, for shared-ownership detection (D4). */
+  /** Other records that also claim paths, for shared-ownership detection (D4); paths are compared under each record's case behavior (D10). */
   otherRecords?: RecordV3[];
   /**
    * Explicit user force past known fingerprint mismatches and shared-owner conflicts (D4). A
@@ -120,7 +120,10 @@ function sha256Hex(bytes: Uint8Array): string {
 /**
  * Reads one path's current state without following symlinks: a symlink reports its target, a file
  * reports its content hash, and a directory reports only its kind. An unreadable file still reports
- * `exists` with `hash` unset, so the planner treats it as unverifiable rather than absent.
+ * `exists` with `hash` unset, so the planner treats it as unverifiable rather than absent. A node
+ * that is neither a regular file, directory, nor symlink (a FIFO, socket, or device) reports
+ * `exists` with no kind and is never read: opening a FIFO could block, and no fingerprint of such a
+ * node exists, so every planner treats it as unverifiable and never removable.
  */
 export function inspectPath(path: AbsolutePath): UninstallVerification {
   let stats;
@@ -142,6 +145,10 @@ export function inspectPath(path: AbsolutePath): UninstallVerification {
 
   if (stats.isDirectory()) {
     return { exists: true, kind: "directory", uid: stats.uid };
+  }
+
+  if (!stats.isFile()) {
+    return { exists: true, uid: stats.uid };
   }
 
   try {
@@ -170,16 +177,45 @@ function depth(path: AbsolutePath): number {
   return path.split("/").filter(Boolean).length;
 }
 
-/** Every path any record other than `selfId` claims, for shared-ownership detection (D4). */
-function claimedByOthers(records: RecordV3[], selfId: string): Set<AbsolutePath> {
-  const paths = new Set<AbsolutePath>();
+/** Every path any record other than `selfId` claims, prepared for case-correct overlap checks (D10). */
+type OtherClaims = {
+  /** Raw paths, matched exactly whatever the case behavior. */
+  exact: Set<AbsolutePath>;
+  /** Case-folded paths claimed by records whose filesystem was case-insensitive. */
+  foldedInsensitive: Set<string>;
+  /** Case-folded paths from every other record, for a case-insensitive record being planned. */
+  foldedAll: Set<string>;
+};
+
+function claimedByOthers(records: RecordV3[], selfId: string): OtherClaims {
+  const claims: OtherClaims = { exact: new Set(), foldedInsensitive: new Set(), foldedAll: new Set() };
   for (const record of records) {
     if (record.id === selfId) continue;
-    for (const entry of record.owned) paths.add(entry.path);
-    for (const entry of record.mutated) paths.add(entry.path);
-    for (const entry of record.deleted) paths.add(entry.path);
+    for (const path of claimedPaths(record)) {
+      claims.exact.add(path);
+      claims.foldedAll.add(path.toLowerCase());
+      if (!record.caseSensitive) claims.foldedInsensitive.add(path.toLowerCase());
+    }
   }
-  return paths;
+  return claims;
+}
+
+function* claimedPaths(record: RecordV3): Generator<AbsolutePath> {
+  for (const entry of record.owned) yield entry.path;
+  for (const entry of record.mutated) yield entry.path;
+  for (const entry of record.deleted) yield entry.path;
+}
+
+/**
+ * Whether any other record could claim `path` (D4). A case-folded match only counts when either
+ * side recorded a case-insensitive filesystem (D10): on such a mount two spellings name one file,
+ * so treating them as distinct claims would let an uninstall delete a path another record owns.
+ */
+function sharedClaim(claims: OtherClaims, path: AbsolutePath, caseSensitive: boolean): boolean {
+  if (claims.exact.has(path)) return true;
+  const folded = path.toLowerCase();
+  if (claims.foldedInsensitive.has(folded)) return true;
+  return !caseSensitive && claims.foldedAll.has(folded);
 }
 
 /**
@@ -199,7 +235,8 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     const inspect = context.inspect ?? this.inspect;
     const list = context.list ?? this.list;
     const force = context.force ?? false;
-    const claimed = claimedByOthers(context.otherRecords ?? [], record.id);
+    const claims = claimedByOthers(context.otherRecords ?? [], record.id);
+    const isShared = (path: AbsolutePath): boolean => sharedClaim(claims, path, record.caseSensitive);
     const actions: UninstallAction[] = [];
     // Paths the plan will leave absent: this plan's own removals plus any managed root whose whole
     // subtree is delegated to a recursive removal, so ancestors of a delegated root are not
@@ -232,7 +269,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
         continue;
       }
 
-      const shared = claimed.has(entry.path);
+      const shared = isShared(entry.path);
       if (shared && !force) {
         actions.push({ action: "conflict", path: entry.path, reason: "shared-owner" });
         continue;
@@ -265,7 +302,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     // Without a before-image the change is detect-only: report it, never block on it (D2).
     for (const entry of record.mutated) {
       const verification = inspect(entry.path);
-      const action = planMutation(entry, verification, claimed, force);
+      const action = planMutation(entry, verification, isShared, force);
       actions.push(action);
       if (action.action === "restore" && sudoNeeded(verification)) requiresSudo = true;
     }
@@ -274,7 +311,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     // deletion with no before-image is likewise detect-only.
     for (const entry of record.deleted) {
       const verification = inspect(entry.path);
-      actions.push(planDeletion(entry, verification, claimed, force));
+      actions.push(planDeletion(entry, verification, isShared, force));
     }
 
     return {
@@ -353,11 +390,11 @@ function planSymlink(entry: OwnedEntry, verification: UninstallVerification, for
 function planMutation(
   entry: MutatedEntry,
   verification: UninstallVerification,
-  claimed: Set<AbsolutePath>,
+  isShared: (path: AbsolutePath) => boolean,
   force: boolean,
 ): UninstallAction {
   const { path } = entry;
-  if (claimed.has(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
+  if (isShared(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
   // No before-image: nothing to restore from, so the install's edit is detectable but not
   // reversible. Report it as informational instead of a permanent `missing-blob` conflict (D2).
   if (entry.beforeBlob === undefined) return { action: "detected", path, kind: "mutated" };
@@ -380,11 +417,11 @@ function planMutation(
 function planDeletion(
   entry: DeletedEntry,
   verification: UninstallVerification,
-  claimed: Set<AbsolutePath>,
+  isShared: (path: AbsolutePath) => boolean,
   force: boolean,
 ): UninstallAction {
   const { path } = entry;
-  if (claimed.has(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
+  if (isShared(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
   // As with a mutation, a deletion without a before-image cannot be reversed; report it, don't block.
   if (entry.beforeBlob === undefined) return { action: "detected", path, kind: "deleted" };
   if (verification.exists) return { action: "conflict", path, reason: "diverged" };
