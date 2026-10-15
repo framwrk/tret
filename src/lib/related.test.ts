@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { LINUX_PLATFORM } from "./platform";
 import { findRelated } from "./related";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -59,5 +60,21 @@ describe("findRelated", () => {
       join(home, `.${NAME}rc`),
       join(home, `tools/${NAME}`),
     ]);
+  });
+
+  test("searches the active platform's roots, not the macOS ones", () => {
+    const home = testHome();
+    mkdirSync(join(home, ".cargo/bin"), { recursive: true });
+    mkdirSync(join(home, ".local/share/applications"), { recursive: true });
+    mkdirSync(join(home, "Library/Preferences"), { recursive: true });
+    writeFileSync(join(home, `.cargo/bin/${NAME}`), "");
+    writeFileSync(join(home, `.local/share/applications/${NAME}.desktop`), "");
+    writeFileSync(join(home, `Library/Preferences/${NAME}.plist`), "");
+
+    const found = findRelated(NAME, join(home, `.cargo/bin/${NAME}`), LINUX_PLATFORM);
+
+    expect(found).toContain(join(home, ".cargo/bin", NAME));
+    expect(found).toContain(join(home, ".local/share/applications", `${NAME}.desktop`));
+    expect(found).not.toContain(join(home, `Library/Preferences/${NAME}.plist`));
   });
 });

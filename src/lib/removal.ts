@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from "node:fs";
 import { inspectPath, listChildren } from "./uninstall-planner";
 import type { Storage } from "./storage";
+import { currentPlatform } from "./platform";
 
 // Verified uninstall (phase 7). The planner decides what is safe to do; this module carries it out.
 // Every operation is re-checked immediately before it runs and is deliberately non-recursive, so a
@@ -484,54 +485,15 @@ function pruneEmptyAncestors(path: AbsolutePath): void {
 }
 
 function isGuarded(path: AbsolutePath, home: AbsolutePath): boolean {
-  if (SHARED_ABSOLUTE.includes(path) || path === home) {
+  const platform = currentPlatform();
+  if (platform.sharedAbsolute.includes(path) || path === home) {
     return true;
   }
 
   const relative = path.startsWith(`${home}/`) ? path.slice(home.length + 1) : undefined;
-  return relative !== undefined && SHARED_IN_HOME.includes(relative);
+  return relative !== undefined && platform.sharedInHome.includes(relative);
 }
 
 function isShallow(path: AbsolutePath): boolean {
   return path.split("/").filter(Boolean).length < 3;
 }
-
-// Directories many programs share; uninstall refuses to delete them. Adapted from bashka's SHARED_IN_HOME/SHARED_ABSOLUTE for macOS.
-const SHARED_IN_HOME = [
-  ".config",
-  ".cache",
-  ".local",
-  ".local/bin",
-  ".local/lib",
-  ".local/share",
-  ".local/state",
-  ".ssh",
-  ".zshrc.d",
-  "Applications",
-  "Library",
-  "bin",
-  "go",
-  "go/bin",
-];
-
-const SHARED_ABSOLUTE = [
-  "/",
-  "/Applications",
-  "/Library",
-  "/bin",
-  "/etc",
-  "/opt",
-  "/opt/homebrew",
-  "/opt/homebrew/bin",
-  "/sbin",
-  "/tmp",
-  "/usr",
-  "/usr/bin",
-  "/usr/lib",
-  "/usr/local",
-  "/usr/local/bin",
-  "/usr/local/lib",
-  "/usr/local/share",
-  "/usr/share",
-  "/var",
-];
