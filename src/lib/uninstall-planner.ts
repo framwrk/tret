@@ -120,7 +120,10 @@ function sha256Hex(bytes: Uint8Array): string {
 /**
  * Reads one path's current state without following symlinks: a symlink reports its target, a file
  * reports its content hash, and a directory reports only its kind. An unreadable file still reports
- * `exists` with `hash` unset, so the planner treats it as unverifiable rather than absent.
+ * `exists` with `hash` unset, so the planner treats it as unverifiable rather than absent. A node
+ * that is neither a regular file, directory, nor symlink (a FIFO, socket, or device) reports
+ * `exists` with no kind and is never read: opening a FIFO could block, and no fingerprint of such a
+ * node exists, so every planner treats it as unverifiable and never removable.
  */
 export function inspectPath(path: AbsolutePath): UninstallVerification {
   let stats;
@@ -142,6 +145,10 @@ export function inspectPath(path: AbsolutePath): UninstallVerification {
 
   if (stats.isDirectory()) {
     return { exists: true, kind: "directory", uid: stats.uid };
+  }
+
+  if (!stats.isFile()) {
+    return { exists: true, uid: stats.uid };
   }
 
   try {
