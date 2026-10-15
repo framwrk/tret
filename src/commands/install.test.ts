@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { heuristicFallbackRoots, parseObserveFlags } from "./install";
 import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -172,6 +173,28 @@ printf '{"name":"pi"}\\n' > "$ROOT/releases/1.0.0/package.json"
 printf 'module.exports = 1;\\n' > "$ROOT/releases/1.0.0/node_modules/acme/index.js"
 printf '#!/bin/sh\\necho pi\\n' > "$HOME/.pi/agent/bin/pi"
 chmod +x "$HOME/.pi/agent/bin/pi"
+`;
+
+// A tool whose state lives outside every default capture root (the test passes its temp directory
+// via `--observe`) plus a normal executable, so the install itself succeeds without the flag too.
+function outsideScopeScript(extra: string): string {
+  return `#!/bin/bash
+set -e
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\\necho observetool\\n' > "$HOME/.local/bin/observetool"
+chmod +x "$HOME/.local/bin/observetool"
+printf 'state\\n' > '${extra}/state.txt'
+`;
+}
+
+// A dotfile directly under `$HOME` (covered only by the home root) plus an executable under the
+// curated `.local/bin` root, so excluding `$HOME` still leaves something to observe.
+const HOME_TOP_LEVEL_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\\necho observetool\\n' > "$HOME/.local/bin/observetool"
+chmod +x "$HOME/.local/bin/observetool"
+printf 'rc\\n' > "$HOME/.observetoolrc"
 `;
 
 type StoredRecord = {
@@ -647,6 +670,102 @@ describe("managed install removal failure", () => {
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
       expect(records[0]?.managedInstall).toBeDefined();
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe("capture scope flags", () => {
+  test("parseObserveFlags extracts scope flags and leaves the command alone", () => {
+    expect(
+      parseObserveFlags([
+        "curl",
+        "-fsSL",
+        "https://example.com/install.sh",
+        "--observe",
+        "/srv/a",
+        "--observe",
+        "/srv/b/",
+        "--observe-exclude",
+        "/usr/local/bin",
+      ]),
+    ).toEqual({
+      // The trailing slash is canonicalized so the root itself stays covered.
+      scope: { include: ["/srv/a", "/srv/b"], exclude: ["/usr/local/bin"] },
+      rest: ["curl", "-fsSL", "https://example.com/install.sh"],
+    });
+  });
+
+  test("parseObserveFlags rejects a missing or relative path", () => {
+    expect(parseObserveFlags(["--observe"])).toEqual({ error: "--observe requires an absolute path" });
+    expect(parseObserveFlags(["--observe-exclude", "var/log"])).toEqual({
+      error: "--observe-exclude requires an absolute path: var/log",
+    });
+  });
+
+  test("the heuristic fallback trims the unbounded trees and never re-adds $HOME", () => {
+    expect(heuristicFallbackRoots(["/opt", "/usr/bin", "/usr/local/bin"])).toEqual(["/usr/local/bin"]);
+  });
+
+  test("--observe adds a root so a write outside the defaults is owned", async () => {
+    const home = makeHome();
+    const extra = mkdtempSync(join(tmpdir(), "tret-observe-"));
+    homes.push(extra);
+    const server = serve(outsideScopeScript(extra));
+    try {
+      expect(await runCli(["install", server.url, "--observe", extra], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "observetool");
+      expect(record).toBeDefined();
+      expect(record?.owned.some((entry) => entry.path === join(extra, "state.txt"))).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a write outside the defaults is not owned without --observe", async () => {
+    const home = makeHome();
+    const extra = mkdtempSync(join(tmpdir(), "tret-observe-"));
+    homes.push(extra);
+    const server = serve(outsideScopeScript(extra));
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "observetool");
+      expect(record).toBeDefined();
+      expect(record?.owned.some((entry) => entry.path === join(extra, "state.txt"))).toBe(false);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--observe-exclude drops a default root for this one install", async () => {
+    const home = makeHome();
+    const server = serve(HOME_TOP_LEVEL_SCRIPT);
+    try {
+      expect(await runCli(["install", server.url, "--observe-exclude", home], home)).toBe(0);
+
+      const record = readStore(home).records.find((entry) => entry.name === "observetool");
+      expect(record).toBeDefined();
+      // The executable under the curated `.local/bin` root stays owned; the home-top-level dotfile
+      // is not, because the `$HOME` root was dropped for this window.
+      expect(record?.owned.some((entry) => entry.path === join(home, ".local", "bin", "observetool"))).toBe(true);
+      expect(record?.owned.some((entry) => entry.path === join(home, ".observetoolrc"))).toBe(false);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a relative --observe path is refused before the installer runs", async () => {
+    const home = makeHome();
+    const server = serve(INSTALL_SCRIPT);
+    try {
+      const result = await runCliResult(["install", server.url, "--observe", "state"], home);
+
+      expect(result.code).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("--observe requires an absolute path: state");
+      expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
     } finally {
       await server.stop();
     }

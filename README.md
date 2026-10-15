@@ -82,6 +82,8 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 - `install --force`: fetch and validate the replacement script, then uninstall the tool and reinstall it from a clean capture.
 - `install --no-capture`: run the installer without a capture window.
 - `install --backup`: save before-images so overwritten or deleted files can be restored on uninstall.
+- `install --observe <path>`: also observe this absolute path in the install's capture window, for an installer that writes outside the default roots (repeatable).
+- `install --observe-exclude <path>`: drop one of the default observation roots for this install (repeatable; a path another remaining root still covers stays observed).
 - `install <URL> -- <args>`: anything after `--` goes to the install script (`tret install <URL> -- --skip-browser`).
 - `uninstall --dry-run`: preview the removal without changing anything.
 - `uninstall --force`: allow removing files or symlinks with a known fingerprint mismatch already present when planning, and bypass shared-owner conflicts.

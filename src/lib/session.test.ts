@@ -282,4 +282,16 @@ describe("observation roots", () => {
     expect(roots).toContain("/Users/tester/.config");
     expect(roots).not.toContain("/Users/tester/.cache");
   });
+
+  test("apply user additions and exclusions to the install scope (D3)", () => {
+    const roots = installObservationRoots(MACOS_PLATFORM, {
+      home: "/Users/tester",
+      include: ["/srv/tool-state"],
+      exclude: ["/Users/tester/.local/share"],
+    });
+
+    expect(roots).toContain("/srv/tool-state");
+    expect(roots).not.toContain("/Users/tester/.local/share");
+    expect(roots).toEqual([...roots].sort());
+  });
 });

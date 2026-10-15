@@ -58,7 +58,11 @@ bounded roots.
   `~/Library`, `~/Desktop`, `~/Documents`, `~/Downloads`, `node_modules`, and cache-shaped
   directories are neither recorded nor descended. Because `EXCLUDED_PATHS` skips `Library`, the
   explicit `~/Library/*` roots above remain the only `~/Library` access, so nothing is scanned twice.
-  Linux leaves `captureHomeRoot` unset, so its scope stays XDG-only.
+  Linux sets the same signal, so its install windows also observe `$HOME`
+  (`docs/capture/linux-capture.md`).
+
+`tret install --observe <path>` adds one absolute root and `--observe-exclude <path>` drops one of
+the table's roots, for that one install only (D3 user additions/removals).
 
 Capture roots are curated **separately** from `tret find`'s `searchRootsInHome`. Those search roots
 stay broad (they include `~/Library` subtrees) so `find` can adopt a tool's files by hand; capture
