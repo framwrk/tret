@@ -640,7 +640,7 @@ describe("uninstall ownership confidence", () => {
     expect(result.code).toBe(0);
     // `log` writes to the terminal, not a piped stdout, so read the combined output.
     const output = `${result.stdout}\n${result.stderr}`;
-    expect(output).toContain("note: these paths were only observed during a bounded window");
+    expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
     expect(output).toContain(`would remove ${binary} (observed, not proven)`);
   });
 

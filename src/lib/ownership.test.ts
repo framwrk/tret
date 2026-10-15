@@ -15,6 +15,6 @@ describe("ownership confidence", () => {
 
   test("only an observed record carries the caveat", () => {
     expect(ownershipNote("proven")).toBeUndefined();
-    expect(ownershipNote("observed")).toContain("only observed during a bounded window");
+    expect(ownershipNote("observed")).toContain("not proven to belong to this tool");
   });
 });

@@ -111,7 +111,7 @@ tret install curl -fsSL https://example.com/install.sh | bash
 
 ### Uninstall a tool
 
-Run `tret uninstall <tool_name>` to remove a tool's files. By default, a file is removed only while its recorded content hash matches, and a symlink only while its recorded target matches; divergent paths are kept. A plan is labeled when the record's capture was only `partial` or `heuristic`: Tret then prints a note that those paths were only observed during a bounded window, not proven to come from the installer, and marks each `remove`/`restore` as `(observed, not proven)`. The label describes the evidence, not a weaker removal rule — the same fingerprint checks still decide what may change. `--force` may remove an owned file or symlink when both fingerprints are known but already mismatch at planning time, and may bypass shared-owner conflicts. It does not make a missing or unreadable fingerprint removable or override a kind change. Each planned `remove` or `restore` action carries the state captured by the plan and is checked again immediately before it is applied, after confirmation. If that state changes between planning and apply, the path is kept even with `--force`; run uninstall again to review the new state. Ordinary shared-path conflicts block until you pass `--force`; delegated-removal overlaps always block, including with `--force`. Uninstall asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
+Run `tret uninstall <tool_name>` to remove a tool's files. By default, a file is removed only while its recorded content hash matches, and a symlink only while its recorded target matches; divergent paths are kept. Plans whose records cannot prove ownership (`partial` or `heuristic` capture, including tools adopted by `find`) are labeled: Tret notes that the paths are observed, not proven to belong to the tool, and marks each `remove`/`restore` as `(observed, not proven)`. The label describes the evidence, not a weaker removal rule — the same fingerprint checks still decide what may change. `--force` may remove an owned file or symlink when both fingerprints are known but already mismatch at planning time, and may bypass shared-owner conflicts. It does not make a missing or unreadable fingerprint removable or override a kind change. Each planned `remove` or `restore` action carries the state captured by the plan and is checked again immediately before it is applied, after confirmation. If that state changes between planning and apply, the path is kept even with `--force`; run uninstall again to review the new state. Ordinary shared-path conflicts block until you pass `--force`; delegated-removal overlaps always block, including with `--force`. Uninstall asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
 
 ### List installed tools
 
@@ -120,6 +120,10 @@ tret list
 ```
 
 Each row shows the tool's name, URL, install date, a `State` column (`installed` when the tracked executable is still on disk, `partial` when it is gone), the executable path, the script's hash, how many files the install owns, and the capture completeness (see below). A `partial` row shows `-` for the binary rather than a stale path.
+
+### Run logs
+
+Every command except the fast-path `--version` check writes a per-run log under `~/.tret/logs/`. It records the command line and Tret's user-facing output; failed runs may also include a short tail of installer output. Logs are created with owner-only file permissions and pruned to 50 files or 14 days. Tret masks common credential patterns, but redaction is not exhaustive: avoid putting secrets in command arguments or installer output.
 
 ## Development
 

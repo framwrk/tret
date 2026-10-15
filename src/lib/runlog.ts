@@ -19,8 +19,12 @@ const TAIL_LINES = 50;
 
 /** Patterns whose matches are masked before any line reaches the file. */
 const SECRET_PATTERNS: [RegExp, string][] = [
-  [/\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s"]+/gi, "$1<redacted>"],
-  [/\b([\w.-]*(?:token|secret|passwd|password|api[_-]?key)[\w.-]*)(=|:\s*)[^\s"]+/gi, "$1$2<redacted>"],
+  [/\b(authorization\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?(?:"[^"]*"|'[^']*'|[^\s"'&?#]+)/gi, "$1<redacted>"],
+  [
+    /\b((?:[\w.-]*[-_])?(?:token|secret|passwd|password|api[_-]?key|signature|access[_-]?key|credential)[\w.-]*|sig)(=|:\s*|\s+)(?:"[^"]*"|'[^']*'|[^\s"'&?#]+)/gi,
+    "$1$2<redacted>",
+  ],
+  [/\b(AWSAccessKeyId)(=|:\s*|\s+)(?:"[^"]*"|'[^']*'|[^\s"'&?#]+)/gi, "$1$2<redacted>"],
   [/(https?:\/\/)[^\s/@]+@/gi, "$1<redacted>@"],
 ];
 
