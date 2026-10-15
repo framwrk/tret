@@ -146,6 +146,13 @@ through the unprivileged and privileged backends and asserts identical normalize
 `strace.test.ts` covers syscall parsing, path resolution, scope filtering and unsupported syscalls;
 `reconstruct.test.ts` covers event→effect conversion; `backend.test.ts` covers completeness.
 
+`linux.smoke.test.ts` is the one test that runs **real** `strace` (Linux-only; it skips when `strace`
+is absent). It runs a representative installer under `strace` as the tracer's own child — parent-mode
+ptrace, which the kernel permits without elevated privileges under Yama — and drives the output
+through the shipped parser, `reconstruct`, and the Linux backend. Two things only this test can
+catch: a trace-set name `strace` does not recognize (it refuses the whole `-e trace=` set, so every
+attachment would fail and silently fall back) and parser drift against genuine kernel output.
+
 Run everything with:
 
 ```
