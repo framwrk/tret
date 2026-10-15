@@ -6,6 +6,7 @@ import { FakeCaptureBackend } from "./capture/fake";
 import type { Journal } from "./capture/events";
 import { LINUX_PLATFORM } from "./platform";
 import { MACOS_PLATFORM } from "./platform";
+import { MacosHeuristicCaptureBackend } from "./capture/macos";
 import type { RecordV3 } from "../types";
 import { captureBackendFor } from "./capture/current";
 import { isV3Record } from "./records";
@@ -247,6 +248,12 @@ describe("captureBackendFor", () => {
     expect(captureBackendFor(LINUX_PLATFORM).completeness).toBe("complete");
     expect(captureBackendFor(MACOS_PLATFORM).name).toBe("macos-heuristic");
     expect(captureBackendFor(MACOS_PLATFORM).completeness).toBe("heuristic");
+  });
+
+  test("hands the probed case flag to the macOS fallback, so its keys match normalization (D10)", () => {
+    const backend = captureBackendFor(MACOS_PLATFORM, true);
+    expect(backend).toBeInstanceOf(MacosHeuristicCaptureBackend);
+    expect((backend as MacosHeuristicCaptureBackend).caseSensitive).toBe(true);
   });
 });
 

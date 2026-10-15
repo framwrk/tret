@@ -1,5 +1,5 @@
 import type { AbsolutePath, OwnedEntry, RecordV3 } from "../types";
-import { caseSensitiveFor, currentPlatform, processPrivilege } from "../lib/platform";
+import { caseSensitiveForPaths, currentPlatform, processPrivilege } from "../lib/platform";
 import { detectManagedInstall, withoutManagedInstallPaths } from "../lib/managed-install";
 import { FileStorage } from "../lib/store";
 import { detectManagedPackage } from "../lib/package-manager";
@@ -75,7 +75,9 @@ export async function find(name: string | undefined): Promise<void> {
       segments: [{ kind: "find", startedAt: installedAt, partialReason: "adopted by tret find: no install journal exists" }],
     },
     privilege: processPrivilege(),
-    caseSensitive: caseSensitiveFor(platform, executable),
+    // Every adopted path is fingerprinted in this record, so the case flag is probed over all of
+    // them plus the executable (D10); uninstall's overlap checks read this flag back.
+    caseSensitive: caseSensitiveForPaths(platform, [executable, ...paths]),
     owned,
     mutated: [],
     deleted: [],

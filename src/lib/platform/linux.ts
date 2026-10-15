@@ -1,4 +1,5 @@
 import type { Platform } from "./types";
+import { detectCaseBehavior } from "./case";
 
 /**
  * Linux platform table (plan section 8, D3). It replaces the macOS `/Applications` and `~/Library`
@@ -97,7 +98,6 @@ export const LINUX_PLATFORM: Platform = {
   },
   case: {
     defaultCaseSensitive: true,
-    // Phase 2 stub: per-mount probing lands with storage/uninstall (D10).
-    detect: () => "sensitive",
+    detect: detectCaseBehavior,
   },
 };

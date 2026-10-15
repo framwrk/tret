@@ -4,7 +4,7 @@ import type { BoundedSessionResult, SessionCoverage } from "../lib/session";
 import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
 import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
-import { caseSensitiveFor, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
+import { caseSensitiveForPaths, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
 import {
   describeManagedInstall,
   detectManagedInstall,
@@ -123,13 +123,17 @@ export async function install(
   }
 
   const platform = currentPlatform();
-  const caseSensitive = caseSensitiveFor(platform, Bun.env.HOME);
+  // Every path the window can record sits under one of the observation roots, so the record's
+  // single case flag is resolved from the roots themselves (D10). The same flag keys the capture
+  // backend's path comparison, so its journal and normalization agree on path identity.
+  const roots = options.roots ?? installObservationRoots(platform);
+  const caseSensitive = caseSensitiveForPaths(platform, roots);
 
   // The installer runs inside a bounded capture window. With capture on, the journal is the sole
   // effects source, so no global snapshot runs. `--no-capture` (or a backend that cannot attach)
   // falls back to the legacy snapshot/diff, whose hash-less entries uninstall treats as unverified.
   runLogPhase("run-installer");
-  const window = await observeInstall(platform, script, scriptArgs, options, backups);
+  const window = await observeInstall(platform, script, scriptArgs, options, backups, roots, caseSensitive);
   log(
     window.coverage
       ? `observed the install with ${formatCoverage(window.coverage)}`
@@ -233,7 +237,8 @@ type InstallWindow = {
  * best-effort: a backend that cannot attach must not block the install, but the failure is never
  * silent — the caller reports that no window was observed. The installer runs exactly once either
  * way, and a failed capture close is reported as partial coverage by the session rather than
- * re-running the script.
+ * re-running the script. `caseSensitive` is the record-wide probe (D10), handed to both backends so
+ * their path keys match the record and journal normalization.
  */
 async function observeInstall(
   platform: Platform,
@@ -241,6 +246,8 @@ async function observeInstall(
   scriptArgs: string[],
   options: InstallOptions,
   backups: BackupPolicy,
+  roots: AbsolutePath[],
+  caseSensitive: boolean,
 ): Promise<InstallWindow> {
   if (!(options.capture ?? true)) {
     const before = snapshot();
@@ -248,11 +255,10 @@ async function observeInstall(
     return { exitCode, fallback: diff(before, snapshot()) };
   }
 
-  const roots = options.roots ?? installObservationRoots(platform);
   let session: BoundedSessionResult<number>;
   try {
     session = await runBoundedSession({
-      backend: options.backend ?? captureBackendFor(platform),
+      backend: options.backend ?? captureBackendFor(platform, caseSensitive),
       // The installer is spawned as a child of this process, so observing this pid covers it.
       pid: process.pid,
       privilege: processPrivilege(),
@@ -267,7 +273,7 @@ async function observeInstall(
     log(`capture unavailable (${message(error)}); observing the install with a heuristic window`);
     try {
       const fallback = await runBoundedSession({
-        backend: new MacosHeuristicCaptureBackend({ caseSensitive: caseSensitiveFor(platform, Bun.env.HOME) }),
+        backend: new MacosHeuristicCaptureBackend({ caseSensitive }),
         pid: process.pid,
         privilege: processPrivilege(),
         roots: heuristicFallbackRoots(roots),

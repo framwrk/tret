@@ -449,6 +449,39 @@ describe("VerifiedUninstallPlanner shared ownership", () => {
     expect(forced.actions).toEqual([{ action: "detected", path: "/h/rc", kind: "mutated" }]);
     expect(forced.incomplete).toBe(false);
   });
+
+  test("case-variant claims are shared only where a record's filesystem is case-insensitive (D10)", async () => {
+    const target = {
+      ...record(),
+      caseSensitive: true,
+      owned: [{ path: "/h/bin/Tool", kind: "file" as const, installedHash: h("b") }],
+    };
+    const state = { "/h/bin/Tool": { exists: true, kind: "file", hash: h("b") } } satisfies Record<
+      string,
+      UninstallVerification
+    >;
+    const other: RecordV3 = {
+      ...record(),
+      id: "rec-2",
+      name: "other",
+      caseSensitive: true,
+      owned: [{ path: "/h/bin/tool", kind: "file", installedHash: h("b") }],
+    };
+
+    // Both filesystems are case-sensitive: the two spellings name different files.
+    const distinct = await planFor(target, state, { otherRecords: [other] });
+    expect(distinct.actions).toEqual([
+      { action: "remove", path: "/h/bin/Tool", kind: "file", plannedState: { exists: true, kind: "file", hash: h("b") } },
+    ]);
+
+    // The other record's filesystem was case-insensitive, so its claim names this same file.
+    const othersInsensitive = await planFor(target, state, { otherRecords: [{ ...other, caseSensitive: false }] });
+    expect(othersInsensitive.actions).toEqual([{ action: "conflict", path: "/h/bin/Tool", reason: "shared-owner" }]);
+
+    // So does the planned record's own filesystem being case-insensitive.
+    const selfInsensitive = await planFor({ ...target, caseSensitive: false }, state, { otherRecords: [other] });
+    expect(selfInsensitive.actions).toEqual([{ action: "conflict", path: "/h/bin/Tool", reason: "shared-owner" }]);
+  });
 });
 
 describe("VerifiedUninstallPlanner sudo awareness", () => {
