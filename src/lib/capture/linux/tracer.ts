@@ -107,7 +107,7 @@ export type StraceTracerOptions = {
   stracePath?: string;
   /** Grace period to let strace detach on its own after the installer exits. */
   detachGraceMs?: number;
-  /** Working directory used to resolve paths strace reports relative to `AT_FDCWD`. */
+  /** Working directory used to resolve relative paths strace did not annotate with a `-y` path. */
   cwd?: AbsolutePath;
   /** Extra environment for the spawned tracer; injected so tests can run a hermetic fake tracer. */
   env?: Record<string, string>;

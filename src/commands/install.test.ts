@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -9,6 +10,14 @@ import { tmpdir } from "node:os";
 
 const BUN = process.execPath;
 const TRET = join(import.meta.dir, "..", "..", "index.ts");
+
+/**
+ * Whether an install here gets the real Linux window instead of the heuristic fallback: Linux with
+ * strace present and a kernel that lets an unprivileged tracer attach to its parent (Yama
+ * `ptrace_scope >= 1` — the stock Ubuntu/CI setting — forbids it). A real window proves the install
+ * (`complete`); the fallback only observes it (`heuristic`).
+ */
+const REAL_CAPTURE = process.platform === "linux" && Bun.which("strace") !== null && (isRoot() || !parentAttachRestricted());
 
 const homes: string[] = [];
 
@@ -193,7 +202,7 @@ describe("install -> list -> uninstall", () => {
       const record = file.records.find((entry) => entry.name === "mytool");
       expect(record).toBeDefined();
       expect(record?.source).toBe("install");
-      expect(record?.capture.completeness).toBe("heuristic");
+      expect(record?.capture.completeness).toBe(REAL_CAPTURE ? "complete" : "heuristic");
       expect(
         record?.owned.some((entry) => entry.path.endsWith("/.local/bin/mytool") && entry.installedHash !== undefined),
       ).toBe(true);
@@ -589,7 +598,7 @@ describe("install -> list -> uninstall", () => {
     }
   });
 
-  test("--force labels the previous install's observed paths before removing them", async () => {
+  test("--force plans the previous install's removal with its capture's evidence label", async () => {
     const home = makeHome();
     const server = serveResponses({ body: INSTALL_SCRIPT }, { body: INSTALL_SCRIPT });
     try {
@@ -598,11 +607,18 @@ describe("install -> list -> uninstall", () => {
       const result = await runCliResult(["install", server.url, "--force"], home);
 
       expect(result.code).toBe(0);
-      // The previous record's evidence is heuristic, so its planned removal is labeled up front.
       const output = `${result.stdout}\n${result.stderr}`;
       expect(output).toContain("reinstalling mytool: removing the previous install first");
-      expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
-      expect(output).toContain(`remove ${join(home, ".local", "bin", "mytool")} (observed, not proven)`);
+      const binary = join(home, ".local", "bin", "mytool");
+      if (REAL_CAPTURE) {
+        // A real window proves the previous install, so the same plan carries no caveat.
+        expect(output).not.toContain("observed, not proven");
+        expect(output).toContain(`remove ${binary}`);
+      } else {
+        // The previous record's evidence is heuristic, so its planned removal is labeled up front.
+        expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
+        expect(output).toContain(`remove ${binary} (observed, not proven)`);
+      }
     } finally {
       await server.stop();
     }
