@@ -1,6 +1,8 @@
 import type { AbsolutePath, OwnedKind } from "../../../types";
 import { basename, dirname, join } from "node:path";
 import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
+import type { BackupPolicy } from "../normalize";
+import type { BlobId } from "../../storage";
 import { createHash } from "node:crypto";
 import { isExcludedDirName } from "../../../constants";
 import { normalizeAbsolutePath } from "./paths";
@@ -141,22 +143,26 @@ export class FakeFsInspector implements FsInspector {
 }
 
 /**
- * A baseline of what existed before the install window, used only to tell a create from an
- * overwrite and to describe a removed node's kind. It stores no content: with backups off (D2) a
- * before-image is not available anyway, and an existence set is far cheaper than hashing a $HOME.
+ * A baseline of what existed before the install window: it tells a create from an overwrite and
+ * describes a removed node. By default it is existence/kind only and reads no file content, so it
+ * cannot become the global content diff the rewrite replaces. When backups are enabled (D2) the walk
+ * also reads each eligible file once, so the pre-window hash/size/mode travel with the baseline and
+ * `reconstruct.ts` can attach them as a mutation's or deletion's `before`.
  */
 export interface Baseline {
   /** Whether the path existed before the window started. */
   existed(path: AbsolutePath): boolean;
   /** The node kind known before the window, when the path existed. */
   kind(path: AbsolutePath): OwnedKind | undefined;
+  /** The full pre-window node, when the baseline captured one (backups enabled); `missing` is never stored. */
+  metadata(path: AbsolutePath): NodeInfo | undefined;
 }
 
-/** An in-memory baseline; `entries` maps absolute paths to a kind (or "missing" is simply absent). */
+/** An in-memory baseline; `entries` maps absolute paths to a kind or to captured node metadata. */
 export class MemoryBaseline implements Baseline {
-  private readonly entries: Map<AbsolutePath, OwnedKind | "unknown">;
+  private readonly entries: Map<AbsolutePath, OwnedKind | NodeInfo>;
 
-  constructor(entries: Iterable<[AbsolutePath, OwnedKind | "unknown"]> = []) {
+  constructor(entries: Iterable<[AbsolutePath, OwnedKind]> = []) {
     this.entries = new Map(entries);
   }
 
@@ -165,34 +171,87 @@ export class MemoryBaseline implements Baseline {
   }
 
   kind(path: AbsolutePath): OwnedKind | undefined {
-    const kind = this.entries.get(path);
-    return kind === undefined || kind === "unknown" ? undefined : kind;
+    const entry = this.entries.get(path);
+    if (entry === undefined || entry === "unknown") return undefined;
+    return typeof entry === "string" ? entry : kindOf(entry);
+  }
+
+  metadata(path: AbsolutePath): NodeInfo | undefined {
+    const entry = this.entries.get(path);
+    return entry === undefined || typeof entry === "string" ? undefined : entry;
   }
 
   set(path: AbsolutePath, kind: OwnedKind): void {
     this.entries.set(path, kind);
   }
+
+  /** Records full pre-window metadata (only a backups-enabled walk does this). */
+  setNode(path: AbsolutePath, info: Exclude<NodeInfo, { kind: "missing" }>): void {
+    this.entries.set(path, info);
+  }
 }
+
+/** Options for the pre-window baseline walk. */
+export type BaselineOptions = {
+  /** Before-image policy (D2). File content is read only when this reports `enabled`. */
+  backups?: BackupPolicy;
+  /** Filesystem inspector; defaults to the real one. Tests inject fakes. */
+  inspector?: FsInspector;
+  /** Reads a file's bytes for a before-image; injected in tests. Defaults to the real filesystem. */
+  read?: (path: AbsolutePath) => Promise<Uint8Array | undefined>;
+};
+
+/** The baseline plus any before-image bytes the walk read for it. */
+export type CapturedBaseline = {
+  baseline: MemoryBaseline;
+  /** Pre-window content keyed by its sha256 content address (the blob id); empty unless backups are enabled. */
+  beforeImages: Map<BlobId, Uint8Array>;
+};
 
 /**
- * Walks the observe roots once and records which paths already existed. This is deliberately
- * existence-only: it costs a `lstat` per path and never reads file bytes, so it cannot become the
- * global content diff the rewrite is replacing. It is bounded by the roots the platform hands in,
- * and it skips the same churn directories the snapshot walk does (see `EXCLUDED_DIR_NAMES`), so a
- * multi-GB cache such as a runner's `/opt/hostedtoolcache` is recorded as one entry, never walked.
+ * Walks the observe roots once and records which paths already existed. With backups off this is
+ * existence-only — a `readdir` per directory and no file bytes read — so it cannot become the global
+ * content diff the rewrite is replacing. When backups are enabled (D2), each eligible regular file is
+ * also read once, for its before-image. Either way the walk is bounded by the roots the platform
+ * hands in, and it skips the same churn directories the snapshot walk does (see `EXCLUDED_DIR_NAMES`),
+ * so a multi-GB cache such as a runner's `/opt/hostedtoolcache` is recorded as one entry, never walked.
  */
-export async function captureBaseline(roots: AbsolutePath[]): Promise<MemoryBaseline> {
+export async function captureBaseline(roots: AbsolutePath[], options: BaselineOptions = {}): Promise<CapturedBaseline> {
+  const inspector = options.inspector ?? new RealFsInspector();
   const baseline = new MemoryBaseline();
+  const beforeImages = new Map<BlobId, Uint8Array>();
+  const backups = options.backups;
+  const backup: BackupCapture | undefined =
+    backups?.enabled === true
+      ? { sizeLimitBytes: backups.sizeLimitBytes, read: options.read ?? readFileBytes, images: beforeImages }
+      : undefined;
+
   for (const root of roots) {
-    const info = await new RealFsInspector().inspect(root, { hash: false });
+    const info = await inspector.inspect(root, { hash: false });
     if (info.kind === "missing") continue;
-    baseline.set(root, kindOf(info));
-    if (info.kind === "directory") await walk(root, baseline);
+    if (info.kind === "file" && backup !== undefined) {
+      await recordFile(root, info, baseline, backup);
+    } else {
+      baseline.set(root, kindOf(info));
+    }
+    if (info.kind === "directory") await walk(root, baseline, inspector, backup);
   }
-  return baseline;
+  return { baseline, beforeImages };
 }
 
-async function walk(dir: AbsolutePath, baseline: MemoryBaseline): Promise<void> {
+/** What a backups-enabled walk uses to turn pre-existing files into before-images. */
+type BackupCapture = {
+  sizeLimitBytes: number;
+  read: (path: AbsolutePath) => Promise<Uint8Array | undefined>;
+  images: Map<BlobId, Uint8Array>;
+};
+
+async function walk(
+  dir: AbsolutePath,
+  baseline: MemoryBaseline,
+  inspector: FsInspector,
+  backup: BackupCapture | undefined,
+): Promise<void> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -201,11 +260,46 @@ async function walk(dir: AbsolutePath, baseline: MemoryBaseline): Promise<void> 
   }
   for (const entry of entries) {
     const path = join(dir, entry.name);
-    const kind: OwnedKind = entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file";
-    baseline.set(path, kind);
+    if (entry.isFile() && backup !== undefined) {
+      await recordFile(path, await inspector.inspect(path, { hash: false }), baseline, backup);
+    } else {
+      const kind: OwnedKind = entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file";
+      baseline.set(path, kind);
+    }
     // Mirror the snapshot walk: record an excluded directory but never descend into it, so a cache
-    // or dependency tree costs one entry instead of a full recursive walk.
-    if (entry.isDirectory() && !isExcludedDirName(entry.name)) await walk(path, baseline);
+    // or dependency tree costs one entry instead of a full recursive walk — and, with backups, never
+    // has its whole contents read.
+    if (entry.isDirectory() && !isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup);
+  }
+}
+
+/**
+ * Records one existing regular file. With backups enabled the file is read once: within the size
+ * limit its bytes become a before-image under their sha256 content address, and the pre-window hash,
+ * size, mode, and mtime travel in the baseline so a later overwrite or deletion can be restored. An
+ * over-limit or unreadable file stays kind-only: the change is still recorded, just not restorable.
+ */
+async function recordFile(path: AbsolutePath, info: NodeInfo, baseline: MemoryBaseline, backup: BackupCapture): Promise<void> {
+  if (info.kind !== "file" || info.size === undefined || info.size > backup.sizeLimitBytes) {
+    baseline.set(path, kindOf(info));
+    return;
+  }
+  const bytes = await backup.read(path);
+  if (bytes === undefined) {
+    baseline.set(path, "file");
+    return;
+  }
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  backup.images.set(hash, bytes);
+  baseline.setNode(path, { kind: "file", hash, size: info.size, mode: info.mode, mtimeMs: info.mtimeMs });
+}
+
+/** Reads a whole file for a before-image; an unreadable file is skipped, never fatal. */
+async function readFileBytes(path: AbsolutePath): Promise<Uint8Array | undefined> {
+  try {
+    return new Uint8Array(await readFile(path));
+  } catch {
+    return undefined;
   }
 }
 

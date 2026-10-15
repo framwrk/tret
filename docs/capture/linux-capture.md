@@ -138,16 +138,23 @@ the label. `heuristic` is reserved for the macOS fallback; the Linux backend nev
 
 Reconstruction runs after the window and inspects final filesystem state. It records content hashes
 only when bytes were actually read; a path that no longer exists (a temp file, an unlink, a rename
-source) falls back to existence/kind. Because an overwrite destroys the prior bytes before a
-post-hoc tracer can read them, the strace backend records mutations without a before-image unless a
-scoped baseline or a future entry-stop tracer supplies one. The macOS heuristic fallback captures
-before-image bytes at window start when backups are enabled (`--backup`); the Linux backend does not
-yet, so a `--backup` install on Linux stays detect-only and `normalizeJournal` treats the missing
-`before` as "detectable, not restorable" rather than inventing one.
+source) falls back to existence/kind, or to the baseline metadata below.
 
-The existence baseline (`captureBaseline`) walks the observe roots once and stores path → kind only.
-It reads no file content, so it cannot become the global content diff the rewrite replaces; it exists
-solely to tell a create from an overwrite and to describe a removed node's kind.
+Because an overwrite destroys the prior bytes before a post-hoc tracer can read them, before-images
+are captured at window start. When `--backup` is enabled, the baseline walk reads each pre-existing
+regular file that fits the backup size limit once, keeps its bytes under their sha256 content
+address, and stores the file's prior hash, size, mode, and mtime alongside its kind; reconstruction
+attaches that metadata as the `before` of an overwrite, truncating open, unlink, or rename source,
+so the record is restorable with its prior permission bits. Over-limit or unreadable files stay
+kind-only: the change is still recorded, just not restorable. This mirrors the macOS heuristic
+fallback's window-start capture (`docs/capture/macos-capture.md`).
+
+With backups off (the default, D2) the baseline walk stays existence-only and reads no file content,
+so it cannot become the global content diff this rewrite replaces; it exists solely to tell a create
+from an overwrite and to describe a removed node's kind. `normalizeJournal` treats a missing
+`before` as "detectable, not restorable" rather than inventing one, and `install` drops any restore
+claim whose blob was not actually stored (`storeBeforeImages`), so a record never advertises a
+restore `getBlob` cannot perform.
 
 ## Integration fixture
 
