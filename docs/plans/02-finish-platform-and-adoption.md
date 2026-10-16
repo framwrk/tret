@@ -1,6 +1,7 @@
 # Plan: Finish platform support and adoption
 
-**Status:** Proposed  
+**Status:** In progress — items 1, 2, and 4–8 are complete; item 3 needs release-asset upload/publish verification.
+
 **Priority:** P1 — complete the platform work already represented in the code
 
 ## Goal
@@ -9,14 +10,14 @@ Make the macOS and Linux platform tables drive the real commands consistently, e
 
 ## Plan
 
-1. **Wire the platform abstraction through commands.** Replace remaining hardcoded macOS table use in command paths such as related-file discovery and shell configuration cleanup. Use the active platform's search roots, shell files, shared-path rules, and privilege policy for `find`, install, and uninstall.
-2. **Finish Linux shell and search behavior.** Handle the Linux table's shell configuration files and directory-based entries, including fish, systemd user units, desktop entries, XDG data directories, and package-manager binary directories. Do not treat a directory entry such as `/etc/profile.d` as a file to edit.
-3. **Ship the Linux capture helper.** Build the fanotify helper for supported Linux release targets, include and install it with the matching Tret release artifact, and select it without requiring users to discover and configure a private `TRET_FANOTIFY` path. Keep the unprivileged `strace` option and clearly explain when it is unavailable or incomplete.
-4. **Exercise real Linux capture.** Add Linux CI smoke tests that run representative installers through the shipped backend and helper where permissions allow. Keep hermetic fake-tracer tests for deterministic edge cases, and report permission, kernel, filesystem, and syscall blind spots as partial capture.
-5. **Make Linux backups honest and useful.** Capture eligible before-images and their prior permission bits before the installer starts when `--backup` is enabled, or explicitly warn that Linux cannot restore them until that is implemented. The record format, planner, and applier already restore whatever a capture records (#11), so this is capture-side work. Do not advertise a backup as restorable unless its original bytes were stored and verified.
-6. **Complete case-sensitivity handling.** Replace platform-wide case defaults with a probe for the filesystem holding each relevant path. Use the record's case behavior consistently when normalizing effects and detecting overlapping claims during uninstall.
-7. **Make `tret find` adoption complete but conservative.** Inventory the files inside adopted tool directories, not just the top-level directory. Record enough fingerprints to remove verified files and empty directories safely; leave unrelated or changed contents untouched and explain conflicts rather than leaving an opaque, permanently stuck folder record.
-8. **Expose capture-scope configuration.** Support documented additions and exclusions to the bounded observation roots so users can account for installers that write outside the defaults without widening every capture to the whole filesystem.
+1. [x] **Wire the platform abstraction through commands.** Replace remaining hardcoded macOS table use in command paths such as related-file discovery and shell configuration cleanup. Use the active platform's search roots, shell files, shared-path rules, and privilege policy for `find`, install, and uninstall.
+2. [x] **Finish Linux shell and search behavior.** Handle the Linux table's shell configuration files and directory-based entries, including fish, systemd user units, desktop entries, XDG data directories, and package-manager binary directories. Do not treat a directory entry such as `/etc/profile.d` as a file to edit.
+3. [ ] **Ship the Linux capture helper.** Build the fanotify helper for supported Linux release targets, include and install it with the matching Tret release artifact, and select it without requiring users to discover and configure a private `TRET_FANOTIFY` path. Keep the unprivileged `strace` option and clearly explain when it is unavailable or incomplete.
+4. [x] **Exercise real Linux capture.** Add Linux CI smoke tests that run representative installers through the shipped backend and helper where permissions allow. Keep hermetic fake-tracer tests for deterministic edge cases, and report permission, kernel, filesystem, and syscall blind spots as partial capture.
+5. [x] **Make Linux backups honest and useful.** Capture eligible before-images and their prior permission bits before the installer starts when `--backup` is enabled, or explicitly warn that Linux cannot restore them until that is implemented. The record format, planner, and applier already restore whatever a capture records (#11), so this is capture-side work. Do not advertise a backup as restorable unless its original bytes were stored and verified.
+6. [x] **Complete case-sensitivity handling.** Replace platform-wide case defaults with a probe for the filesystem holding each relevant path. Use the record's case behavior consistently when normalizing effects and detecting overlapping claims during uninstall.
+7. [x] **Make `tret find` adoption complete but conservative.** Inventory the files inside adopted tool directories, not just the top-level directory. Record enough fingerprints to remove verified files and empty directories safely; leave unrelated or changed contents untouched and explain conflicts rather than leaving an opaque, permanently stuck folder record.
+8. [x] **Expose capture-scope configuration.** Support documented additions and exclusions to the bounded observation roots so users can account for installers that write outside the defaults without widening every capture to the whole filesystem.
 
 ## Acceptance criteria
 
@@ -29,11 +30,11 @@ Make the macOS and Linux platform tables drive the real commands consistently, e
 
 ## Outcome
 
-Implemented on `platform/p1-finish-platform` (items 1–8 complete):
+Implemented on `platform/p1-finish-platform` (items 1, 2, and 4–8 complete; item 3 still needs release-artifact upload wiring):
 
 - Item 1: `find`, the snapshot scope, and the shared-path guards read the running platform table, so Linux searches its XDG and package-manager surfaces and protects `/usr`, `/etc`, and the other shared system trees instead of the macOS list.
 - Item 2: shell-config cleanup walks the active table's entries, including the Linux-only `.bash_login`, fish's `config.fish`, and directory entries (`/etc/profile.d` is reported, never edited as a file).
-- Item 3: the fanotify helper builds for the Linux release targets and ships inside the Linux archives; the backend discovers it beside the `tret` binary, so no private `TRET_FANOTIFY` path is needed, and the unprivileged `strace` fallback stays available.
+- Item 3: the fanotify helper builds for Linux targets and is included in the archives; the backend discovers it beside `tret`, and the unprivileged `strace` fallback stays available. However, `.github/workflows/release.yml` does not upload the standalone helper files that the release job later passes to `gh release create`, so release publication still needs correction and verification.
 - Item 4: a Linux smoke test runs a representative installer through the shipped `strace` backend, parser, and reconstruction on genuine kernel output, skipping cleanly where the kernel or the missing `strace` refuses it; hermetic fake-tracer tests keep the edge cases deterministic.
 - Item 5: with `--backup`, the Linux capture reads each eligible pre-existing file's bytes and prior mode at window start and attaches them as before-images; a restore is claimed only for bytes storage actually holds.
 - Item 6: case behavior is probed read-only per filesystem (a case-flipped spelling of the deepest existing ancestor); `install` and `find` resolve one conservative record-wide flag over every observed path, the capture backends key paths with that same flag, and uninstall folds case in shared-ownership and delegated-removal overlap checks whenever either record was on a case-insensitive filesystem. The platform defaults remain only as the last resort when nothing can be probed.
