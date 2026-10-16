@@ -65,8 +65,11 @@ export class LinuxCaptureBackend implements CaptureBackend {
 
   async start(options: CaptureStartOptions): Promise<CaptureSession> {
     const attach: TracerAttachOptions = { pid: options.pid, roots: options.roots };
+    // Known host restrictions always force the install into the heuristic fallback. Check them
+    // before a backups-enabled baseline reads every eligible file in the observation roots.
+    const tracerFactory = this.options.tracerFactory ?? defaultTracerFactoryForCurrentHost();
     const resolved = await this.resolveBaseline(options);
-    const tracer = await (this.options.tracerFactory ?? defaultTracerFactory)(attach);
+    const tracer = await tracerFactory(attach);
 
     return {
       backend: tracer.name,
@@ -127,7 +130,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
       // eligible file once, for its before-image (see `captureBaseline`).
       const captured: CapturedBaseline = await captureBaseline(
         options.roots,
-        options.backups === undefined ? {} : { backups: options.backups },
+        options.backups === undefined ? { inspector: this.inspector } : { backups: options.backups, inspector: this.inspector },
       );
       return captured;
     }
@@ -143,14 +146,36 @@ export class LinuxCaptureBackend implements CaptureBackend {
  * escalates on the user's behalf.
  */
 export async function defaultTracerFactory(attach: TracerAttachOptions): Promise<LinuxTracer> {
+  return defaultTracerFactoryForCurrentHost()(attach);
+}
+
+function defaultTracerFactoryForCurrentHost(): LinuxTracerFactory {
+  const selection = selectDefaultTracer();
+  return (attach) => attachDefaultTracer(attach, selection);
+}
+
+type DefaultTracerSelection = { kind: "fanotify"; helperPath: string } | { kind: "strace"; stracePath: string };
+
+/** Selects a tracer only when the host can plausibly attach it; this runs before the baseline scan. */
+function selectDefaultTracer(): DefaultTracerSelection {
   const helper = fanotifyHelperPath();
-  if (isRoot() && helper !== undefined) return attachFanotify(attach, { helperPath: helper });
+  if (isRoot() && helper !== undefined) return { kind: "fanotify", helperPath: helper };
   if (parentAttachRestricted()) {
     throw new Error(
       "strace cannot attach to this process: yama ptrace_scope restricts an unprivileged tracer from tracing its parent",
     );
   }
-  const tracer = await attachStrace(attach, { cwd: process.cwd() });
+  const stracePath = Bun.which("strace");
+  if (stracePath === null) {
+    throw new Error('strace could not start: Executable not found in $PATH: "strace"');
+  }
+  return { kind: "strace", stracePath };
+}
+
+/** Attaches the previously selected tracer only after the baseline has been captured. */
+async function attachDefaultTracer(attach: TracerAttachOptions, selection: DefaultTracerSelection): Promise<LinuxTracer> {
+  if (selection.kind === "fanotify") return attachFanotify(attach, { helperPath: selection.helperPath });
+  const tracer = await attachStrace(attach, { cwd: process.cwd(), stracePath: selection.stracePath });
   await requireAttached(tracer);
   return tracer;
 }

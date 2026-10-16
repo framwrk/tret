@@ -215,11 +215,13 @@ export type CapturedBaseline = {
  * also read once, for its before-image. Either way the walk is bounded by the roots the platform
  * hands in, and it skips the same churn directories the snapshot walk does (see `EXCLUDED_DIR_NAMES`),
  * so a multi-GB cache such as a runner's `/opt/hostedtoolcache` is recorded as one entry, never walked.
+ * Overlapping roots share a visited-path set, so the same file is never read twice for backups.
  */
 export async function captureBaseline(roots: AbsolutePath[], options: BaselineOptions = {}): Promise<CapturedBaseline> {
   const inspector = options.inspector ?? new RealFsInspector();
   const baseline = new MemoryBaseline();
   const beforeImages = new Map<BlobId, Uint8Array>();
+  const visited = new Set<AbsolutePath>();
   const backups = options.backups;
   const backup: BackupCapture | undefined =
     backups?.enabled === true
@@ -227,14 +229,17 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
       : undefined;
 
   for (const root of roots) {
+    if (visited.has(root)) continue;
     const info = await inspector.inspect(root, { hash: false });
     if (info.kind === "missing") continue;
     if (info.kind === "file" && backup !== undefined) {
+      visited.add(root);
       await recordFile(root, info, baseline, backup);
     } else {
       baseline.set(root, kindOf(info));
     }
-    if (info.kind === "directory") await walk(root, baseline, inspector, backup);
+    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited);
+    else visited.add(root);
   }
   return { baseline, beforeImages };
 }
@@ -251,7 +256,11 @@ async function walk(
   baseline: MemoryBaseline,
   inspector: FsInspector,
   backup: BackupCapture | undefined,
+  visited: Set<AbsolutePath>,
 ): Promise<void> {
+  if (visited.has(dir)) return;
+  visited.add(dir);
+
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -260,16 +269,22 @@ async function walk(
   }
   for (const entry of entries) {
     const path = join(dir, entry.name);
-    if (entry.isFile() && backup !== undefined) {
-      await recordFile(path, await inspector.inspect(path, { hash: false }), baseline, backup);
+    if (visited.has(path)) continue;
+    if (entry.isDirectory()) {
+      baseline.set(path, "directory");
+      // Record excluded directories but never descend, so shared churn trees cost one entry and no
+      // before-image reads. An explicit root nested below this directory can still be walked separately.
+      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited);
+      else visited.add(path);
     } else {
-      const kind: OwnedKind = entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file";
+      visited.add(path);
+      if (entry.isFile() && backup !== undefined) {
+        await recordFile(path, await inspector.inspect(path, { hash: false }), baseline, backup);
+        continue;
+      }
+      const kind: OwnedKind = entry.isSymbolicLink() ? "symlink" : "file";
       baseline.set(path, kind);
     }
-    // Mirror the snapshot walk: record an excluded directory but never descend into it, so a cache
-    // or dependency tree costs one entry instead of a full recursive walk — and, with backups, never
-    // has its whole contents read.
-    if (entry.isDirectory() && !isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup);
   }
 }
 
