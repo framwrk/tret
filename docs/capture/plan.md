@@ -8,6 +8,8 @@ Do this on a platform-neutral core so the same tool runs on macOS (arm64 and x64
 
 This file is a design and implementation plan; it does not change the current install or uninstall behavior by itself.
 
+**Implementation status:** Phases 1–8 are complete. Phase 9 is still in progress because the release workflow's upload list omits standalone Linux fanotify helper files that the release job later tries to publish.
+
 ## Current behavior and motivation
 
 Today `tret install` snapshots `$HOME` and `/usr/local/bin`, runs a downloaded script, and diffs the snapshots. `ToolRecord` keeps added and edited paths, but not deleted paths or file contents. This leads to several limitations the rewrite should address:
@@ -318,55 +320,55 @@ Each entry resolves or explicitly defers one item from "Open decisions". Status 
 
 Phases follow the Implementation sequence. Each phase lists deliverables, exit criteria, and dependencies.
 
-### Phase 1 — Requirements and spike
+### Phase 1 — Requirements and spike (complete)
 
 - **Deliverables:** inventory of representative installers and fixtures; coverage/privilege/process-tree/rename/symlink/daemonization/case-sensitivity findings per OS; this Decisions log; the "macOS capture feasibility" section.
 - **Exit criteria:** every Open Decision resolved or deferred with a chosen default; macOS feasibility recommended; fixture installers selected.
 - **Dependencies:** none.
 
-### Phase 2 — Platform abstraction
+### Phase 2 — Platform abstraction (complete)
 
 - **Deliverables:** the `Platform` seam (scope/search roots, shell configs, privilege policy, artifact naming, filesystem case behavior) defined together with the capture-backend interface; existing macOS-specific tables moved behind it.
 - **Exit criteria:** core compiles and the test suite passes against both a macOS and a Linux platform table.
 - **Dependencies:** Phase 1 (D3 scope, D8 privilege, D10 case).
 
-### Phase 3 — Data model and pure normalization
+### Phase 3 — Data model and pure normalization (complete)
 
 - **Deliverables:** journal event types; normalization rules (temp-file+rename → destination change, create+delete cancel-out, rename → source removal + destination create/replace, overwrite/delete before-image handling); ownership and conflict semantics; v3 record shape; hash/backup policy; pure events→record conversion with tests.
 - **Exit criteria:** unit coverage for create/write, overwrite, delete, rename-overwrite, symlink, chmod, temp-file, nested-directory, and create-then-delete; v3 shape frozen.
 - **Dependencies:** Phase 2 interface; D2 backup, D4 conflicts.
 
-### Phase 4 — Capture backend
+### Phase 4 — Capture backend (complete)
 
 - **Deliverables:** Linux backend first (`fanotify` primary, `ptrace`/`strace -f` unprivileged alternative) plus the macOS labeled heuristic fallback; completeness metadata (`complete`/`partial`/`heuristic`).
 - **Exit criteria:** backends pass conformance tests against shared fixture event streams; unrelated churn is not attributed by a complete backend; partial/daemonized cases are reported incomplete, never complete.
 - **Dependencies:** Phase 2 interface, Phase 3 normalization, D1, D7.
 
-### Phase 5 — Install integration
+### Phase 5 — Install integration (complete)
 
 - **Deliverables:** install execution routed through the backend; preserved installer stdout/stderr behavior, script hashing, executable selection, privilege handling, and failure handling; partial records for failed/interrupted installs.
 - **Exit criteria:** failed or interrupted installs never create misleading complete records; behavior matches D6 and D8.
 - **Dependencies:** Phase 4; D6, D8.
 
-### Phase 6 — Storage and migration
+### Phase 6 — Storage and migration (complete)
 
 - **Deliverables:** content-addressed blob storage, atomic record/blob writes, restrictive permissions, size limits, reference cleanup, and v2→v3 migration.
 - **Exit criteria:** migration tests with representative v2 record files; malformed records rejected without erasing user records; GC removes only unreferenced blobs; legacy records gain no fabricated restore capability.
 - **Dependencies:** Phase 3 v3 shape; D2.
 
-### Phase 7 — Safe uninstall
+### Phase 7 — Safe uninstall (complete)
 
 - **Deliverables:** fingerprint verification, restore/remove planning, conflict handling, dry-run output, partial retry records, conservative directory cleanup, and sudo-aware handling for root-owned installs.
 - **Exit criteria:** uninstall verifies installed state before changing anything and preserves diverged user data by default; dry-run equals the actual plan; shared-path conflicts behave per D4; behavior matches D8.
 - **Dependencies:** Phase 6; D4, D8.
 
-### Phase 8 — Lazy-write workflow
+### Phase 8 — Lazy-write workflow (complete)
 
 - **Deliverables:** removal of the automatic `--help` dependency; documented bounded install session; deferred `tret trace` design and record segment reservation.
 - **Exit criteria:** no silent execution of installed tools; the observation window and process-tree coverage are shown to the user.
 - **Dependencies:** Phase 5; D5.
 
-### Phase 9 — Distribution, commands, docs, and rollout
+### Phase 9 — Distribution, commands, docs, and rollout (in progress)
 
 - **Deliverables:** `os`/`arch` artifact matrix built and published by CI; `scripts/install.sh` and the self-update check select the running platform's archive and verify checksums; `install`, `uninstall`, `list`, and `find` updated as required; documentation for capture completeness, privacy/backup defaults, unsupported cases, migration, and recovery; legacy path retained until parity.
 - **Exit criteria:** acceptance criteria 1–7 met; README usage and safety claims match shipped behavior; the shared core builds and passes against both platform tables and adding a platform stays confined to a backend module plus a platform table.

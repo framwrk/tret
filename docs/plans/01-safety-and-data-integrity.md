@@ -9,12 +9,12 @@ Make sure Tret only removes files that still match its evidence, preserves recov
 
 ## Plan
 
-1. **Correct change classification.** Fix journal normalization so replacing a pre-existing destination with a temporary file is recorded as a mutation, not as a newly owned file. Cover other replace-over-existing and rename cases on both backends.
-2. **Enforce filesystem-root boundaries.** Normalize traced paths before checking whether they are inside an observation root. Reject paths that escape through `..`, and define how symlinked path components are handled. A lexical prefix match alone is not sufficient.
-3. **Restore complete file state.** Capture and restore file permissions with before-image contents. Restore files without changing the permissions of existing parent directories.
-4. **Keep shell cleanup narrowly attributable.** Remove only configuration changes Tret can tie to the install; do not remove a shared PATH entry such as `~/.local/bin` just because it contains or resembles an owned path. Preserve subsequent user edits and re-check before writing.
-5. **Make record updates concurrency-safe.** Serialize read-modify-write operations so two simultaneous Tret commands cannot silently discard each other's records.
-6. **Validate records deeply.** Validate nested entries, capture segments, fingerprints, backup references, and absolute paths on load; reject malformed data without overwriting the original records file.
+1. [x] **Correct change classification.** Fix journal normalization so replacing a pre-existing destination with a temporary file is recorded as a mutation, not as a newly owned file. Cover other replace-over-existing and rename cases on both backends.
+2. [x] **Enforce filesystem-root boundaries.** Normalize traced paths before checking whether they are inside an observation root. Reject paths that escape through `..`, and define how symlinked path components are handled. A lexical prefix match alone is not sufficient.
+3. [x] **Restore complete file state.** Capture and restore file permissions with before-image contents. Restore files without changing the permissions of existing parent directories.
+4. [x] **Keep shell cleanup narrowly attributable.** Remove only configuration changes Tret can tie to the install; do not remove a shared PATH entry such as `~/.local/bin` just because it contains or resembles an owned path. Preserve subsequent user edits and re-check before writing.
+5. [x] **Make record updates concurrency-safe.** Serialize read-modify-write operations so two simultaneous Tret commands cannot silently discard each other's records.
+6. [x] **Validate records deeply.** Validate nested entries, capture segments, fingerprints, backup references, and absolute paths on load; reject malformed data without overwriting the original records file.
 
 ## Acceptance criteria
 

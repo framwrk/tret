@@ -1,6 +1,7 @@
 # Plan: Release confidence and documentation
 
-**Status:** Proposed  
+**Status:** In progress
+
 **Priority:** P1 — make every change verifiable before release
 
 ## Goal
@@ -9,13 +10,13 @@ Run the same meaningful checks before changes are merged and before artifacts ar
 
 ## Plan
 
-1. **Run CI on pull requests.** Add pull-request triggers to the existing CI workflow so branches receive checks before merge, rather than running the main CI workflow only after a push to `main`.
-2. **Type-check in CI.** Add a documented type-check command and run it alongside lint and tests. Keep local and CI commands aligned.
-3. **Keep the platform matrix honest.** Build and test every advertised OS/architecture target, verify archives and checksums, and include the Linux capture helper in the release and install-script tests when applicable.
-4. **Add end-to-end regression coverage.** Test the reviewed uninstall race, overwritten-file classification, path-root escapes, backup mode restoration, failed installs without an executable, failed forced-reinstall downloads, concurrent record updates, and populated `tret find` directories. #11 already added CLI coverage for backup mode restoration and store/capture-level coverage for concurrent record updates and path-root escapes; the remaining cases still need end-to-end tests. Run a real Linux tracer smoke test on a suitable runner; retain fake backends for deterministic cases.
-5. **Test shipped behavior, not just source modules.** Continue exercising the install script against built archives, and add release checks that install, report the version, and update a binary for each target without relying on an interactive terminal or live filesystem outside a temporary home.
-6. **Align user-facing documentation.** Update the README and command help to match actual capture coverage, backup availability by platform, `find` behavior, uninstall safety, and the trust boundary for remote install scripts. Clearly identify platform features that remain unavailable.
-7. **Publish a release checklist.** Require green PR checks, successful builds for all supported targets, verified checksums, and reviewed notes for any known capture limitations before tagging a release.
+1. [ ] **Run CI on pull requests.** Add pull-request triggers to the existing CI workflow so branches receive checks before merge, rather than running the main CI workflow only after a push to `main`.
+2. [ ] **Type-check in CI.** Add a documented type-check command and run it alongside lint and tests. Keep local and CI commands aligned.
+3. [ ] **Keep the platform matrix honest.** Build and test every advertised OS/architecture target, verify archives and checksums, and include the Linux capture helper in the release and install-script tests when applicable.
+4. [ ] **Add end-to-end regression coverage.** Test the reviewed uninstall race, overwritten-file classification, path-root escapes, backup mode restoration, failed installs without an executable, failed forced-reinstall downloads, concurrent record updates, and populated `tret find` directories. CLI/applier coverage now exercises uninstall revalidation, overwrite/backup restoration, failed-install recovery, and populated `find`; a conditional real Linux `strace` smoke test and hermetic fake-backend tests are also present. Concurrent record updates and resolved-root escapes are still covered at the storage/capture layer rather than end to end.
+5. [ ] **Test shipped behavior, not just source modules.** Continue exercising the install script against built archives, and add release checks that install, report the version, and update a binary for each target without relying on an interactive terminal or live filesystem outside a temporary home.
+6. [ ] **Align user-facing documentation.** Update the README and command help to match actual capture coverage, backup availability by platform, `find` behavior, uninstall safety, and the trust boundary for remote install scripts. Clearly identify platform features that remain unavailable.
+7. [ ] **Publish a release checklist.** Require green PR checks, successful builds for all supported targets, verified checksums, and reviewed notes for any known capture limitations before tagging a release.
 
 ## Acceptance criteria
 

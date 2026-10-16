@@ -9,12 +9,12 @@ Help users understand what Tret recorded, manage tracked tools over time, and ca
 
 ## Plan
 
-1. **Add a record inspection or health-check command.** Show each tool's capture confidence and observation window, the paths Tret believes it owns, which files have changed since installation, which changes can be restored, and what would remain after uninstall. Make the command read-only.
-2. **Add explicit runtime tracing.** After install-time capture is reliable on each supported platform, add a bounded `tret trace <tool>` workflow that asks before running the tool, records the trace as a separate segment, and merges new paths without silently taking ownership from another record. Report unsupported operations and incomplete process coverage.
-3. **Support tracked-tool updates.** Add a command to re-run a tool's recorded installer source with the original arguments, show the script identity and intended changes, and retain a recovery path if the update fails. Do not remove the working install before the replacement can be fetched and validated.
-4. **Make tool selection unambiguous.** Allow a user-supplied display name at install time and provide a stable record identifier for cases where multiple installs have the same command name. Ensure uninstall, update, inspect, and forget all resolve the same record predictably.
-5. **Add machine-readable output.** Provide a documented JSON mode for list, inspect, dry-run uninstall, and command results. Keep installer output separate from structured output and define stable exit codes for automation.
-6. **Improve installer consent and expectations.** Show the fetched installer's source and SHA-256 before execution when practical, explain that Tret observes and records changes but does not sandbox the installer, and clearly distinguish this protection from malware prevention.
+1. [ ] **Add a record inspection or health-check command.** Show each tool's capture confidence and observation window, the paths Tret believes it owns, which files have changed since installation, which changes can be restored, and what would remain after uninstall. Make the command read-only.
+2. [ ] **Add explicit runtime tracing.** After install-time capture is reliable on each supported platform, add a bounded `tret trace <tool>` workflow that asks before running the tool, records the trace as a separate segment, and merges new paths without silently taking ownership from another record. Report unsupported operations and incomplete process coverage.
+3. [ ] **Support tracked-tool updates.** Add a command to re-run a tool's recorded installer source with the original arguments, show the script identity and intended changes, and retain a recovery path if the update fails. Do not remove the working install before the replacement can be fetched and validated.
+4. [ ] **Make tool selection unambiguous.** Allow a user-supplied display name at install time and provide a stable record identifier for cases where multiple installs have the same command name. Ensure uninstall, update, inspect, and forget all resolve the same record predictably.
+5. [ ] **Add machine-readable output.** Provide a documented JSON mode for list, inspect, dry-run uninstall, and command results. Keep installer output separate from structured output and define stable exit codes for automation.
+6. [ ] **Improve installer consent and expectations.** Show the fetched installer's source and SHA-256 before execution when practical, explain that Tret observes and records changes but does not sandbox the installer, and clearly distinguish this protection from malware prevention.
 
 ## Acceptance criteria
 
