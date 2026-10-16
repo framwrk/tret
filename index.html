@@ -265,24 +265,52 @@
 
       .code {
         display: flex;
-        padding: 0.75rem 1rem;
         border: 1px solid var(--border);
         background: var(--muted);
         font-family: var(--font-mono);
         font-size: 0.75rem;
         line-height: 1.4;
+      }
+
+      .code code {
+        flex: 1;
+        min-width: 0;
+        padding: 0.75rem 1rem;
         white-space: pre;
         overflow-x: auto;
       }
 
       .code .prompt {
         color: var(--muted-foreground);
+        user-select: none;
       }
 
       @media (prefers-color-scheme: dark) {
         .code .prompt {
           color: var(--accent);
         }
+      }
+
+      .code-copy {
+        flex-shrink: 0;
+        min-width: 5rem;
+        padding: 0 1rem;
+        border: 0;
+        border-left: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted-foreground);
+        font: inherit;
+        cursor: pointer;
+        transition: color 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .code-copy:hover {
+        color: var(--foreground);
+      }
+
+      .code-copy:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: -2px;
       }
 
       .grid {
@@ -368,6 +396,12 @@
           </p>
           <div class="code mt-6">
             <code><span class="prompt">$ </span>curl -fsSL https://tret.framwrk.com/scripts/install.sh | bash</code>
+            <button
+              type="button"
+              class="code-copy"
+            >
+              Copy
+            </button>
           </div>
           <p class="muted mt-4">
             Installs the latest release to <code>~/.tret/bin</code> and links it as <code>~/.local/bin/tret</code>, after
@@ -437,5 +471,22 @@
         <p class="muted center">© 2026 Framwrk. All rights reserved.</p>
       </footer>
     </div>
+    <script>
+      for (const box of document.querySelectorAll(".code")) {
+        const code = box.querySelector("code");
+        const button = box.querySelector(".code-copy");
+        button.addEventListener("click", async () => {
+          const command = code.cloneNode(true);
+          command.querySelector(".prompt")?.remove();
+          try {
+            await navigator.clipboard.writeText(command.textContent);
+            button.textContent = "Copied";
+            setTimeout(() => (button.textContent = "Copy"), 1500);
+          } catch {
+            // Clipboard access can be denied; the command stays selectable by hand.
+          }
+        });
+      }
+    </script>
   </body>
 </html>
