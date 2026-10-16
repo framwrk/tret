@@ -57,6 +57,25 @@ describe("linux capture baseline", () => {
 });
 
 describe("linux capture baseline: before-images", () => {
+  test("does not reread files reached through overlapping observe roots", async () => {
+    const root = await makeRoot();
+    const nested = join(root, "nested");
+    const file = join(nested, "config");
+    await mkdir(nested);
+    await writeFile(file, "original-config\n");
+
+    const reads: string[] = [];
+    await captureBaseline([root, nested], {
+      backups: { enabled: true, sizeLimitBytes: 1024 },
+      read: async (path) => {
+        reads.push(path);
+        return new Uint8Array(await readFile(path));
+      },
+    });
+
+    expect(reads).toEqual([file]);
+  });
+
   test("reads eligible file bytes and their prior metadata when backups are enabled", async () => {
     const root = await makeRoot();
     const file = join(root, "config");

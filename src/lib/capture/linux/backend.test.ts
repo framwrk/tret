@@ -1,13 +1,27 @@
-import { LinuxCaptureBackend, fanotifyHelperPath } from "./backend";
+import { FakeFsInspector, RealFsInspector } from "./inspect";
+import { LinuxCaptureBackend, fanotifyHelperPath, isRoot, parentAttachRestricted } from "./backend";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import type { CaptureSession } from "../backend";
-import { FakeFsInspector } from "./inspect";
 import { FakeLinuxTracer } from "./fake";
 import type { TracerAttachOptions } from "./tracer";
 import { join } from "node:path";
 import { normalizeJournal } from "../../journal/normalize";
 import { tmpdir } from "node:os";
+
+const DEFAULT_TRACER_PREFLIGHT_TEST_ENABLED =
+  process.platform === "linux" &&
+  !(isRoot() && fanotifyHelperPath() !== undefined) &&
+  (parentAttachRestricted() || Bun.which("strace") === null);
+
+class CountingFsInspector extends RealFsInspector {
+  inspected = 0;
+
+  override inspect(...args: Parameters<RealFsInspector["inspect"]>) {
+    this.inspected++;
+    return super.inspect(...args);
+  }
+}
 
 function backendWith(tracer: FakeLinuxTracer, options: { processAlive?: (pid: number) => boolean } = {}) {
   const seen: TracerAttachOptions[] = [];
@@ -29,6 +43,30 @@ async function capture(backend: LinuxCaptureBackend, pid = 42): Promise<CaptureS
 }
 
 describe("linux capture backend", () => {
+  test.skipIf(!DEFAULT_TRACER_PREFLIGHT_TEST_ENABLED)(
+    "rejects an unavailable default tracer before reading the backup baseline",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "tret-backend-preflight-"));
+      writeFileSync(join(root, "config"), "original\n");
+      const inspector = new CountingFsInspector();
+
+      try {
+        const backend = new LinuxCaptureBackend({ inspector });
+        await expect(
+          backend.start({
+            pid: process.pid,
+            privilege: "user",
+            roots: [root],
+            backups: { enabled: true, sizeLimitBytes: 1024 },
+          }),
+        ).rejects.toThrow(/strace|ptrace/i);
+        expect(inspector.inspected).toBe(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   test("delegates attach options and reports a complete journal for a clean window", async () => {
     const tracer = new FakeLinuxTracer({ name: "linux-fanotify" });
     tracer.push({ op: "mkdir", at: 1, pid: 42, path: "/h/d" });
