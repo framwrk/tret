@@ -8,11 +8,11 @@ Do this on a platform-neutral core so the same tool runs on macOS (arm64 and x64
 
 This file is a design and implementation plan; it does not change the current install or uninstall behavior by itself.
 
-**Implementation status:** Phases 1–8 are complete. Phase 9 is still in progress because the release workflow's upload list omits standalone Linux fanotify helper files that the release job later tries to publish.
+**Implementation status:** Phases 1–8 are complete. Phase 9 (distribution, commands, docs, and rollout) is in progress; its release-distribution blocker — standalone Linux fanotify helper files the release job published but the build job never uploaded — is now fixed, and the release workflow verifies every published asset and checksum before publishing.
 
-## Current behavior and motivation
+## Pre-rewrite behavior and motivation
 
-Today `tret install` snapshots `$HOME` and `/usr/local/bin`, runs a downloaded script, and diffs the snapshots. `ToolRecord` keeps added and edited paths, but not deleted paths or file contents. This leads to several limitations the rewrite should address:
+Before this rewrite, `tret install` snapshotted `$HOME` and `/usr/local/bin`, ran a downloaded script, and diffed the snapshots. The old `ToolRecord` kept added and edited paths, but not deleted paths or file contents. Those limitations motivated the rewrite:
 
 - A global diff cannot distinguish installer activity from unrelated background filesystem churn.
 - Stamp comparisons (mtime, size, inode) are a heuristic for edits, not proof of changed contents.
@@ -21,9 +21,9 @@ Today `tret install` snapshots `$HOME` and `/usr/local/bin`, runs a downloaded s
 - Uninstall can remove additions, but edited and deleted files cannot be restored; ownership checks are partly reconstructed from path names.
 - Reinstalling a URL replaces a name-keyed record, which does not describe shared-path or multi-tool ownership explicitly.
 
-Relevant current code includes `src/commands/install.ts`, `src/lib/{snapshot,diff,installer,first-run,removal,records}.ts`, `src/lib/shellconfig.ts`, `src/constants.ts`, and `src/types.ts`.
+The pre-rewrite implementation included `src/commands/install.ts`, `src/lib/{snapshot,diff,installer,first-run,removal,records}.ts`, `src/lib/shellconfig.ts`, `src/constants.ts`, and `src/types.ts`.
 
-Platform assumptions are also baked into code the current design does not isolate: `SNAPSHOT_ROOTS` (`src/constants.ts`), `SHARED_ABSOLUTE`/`SHARED_IN_HOME` (`src/lib/removal.ts`), `SEARCH_DIRS_IN_HOME` (`src/lib/related.ts`), `RC_FILES` (`src/lib/shellconfig.ts`), the hardcoded `tret-macos-arm64` artifact (`src/lib/updatecheck.ts`, `scripts/install.sh`), and the single build target in `package.json`. These must move behind a platform seam, or cross-platform support becomes a large later edit rather than a small one.
+The pre-rewrite code also baked platform assumptions into `SNAPSHOT_ROOTS` (`src/constants.ts`), `SHARED_ABSOLUTE`/`SHARED_IN_HOME` (`src/lib/removal.ts`), `SEARCH_DIRS_IN_HOME` (`src/lib/related.ts`), `RC_FILES` (`src/lib/shellconfig.ts`), the hardcoded `tret-macos-arm64` artifact (`src/lib/updatecheck.ts`, `scripts/install.sh`), and the single build target in `package.json`. The implemented platform abstraction and capture-backend boundary now isolate those choices so the shared core can serve macOS and Linux.
 
 ## Target design
 
