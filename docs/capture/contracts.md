@@ -1,10 +1,10 @@
 # Rewrite contracts (Phase 2)
 
-This document freezes the interfaces the rest of the install-recording rewrite is written against.
-Phase 2 is **types, stubs, and tests only**: it defines the seams and proves the existing macOS
-behavior is preserved behind them. It does not implement capture, storage, or uninstall, and it does
-not change runtime behavior. The files here are consumed by later phases; the running `install`,
-`uninstall`, `list`, and `find` commands still use the pre-rewrite code paths.
+This document records the interfaces introduced in Phase 2 for the install-recording rewrite. Phase 2
+delivered **types, stubs, and tests only**: it defined the seams and verified that existing macOS
+behavior was preserved without changing runtime behavior. Later phases implemented capture, storage,
+and uninstall, and wired these contracts into the commands. See `plan.md` for overall implementation
+status and the platform capture documents for current coverage.
 
 The decisions referenced below (`D1`–`D10`) live in the Decisions log of `docs/capture/plan.md`.
 
@@ -35,12 +35,11 @@ should be one table plus one capture backend, not edits scattered across command
 | `artifacts`                       | Archive naming for the `os`/`arch` matrix, checksum manifest, hashing command                         | hardcoded `tret-macos-arm64` (D9)    |
 | `case`                            | Default filesystem case sensitivity and a per-mount probe stub                                        | implicit macOS assumption (D10)      |
 
-`MACOS_PLATFORM` reproduces the pre-rewrite macOS tables exactly, and `platformFor`/`currentPlatform`
-in `src/lib/platform/index.ts` resolve a table by OS id. The existing macOS-only modules
-(`snapshot.ts`, `related.ts`, `removal.ts`, `shellconfig.ts`) now read from `MACOS_PLATFORM`, so the
-values have exactly one definition while runtime behavior stays identical on every OS. The Linux
-table is a first-class table with XDG, systemd, desktop-entry, and package-manager surfaces; it is
-not wired into commands yet.
+`MACOS_PLATFORM` reproduces the pre-rewrite macOS table values, and `platformFor`/`currentPlatform` in
+`src/lib/platform/index.ts` resolve a table by OS id. The macOS modules (`snapshot.ts`, `related.ts`,
+`removal.ts`, `shellconfig.ts`) read from `MACOS_PLATFORM`, preserving the existing macOS behavior.
+The Linux table is a first-class table with XDG, systemd, desktop-entry, and package-manager surfaces,
+and is wired into the command paths described in the platform-support plan.
 
 **No Homebrew scope is added.** The two `/opt/homebrew` roots that already existed on macOS
 (`/opt/homebrew`, `/opt/homebrew/bin`) are preserved only to keep behavior equivalent; nothing new
@@ -117,9 +116,9 @@ are resolved by uninstall planning, never by silently transferring ownership (D4
 
 ## `Storage` (`src/lib/storage.ts`)
 
-`Storage` loads and persists v3 records plus their content-addressed before-image blobs. The real
+`Storage` loads and persists v3 records plus their content-addressed before-image blobs. The
 filesystem-backed implementation (atomic writes, restrictive permissions, size limits, v2→v3
-migration) lands in Phase 6.
+migration) landed in Phase 6.
 
 - `loadRecords()` / `saveRecord(record)` / `removeRecord(id)`.
 - `putBlob(bytes) -> BlobRef`, `getBlob(id)`, `gc(keep) -> BlobId[]` (content-addressed; GC removes

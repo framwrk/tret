@@ -33,12 +33,16 @@ jobs:
         run: bash scripts/build.sh ${{ matrix.target }}
       - name: Exercise the install script
         run: bash scripts/install.test.sh
+      # Linux targets also emit the standalone `tret-fanotify-linux-<arch>` helper
+      # that the release job publishes for direct download. The helper pattern
+      # simply matches nothing on the macOS targets, so one list covers both.
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
           path: |
             dist/tret-${{ matrix.target }}
             dist/tret-${{ matrix.target }}.tar.gz
+            dist/tret-fanotify-${{ matrix.target }}
           if-no-files-found: error
 
   release:
@@ -61,6 +65,13 @@ jobs:
           cd dist
           sha256sum tret-* > checksums.txt
           cat checksums.txt
+      # Nothing is published until the merged artifact set is proven complete:
+      # every target's assets are present, checksums.txt covers and matches all
+      # of them, and each archive carries the binaries the install script
+      # extracts. A missing helper or a stale digest fails here, before the tag
+      # has a release attached to it.
+      - name: Verify release assets and checksums
+        run: bash scripts/verify-release.sh dist
       # v0.x tags publish as pre-release; drop the flag once 1.0 ships.
       - name: Create release
         env:

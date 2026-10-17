@@ -35,7 +35,7 @@ Complete on `main`, merged with #11. Items 1 (change classification) and 4 (narr
 - Item 5: `saveRecord`/`removeRecord` serialize their read-modify-write through `records.json.lock`, reclaim a stale lock, and fail closed after a bounded wait.
 - Item 6: v3 records are validated deeply on load and before write; malformed nested data is rejected without overwriting the original records file.
 
-One boundary remains and is owned by [Platform support and adoption](02-finish-platform-and-adoption.md): Linux captures carry no before-images yet, so content and mode restoration applies to captures that know the prior state.
+The Linux capture-side before-image gap is closed by item 5 in [Platform support and adoption](02-finish-platform-and-adoption.md): with `--backup`, Linux now captures eligible pre-install contents and mode. Mutations and deletions remain non-restorable whenever an actual before-image was not stored, such as when backups are off or a file exceeds the size limit.
 
 ## Dependencies and boundaries
 
