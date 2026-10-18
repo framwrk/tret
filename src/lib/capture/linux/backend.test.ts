@@ -117,6 +117,22 @@ describe("linux capture backend", () => {
     expect(journal.partialReason).toContain("relative path");
   });
 
+  test("a resolved-root escape downgrades the journal to partial", async () => {
+    const tracer = new FakeLinuxTracer().push({ op: "mkdir", at: 1, pid: 42, path: "/h/link/out" });
+    const backend = new LinuxCaptureBackend({
+      tracerFactory: async () => tracer,
+      inspector: new FakeFsInspector().setResolution("/h/link", "/away"),
+      baseline: "none",
+      settleMs: 10,
+    });
+
+    const journal = await (await capture(backend)).stop();
+
+    expect(journal.events).toEqual([]);
+    expect(journal.completeness).toBe("partial");
+    expect(journal.partialReason).toContain("/h/link/out");
+  });
+
   test("a descendant still alive at stop means live descendants and is never complete", async () => {
     const tracer = new FakeLinuxTracer({ active: true });
     tracer.push({ op: "mkdir", at: 1, pid: 99, path: "/h/d" });

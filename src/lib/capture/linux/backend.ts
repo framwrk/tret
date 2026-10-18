@@ -101,6 +101,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
 
     const reasons = new Set<string>([...beforeStopLosses, ...tracer.losses()]);
     for (const diagnostic of traced.diagnostics) reasons.add(diagnostic);
+    for (const diagnostic of result.diagnostics) reasons.add(diagnostic);
     if (traced.unsupported.length > 0) {
       reasons.add(`unsupported syscalls may change files without journal events: ${traced.unsupported.join(", ")}`);
     }

@@ -131,12 +131,13 @@ with a `partialReason` joining every cause:
 1. no tracer loss reason (attach denied, ptrace/setuid drop, fanotify helper error/overflow);
 2. no unsupported syscall was observed;
 3. no parser diagnostic (unresolved relative path, unknown fd, unfinished syscall);
-4. no descendant outlived the window: either the tracer detached on its own before the settle
+4. no reconstruction diagnostic: a path whose parent resolves outside the observe roots is dropped and downgrades the window, because the record cannot claim to cover an object it deliberately left unrecorded;
+5. no descendant outlived the window: either the tracer detached on its own before the settle
    deadline, or every recorded pid other than the observed root was already gone. The root is the
    caller's own process — `strace -p <caller>` stays attached for as long as it runs — so its
    liveness alone does not lower coverage.
 
-A record is never labelled `complete` when any of 1–4 fails, so uninstall and `tret list` can trust
+A record is never labelled `complete` when any of 1–5 fails, so uninstall and `tret list` can trust
 the label. `heuristic` is reserved for the macOS fallback; the Linux backend never emits it.
 
 ## Before-images

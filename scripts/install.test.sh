@@ -95,6 +95,12 @@ if [ -n "$HELPER_SHA" ]; then
   [ "$INSTALLED_HELPER_SHA" = "$HELPER_SHA" ] || fail "installed helper does not match the release checksum"
 fi
 
+# The installed binary runs and reports the same version as the built artifact.
+BUILT_VERSION="$("$DIST/$BINARY" --version 2>&1)"
+INSTALLED_VERSION="$("$FAKE_HOME/.tret/bin/tret" --version 2>&1)"
+[ -n "$BUILT_VERSION" ] || fail "built artifact reported an empty version"
+[ "$INSTALLED_VERSION" = "$BUILT_VERSION" ] || fail "installed binary reported '$INSTALLED_VERSION', expected '$BUILT_VERSION'"
+
 # Second run recognizes the verified binary and skips the reinstall.
 SECOND="$(run_install)"
 case "$SECOND" in
@@ -111,6 +117,16 @@ if [ -n "$HELPER_SHA" ]; then
   [ -x "$FAKE_HOME/.tret/bin/tret" ] || fail "rerun removed the binary"
   [ -L "$FAKE_HOME/.local/bin/tret" ] || fail "rerun removed the symlink"
 fi
+
+# A stale installed binary is replaced by the install script - the same path `tret update`
+# uses - and still reports the release version afterward.
+printf 'stale binary' >"$FAKE_HOME/.tret/bin/tret"
+chmod +x "$FAKE_HOME/.tret/bin/tret"
+run_install >/dev/null
+EXPECTED_SHA="$(grep " $BINARY\$" "$RELEASE/checksums.txt" | cut -d' ' -f1)"
+UPDATED_SHA="$(HASH "$FAKE_HOME/.tret/bin/tret" | cut -d' ' -f1)"
+[ "$UPDATED_SHA" = "$EXPECTED_SHA" ] || fail "stale binary was not replaced by the release artifact"
+[ "$("$FAKE_HOME/.tret/bin/tret" --version 2>&1)" = "$BUILT_VERSION" ] || fail "updated binary reported the wrong version"
 
 # A corrupted archive must fail verification instead of being installed.
 rm "$FAKE_HOME/.tret/bin/tret"
