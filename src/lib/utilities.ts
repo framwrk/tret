@@ -1,5 +1,6 @@
 import { closeSync, openSync, readSync, writeSync } from "node:fs";
 import { IS_DEV } from "../constants";
+import { isJsonMode } from "./json-output";
 import { runLogLine } from "./runlog";
 
 /** The controlling terminal's file descriptor, opened on first use; undefined when there is none. */
@@ -25,7 +26,9 @@ export function log(message: string, devOnly = false): void {
     // pipes tret's stdout into bash, which would execute every printed line. Write to the
     // controlling terminal instead, so the piped paste form doesn't paint every line red as
     // stderr; stderr is only the fallback for runs with no terminal at all.
-    if (process.stdout.isTTY) {
+    // In JSON mode stdout carries exactly one JSON document, so human lines never go there even
+    // when it is a terminal; scripts read the document while the user still sees the terminal.
+    if (process.stdout.isTTY && !isJsonMode()) {
       console.log(message);
     } else {
       const fd = ttyOutput();
@@ -40,6 +43,10 @@ export function log(message: string, devOnly = false): void {
 
 /** Asks a yes/no question on the controlling terminal; undefined when there is no terminal to ask on. */
 export function confirm(question: string): boolean | undefined {
+  // JSON mode must never mix a prompt into the data stream; callers treat this as "no terminal"
+  // and either require --yes or fail with a structured error.
+  if (isJsonMode()) return undefined;
+
   let input: number;
   try {
     input = openSync("/dev/tty", "r");

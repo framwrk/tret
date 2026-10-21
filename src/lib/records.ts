@@ -256,6 +256,11 @@ function recordV3Issues(value: Record<string, unknown>): string[] {
   requireNonEmptyString(value.installedAt, "installedAt", issues);
   requireString(value.executable, "executable", issues); // Empty is the partial record with no executable.
   requireString(value.scriptSha256, "scriptSha256", issues); // Empty for `find` and migrated v2 records.
+  if (value.scriptArgs !== undefined) {
+    if (!Array.isArray(value.scriptArgs) || !value.scriptArgs.every((entry) => typeof entry === "string")) {
+      issues.push("scriptArgs must be an array of strings when present");
+    }
+  }
   if (value.privilege !== "user" && value.privilege !== "root") issues.push(`privilege must be "user" or "root"`);
   if (typeof value.caseSensitive !== "boolean") issues.push("caseSensitive must be a boolean");
   if (value.managedBy !== undefined) managedPackageIssues(value.managedBy, "managedBy", issues);

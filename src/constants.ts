@@ -31,6 +31,24 @@ export const INSTALLED_BINARY = ".tret/bin/tret";
  */
 export const FANOTIFY_HELPER = "tret-fanotify";
 
+// Exit codes (plan 03 item 5)
+//
+// Stable for automation and documented in the README. A command that fails for a reason scripts
+// commonly branch on uses the specific code; everything else stays 1.
+
+/** Success. */
+export const EXIT_OK = 0;
+/** A command failed for a reason with no more specific code. */
+export const EXIT_ERROR = 1;
+/** The command line itself was wrong (a missing or malformed argument). */
+export const EXIT_USAGE = 2;
+/** No tracked record matched the selector. */
+export const EXIT_NOT_FOUND = 3;
+/** Several records matched the selector; one must be chosen by id. */
+export const EXIT_AMBIGUOUS = 4;
+/** The command refused to proceed without explicit consent or force. */
+export const EXIT_BLOCKED = 5;
+
 // Runtime mode
 
 /**

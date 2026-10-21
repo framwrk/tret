@@ -1,6 +1,8 @@
 import type { AbsolutePath, CaptureCompleteness, RecordV3 } from "../types";
+import { emitJson, isJsonMode } from "../lib/json-output";
 import { FileStorage } from "../lib/store";
 import { existsSync } from "node:fs";
+import { fail } from "../lib/failure";
 import { log } from "../lib/utilities";
 
 /** Whether a record's tracked executable is still on disk, so `list` never advertises a stale path. */
@@ -85,16 +87,22 @@ export function formatList(records: RecordV3[], exists: (path: AbsolutePath) => 
   return [line(headers), ...columns.map(line)];
 }
 
-/** Prints every recorded install with its capture completeness and owned/mutated/deleted counts. */
+/**
+ * Prints every recorded install with its capture completeness and owned/mutated/deleted counts.
+ * In JSON mode the same rows are emitted as one document so scripts do not parse the table.
+ */
 export async function list(): Promise<void> {
   const storage = new FileStorage();
   let records: RecordV3[];
   try {
     records = await storage.loadRecords();
   } catch (error) {
-    log("Error");
-    log(`\tcould not read the install records: ${message(error)}`);
-    process.exit(1);
+    fail("list-records", `could not read the install records: ${message(error)}`);
+  }
+
+  if (isJsonMode()) {
+    emitJson({ ok: true, command: "list", tools: listRows(records) });
+    return;
   }
 
   if (records.length === 0) {

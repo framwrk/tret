@@ -185,6 +185,11 @@ export type RecordV3 = {
   installedAt: string;
   executable: AbsolutePath;
   scriptSha256: string;
+  /**
+   * Arguments passed to the install script after `--`, in order (plan 03 item 3). Preserved so a
+   * tracked-tool update can re-run the same installer invocation; absent when the install took none.
+   */
+  scriptArgs?: string[];
   capture: CaptureInfo;
   privilege: Privilege;
   /** Case sensitivity of the record's filesystem at install time (D10). */

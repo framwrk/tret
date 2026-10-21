@@ -189,7 +189,7 @@ describe("strace parsing: path resolution and scope", () => {
       line(1, 3, 'symlinkat("../lib/tool", AT_FDCWD</home/user/.pi/bin>, "tool") = 0'),
     ].join("\n");
     const result = parseStraceOutput(text, { cwd: "/elsewhere" });
-    expect(result.records.map((record) => record.path)).toEqual([
+    expect(result.records.map((record) => (record.op === "rename" ? record.to : record.path))).toEqual([
       "/home/user/.pi",
       "/home/user/.pi/agent",
       "/home/user/.pi/bin/tool",
