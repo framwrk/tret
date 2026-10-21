@@ -1,3 +1,4 @@
+import { EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND } from "../constants";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
@@ -207,7 +208,7 @@ describe("uninstall record lifecycle", () => {
   test("forget on an unknown tool fails without writing", async () => {
     const home = makeHome();
     writeRecords(home, [record()]);
-    expect(await runCli(["forget", "nope"], home)).toBe(1);
+    expect(await runCli(["forget", "nope"], home)).toBe(EXIT_NOT_FOUND);
     expect(readRecords(home).records).toHaveLength(1);
   });
 
@@ -685,5 +686,101 @@ describe("uninstall ownership confidence", () => {
     expect(output).toContain(`would remove ${binary}`);
     expect(output).not.toContain("only observed");
     expect(output).not.toContain("(observed, not proven)");
+  });
+});
+
+describe("uninstall JSON mode", () => {
+  test("dry-run --json prints exactly one JSON document describing the plan", async () => {
+    const home = makeHome();
+    const binary = join(home, ".local", "bin", "mytool");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(binary, "installed");
+
+    writeRecords(home, [
+      record({ executable: binary, owned: [{ path: binary, kind: "file", installedHash: sha256("installed") }] }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--dry-run", "--json"], home);
+
+    expect(result.code).toBe(0);
+    const doc = JSON.parse(result.stdout);
+    expect(doc).toMatchObject({ ok: true, command: "uninstall", dryRun: true, tool: "mytool", id: "rec-1" });
+    expect(doc.actions).toHaveLength(1);
+    expect(doc.actions[0]).toMatchObject({ action: "remove", path: binary });
+    // A dry run reports the plan without touching the filesystem or the record.
+    expect(existsSync(binary)).toBe(true);
+    expect(readRecords(home).records).toHaveLength(1);
+  });
+
+  test("--json removal prints a success document and keeps stdout free of human text", async () => {
+    const home = makeHome();
+    const binary = join(home, ".local", "bin", "mytool");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(binary, "installed");
+
+    writeRecords(home, [
+      record({ executable: binary, owned: [{ path: binary, kind: "file", installedHash: sha256("installed") }] }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
+
+    expect(result.code).toBe(0);
+    const doc = JSON.parse(result.stdout);
+    expect(doc).toMatchObject({ ok: true, command: "uninstall", tool: "mytool", id: "rec-1" });
+    expect(doc.removed).toEqual([binary]);
+    // The human success line goes to the terminal, never to stdout, so the document parses alone.
+    expect(result.stdout).not.toContain("removed mytool");
+    expect(existsSync(binary)).toBe(false);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("--json reports an incomplete removal as a structured error and keeps the record", async () => {
+    const home = makeHome();
+    const file = join(home, "tool");
+    writeFileSync(file, "changed");
+    writeRecords(home, [record({ owned: [{ path: file, kind: "file", installedHash: sha256("installed") }] })]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
+
+    expect(result.code).toBe(EXIT_ERROR);
+    const doc = JSON.parse(result.stdout);
+    expect(doc.ok).toBe(false);
+    expect(doc.error.code).toBe("uninstall-incomplete");
+    expect(readFileSync(file, "utf8")).toBe("changed");
+    expect(readRecords(home).records).toHaveLength(1);
+  });
+
+  test("--json without --yes fails with a structured consent error instead of prompting", async () => {
+    const home = makeHome();
+    const binary = join(home, ".local", "bin", "mytool");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(binary, "installed");
+
+    writeRecords(home, [
+      record({ executable: binary, owned: [{ path: binary, kind: "file", installedHash: sha256("installed") }] }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--json"], home);
+
+    expect(result.code).toBe(EXIT_BLOCKED);
+    const doc = JSON.parse(result.stdout);
+    expect(doc.ok).toBe(false);
+    expect(doc.error.code).toBe("uninstall-consent");
+    // Nothing was removed and the record is intact.
+    expect(existsSync(binary)).toBe(true);
+    expect(readRecords(home).records).toHaveLength(1);
+  });
+
+  test("--json reports an unknown tool as a structured not-found error", async () => {
+    const home = makeHome();
+    writeRecords(home, [record()]);
+
+    const result = await runCliResult(["uninstall", "nope", "--json"], home);
+
+    expect(result.code).toBe(EXIT_NOT_FOUND);
+    const doc = JSON.parse(result.stdout);
+    expect(doc.ok).toBe(false);
+    expect(doc.error.code).toBe("uninstall-not-found");
+    expect(readRecords(home).records).toHaveLength(1);
   });
 });

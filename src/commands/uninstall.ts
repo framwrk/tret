@@ -1,4 +1,5 @@
 import type { AbsolutePath, ManagedInstall, ManagedPackage, RecordV3 } from "../types";
+import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { confirm, log } from "../lib/utilities";
@@ -15,9 +16,12 @@ import {
   removeManagedPackage,
   withoutManagedGlobalPaths,
 } from "../lib/package-manager";
+import { emitJson, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
+import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import { FileStorage } from "../lib/store";
+import { fail } from "../lib/failure";
 import { runLogPhase } from "../lib/runlog";
 
 /** The shell-config work an uninstall may do, kept separate from the file plan. */
@@ -36,9 +40,7 @@ type ShellCleanup = {
  */
 export async function uninstall(name: string | undefined, dryRun: boolean, yes: boolean, force = false): Promise<void> {
   if (!name || name.startsWith("--")) {
-    log("Error");
-    log("\tuninstall requires a tool name: tret uninstall <name> [--dry-run] [--yes] [--force]");
-    process.exit(1);
+    fail("uninstall-usage", "uninstall requires a tool name: tret uninstall <name> [--dry-run] [--yes] [--force]", EXIT_USAGE);
   }
 
   const storage = new FileStorage();
@@ -46,17 +48,20 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   try {
     records = await storage.loadRecords();
   } catch (error) {
-    log("Error");
-    log(`\tcould not read the install records: ${message(error)}`);
-    process.exit(1);
+    fail("uninstall-records", `could not read the install records: ${message(error)}`);
   }
 
-  const record = records.find((existing) => existing.name === name);
-  if (!record) {
-    log("Error");
-    log(`\tno tracked install named ${name}; see tret list`);
-    process.exit(1);
+  // Every command that acts on one record resolves its argument the same way (plan 03 item 4):
+  // an exact id wins, an exact name resolves only when unique, and several name matches list the ids.
+  const selection = selectRecord(records, name);
+  if (!selection.ok) {
+    if (selection.reason === "ambiguous") {
+      for (const candidate of formatSelectionCandidates(selection)) log(`\t${candidate}`);
+      fail("uninstall-ambiguous", selection.message, EXIT_AMBIGUOUS);
+    }
+    fail("uninstall-not-found", selection.message, EXIT_NOT_FOUND);
   }
+  const record = selection.record;
 
   // A bin shim that points into a package manager's shared global state is removed through the
   // manager, not by deleting that state. The recorded `managedBy` is preferred; a record written
@@ -96,20 +101,41 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
 
   if (dryRun) {
     if (delegatedConflicts.length > 0) {
-      log("Error");
-      for (const conflict of delegatedConflicts) log(`\t${formatDelegatedRemovalConflict(conflict)}`);
-      log(`\t${name} is blocked by delegated-removal conflicts; resolve the overlapping claim and retry`);
-      process.exit(1);
+      const conflictLines = delegatedConflicts.map((conflict) => formatDelegatedRemovalConflict(conflict));
+      fail(
+        "uninstall-delegated-conflict",
+        [...conflictLines, `${name} is blocked by delegated-removal conflicts; resolve the overlapping claim and retry`].join(
+          "\n\t",
+        ),
+        EXIT_BLOCKED,
+      );
+    }
+    if (isJsonMode()) {
+      emitJson({
+        ok: true,
+        command: "uninstall",
+        dryRun: true,
+        tool: name,
+        id: record.id,
+        actions: plan.actions,
+        requiresSudo: plan.requiresSudo,
+        managedPackage: target.managedBy ?? null,
+        managedInstall: managedInstall ?? null,
+        shell: { dirs: shell.dirs, files: shell.files },
+      });
+      return;
     }
     printDryRun(name, plan, shell, target.managedBy, managedInstall);
     return;
   }
 
   if (delegatedConflicts.length > 0) {
-    log("Error");
-    for (const conflict of delegatedConflicts) log(`\t${formatDelegatedRemovalConflict(conflict)}`);
-    log(`\t${name} is unchanged; resolve the overlapping claim and retry`);
-    process.exit(1);
+    const conflictLines = delegatedConflicts.map((conflict) => formatDelegatedRemovalConflict(conflict));
+    fail(
+      "uninstall-delegated-conflict",
+      [...conflictLines, `${name} is unchanged; resolve the overlapping claim and retry`].join("\n\t"),
+      EXIT_BLOCKED,
+    );
   }
 
   const hasFileWork = plan.actions.length > 0;
@@ -119,6 +145,10 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
 
   if (!hasFileWork && !hasShellWork && !hasPackageWork && !hasManagedInstallWork) {
     await storage.removeRecord(record.id);
+    if (isJsonMode()) {
+      emitJson({ ok: true, command: "uninstall", tool: name, id: record.id, removed: [], nothingToRemove: true });
+      return;
+    }
     log(`removed the ${name} record; it had no tracked files`);
     return;
   }
@@ -136,11 +166,16 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   printUnresolvedShell(name, shell.dirs, shell.files, true);
 
   if (!yes) {
-    const answer = confirm("proceed? [y/N]");
+    // JSON mode never prompts; a script that needs the removal to happen must pass --yes.
+    const answer = isJsonMode() ? undefined : confirm("proceed? [y/N]");
     if (answer === undefined) {
-      log("Error");
-      log("\tthere is no terminal to confirm on; pass --yes to uninstall without a prompt");
-      process.exit(1);
+      fail(
+        "uninstall-consent",
+        isJsonMode()
+          ? "pass --yes to uninstall without a prompt in JSON mode"
+          : "there is no terminal to confirm on; pass --yes to uninstall without a prompt",
+        EXIT_BLOCKED,
+      );
     }
     if (!answer) {
       log(`aborted; ${name} is unchanged`);
@@ -155,10 +190,10 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     const removal = await removeManagedPackage(target.managedBy, { home: Bun.env.HOME });
     const label = describeManagedPackage(target.managedBy);
     if (!removal.ok) {
-      log(`\tcould not remove package ${label}: ${removal.detail}`);
-      log("Error");
-      log(`\t${name} is unchanged; run tret uninstall again to retry`);
-      process.exit(1);
+      fail(
+        "uninstall-package",
+        `could not remove package ${label}: ${removal.detail}; ${name} is unchanged; run tret uninstall again to retry`,
+      );
     }
     log(`\tpackage ${label}: ${removal.detail}`);
   }
@@ -170,10 +205,10 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     const removal = await removeManagedInstall(managedInstall);
     const label = describeManagedInstall(managedInstall);
     if (!removal.ok) {
-      log(`\tcould not remove managed install ${label}: ${removal.detail}`);
-      log("Error");
-      log(`\t${name} is unchanged; run tret uninstall again to retry`);
-      process.exit(1);
+      fail(
+        "uninstall-managed-install",
+        `could not remove managed install ${label}: ${removal.detail}; ${name} is unchanged; run tret uninstall again to retry`,
+      );
     }
     log(`\tmanaged install ${label}: ${removal.detail}`);
   }
@@ -217,15 +252,44 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   if (incomplete) {
     const reduced = reduceRecordForRetry(target, result, cleanedShell);
     await persistRetry(storage, reduced);
+    if (isJsonMode()) {
+      emitJson({
+        ok: false,
+        command: "uninstall",
+        tool: name,
+        id: record.id,
+        error: {
+          code: "uninstall-incomplete",
+          message: "some paths were not removed and stay tracked; run tret uninstall again to retry",
+        },
+        requiresSudo: plan.requiresSudo,
+        outcomes: result.outcomes,
+        failedShell: rc.failed,
+      });
+      process.exit(EXIT_ERROR);
+    }
     if (plan.requiresSudo) {
       log("\tsome entries are root-owned; re-run with sudo to remove them");
     }
-    log("Error");
-    log("\tsome paths were not removed and stay tracked; run tret uninstall again to retry");
-    process.exit(1);
+    fail("uninstall-incomplete", "some paths were not removed and stay tracked; run tret uninstall again to retry");
   }
 
   await storage.removeRecord(record.id);
+  if (isJsonMode()) {
+    const removed = result.outcomes.filter((outcome) => outcome.outcome === "removed").map((outcome) => outcome.path);
+    const restored = result.outcomes.filter((outcome) => outcome.outcome === "restored").map((outcome) => outcome.path);
+    emitJson({
+      ok: true,
+      command: "uninstall",
+      tool: name,
+      id: record.id,
+      removed,
+      restored,
+      cleanedShell: rc.cleaned.map((cleaned) => cleaned.file),
+      outcomes: result.outcomes,
+    });
+    return;
+  }
   log(`removed ${name}`);
 }
 

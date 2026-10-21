@@ -2,9 +2,11 @@ import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, Di
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
 import type { BoundedSessionResult, SessionCoverage } from "../lib/session";
 import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
+import { EXIT_BLOCKED, EXIT_USAGE } from "../constants";
 import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { caseSensitiveForPaths, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
+import { confirm, extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
 import {
   describeManagedInstall,
   detectManagedInstall,
@@ -18,7 +20,7 @@ import {
   removeManagedPackage,
   withoutManagedGlobalPaths,
 } from "../lib/package-manager";
-import { extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
+import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatCoverage, runBoundedSession } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
@@ -28,6 +30,7 @@ import type { ObservationRootsOptions } from "../lib/platform";
 import type { Platform } from "../lib/platform";
 import { captureBackendFor } from "../lib/capture/current";
 import { diff } from "../lib/diff";
+import { fail } from "../lib/failure";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
@@ -57,6 +60,21 @@ export type InstallOptions = {
   backups?: BackupPolicy;
   /** Clock; injectable so a test can pin `installedAt` and the window timestamps. */
   now?: () => number;
+  /** Display name supplied with `--name`; defaults to the installed executable's basename. */
+  name?: string;
+  /** Stable id of a record this install replaces; a tracked-tool update targets one record exactly. */
+  replaceId?: string;
+  /** Pre-fetched installer text and its sha256; a tracked-tool update validates before running. */
+  script?: { text: string; sha256: string };
+  /** Skip the interactive confirmation; a tracked-tool update asks before calling install. */
+  skipConsent?: boolean;
+  /** Run the installer without the interactive confirmation prompt. */
+  yes?: boolean;
+  /**
+   * Command name reported in JSON output; defaults to "install". A tracked-tool update passes
+   * "update" so scripts can tell the two apart without inspecting the record's identity.
+   */
+  commandName?: string;
 };
 
 /**
@@ -90,6 +108,32 @@ export function parseObserveFlags(
   return { scope: { include, exclude }, rest };
 }
 
+/**
+ * Pulls the Tret-only `--name <value>` flag out of the pre-`--` arguments. The value is the record's
+ * display name; the remaining arguments are still joined into the URL string for `extractUrl`.
+ * Returns the misuse message instead of throwing, matching `parseObserveFlags`.
+ */
+export function extractNameFlag(
+  args: string[],
+): { name: string | undefined; rest: string[] } | { error: string } {
+  const rest: string[] = [];
+  let name: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg !== "--name") {
+      rest.push(arg);
+      continue;
+    }
+    const value = args[index + 1];
+    if (value === undefined || value.startsWith("--") || value.trim().length === 0) {
+      return { error: "--name requires a display name" };
+    }
+    name = value;
+    index++;
+  }
+  return { name, rest };
+}
+
 export async function install(
   url?: string,
   force = false,
@@ -100,57 +144,71 @@ export async function install(
   const backups = options.backups ?? DEFAULT_BACKUP_POLICY;
 
   if (!url) {
+    if (isJsonMode()) fail("install-usage", "install requires a URL in JSON mode", EXIT_USAGE);
     log("Paste the install command (curl ... | bash):");
     url = await readLine();
   }
 
   // The paste is a shell command like `curl -fsSL https://... | bash`, not a bare URL.
   const pasted = extractUrl(url);
-  if (!pasted) {
-    log("Error");
-    log(`\tno URL found in: ${url}`);
-    process.exit(1);
-  }
+  if (!pasted) fail("install-url", `no URL found in: ${url}`, EXIT_USAGE);
   url = pasted;
 
   const urlError = validateUrl(url);
-  if (urlError) {
-    log("Error");
-    log(`\t${urlError}`);
-    process.exit(1);
-  }
+  if (urlError) fail("install-url", urlError, EXIT_USAGE);
 
   const storage = new FileStorage({ backups });
   let records: RecordV3[];
   try {
     records = await storage.loadRecords();
   } catch (error) {
-    log("Error");
-    log(`\tcould not read the install records: ${message(error)}`);
-    process.exit(1);
+    fail("install-records", `could not read the install records: ${message(error)}`);
   }
 
-  const existing = records.find((record) => record.url === url);
+  // A tracked-tool update targets the record it already resolved; a plain install matches by URL.
+  const existing =
+    options.replaceId === undefined
+      ? records.find((record) => record.url === url)
+      : records.find((record) => record.id === options.replaceId);
   if (existing && !force) {
-    log("Error");
-    log(
-      `\t${existing.name} is already installed (from ${existing.installedAt.slice(0, 10)}); use tret install <URL> --force to reinstall`,
+    fail(
+      "install-exists",
+      `${existing.name} is already installed (from ${existing.installedAt.slice(0, 10)}); use tret install <URL> --force to reinstall`,
     );
-    process.exit(1);
   }
 
-  // Fetch and validate the replacement before a forced reinstall removes the current install.
+  // Fetch and validate the replacement before a forced reinstall removes the current install. A
+  // tracked-tool update hands in the script it already fetched and validated, so it is not fetched twice.
   runLogPhase("fetch-script");
-  const script = await fetchScript(url);
-  if (script === undefined) {
-    log("Error");
-    log(`\tURL does not return a raw script file: ${url}`);
-    process.exit(1);
-  }
-
-  const scriptSha256 = new Bun.CryptoHasher("sha256").update(script).digest("hex");
+  const fetched = options.script === undefined ? await fetchScript(url) : options.script;
+  if (fetched === undefined) fail("install-fetch", `URL does not return a raw script file: ${url}`);
+  const script = typeof fetched === "string" ? fetched : fetched.text;
+  const scriptSha256 =
+    typeof fetched === "string" ? new Bun.CryptoHasher("sha256").update(script).digest("hex") : fetched.sha256;
   if (existing?.scriptSha256 && existing.scriptSha256 !== scriptSha256) {
     log(`the script at ${url} changed since ${existing.name} was last installed`);
+  }
+
+  // Show the source and its identity before anything runs (plan 03 item 6). The preview is bounded,
+  // so a long installer cannot flood the terminal; the full text stays in the run log.
+  log(`installer script: ${url}`);
+  log(`\tsha256 ${scriptSha256}`);
+  for (const line of installerPreview(script)) log(line);
+  log(
+    "\tTret observes and records what this installer changes so you can remove it later; it does not sandbox the installer or prevent malware.",
+  );
+
+  // Ask before running when a person is watching and has not already said yes (plan 03 item 6).
+  // JSON mode and non-interactive runs skip the prompt and run, matching the previous behavior.
+  if (!options.skipConsent && !options.yes && !isJsonMode() && process.stdin.isTTY) {
+    const answer = confirm("run this installer? [y/N]");
+    if (answer === undefined) {
+      fail("install-consent", "could not read a confirmation; pass --yes to run the installer", EXIT_BLOCKED);
+    }
+    if (!answer) {
+      log("aborted; nothing was installed");
+      return;
+    }
   }
 
   // A --force reinstall is an uninstall then install: the old tool and its record go first through
@@ -183,13 +241,11 @@ export async function install(
   // The tool name comes from the executable the install actually put on disk, not the URL or a
   // prompt; when the URL is already tracked, keep the name that install used rather than re-deriving.
   const executable = pickExecutable(effects.owned.map((entry) => entry.path));
-  const name = existing?.name ?? executable?.split("/").pop();
+  const name = options.name ?? existing?.name ?? executable?.split("/").pop();
   const missingExecutable = executable === undefined;
   const canRecordWithoutExecutable = existing !== undefined && force;
   if (!name || (missingExecutable && !canRecordWithoutExecutable)) {
-    log("Error");
-    log(`\tinstall script added no executable command: ${url}`);
-    process.exit(1);
+    fail("install-executable", `install script added no executable command: ${url}`);
   }
 
   const failureReason = missingExecutable ? "installer added no executable command" : undefined;
@@ -221,7 +277,9 @@ export async function install(
   await storeBeforeImages(effects, window.journal, storage, backups);
 
   const record: RecordV3 = {
-    id: randomUUID(),
+    // A tracked-tool update keeps the record's stable id, so a selector a script already holds
+    // still resolves after the update; a fresh install gets a new id.
+    id: options.replaceId ?? randomUUID(),
     name,
     source: "install",
     url,
@@ -230,6 +288,7 @@ export async function install(
     // `list` shows it as partial and `uninstall <name>` can still remove its captured effects.
     executable: executable ?? "",
     scriptSha256,
+    ...(scriptArgs.length === 0 ? {} : { scriptArgs }),
     capture: buildCapture(window, failed, clock, failureReason),
     privilege: processPrivilege(),
     caseSensitive,
@@ -248,6 +307,7 @@ export async function install(
     if (window.exitCode !== 0) log(`\tinstall script exited with code ${window.exitCode}: ${url}`);
     if (missingExecutable) log(`\tinstall script added no executable command: ${url}`);
     log(`\tkept a partial record for ${name}; inspect it with tret list, remove it with tret uninstall ${name}`);
+    emitJsonError("install-partial", failureReason ?? `install script exited with code ${window.exitCode}`);
     process.exit(1);
   }
 
@@ -259,6 +319,32 @@ export async function install(
     log(`\tglobal package ${describeManagedPackage(managedBy)} will be removed through ${managedBy.manager}`);
   if (managedInstall !== undefined)
     log(`\tmanaged install ${describeManagedInstall(managedInstall)} will be removed recursively first`);
+
+  // The structured result a script reads; the human lines above went to the terminal (plan 03 item 5).
+  emitJson({
+    ok: true,
+    command: options.commandName ?? "install",
+    tool: name,
+    id: record.id,
+    url,
+    executable: record.executable,
+    installedAt: record.installedAt,
+    owned: effects.owned.length,
+    mutated: effects.mutated.length,
+    deleted: effects.deleted.length,
+    capture: { backend: record.capture.backend, completeness: record.capture.completeness },
+  });
+}
+
+/**
+ * Lines previewing the fetched installer so the user can see what will run (plan 03 item 6). The
+ * preview is bounded: a long script shows its head plus a count of the lines left out.
+ */
+export function installerPreview(script: string, maxLines = 20): string[] {
+  const lines = script.split("\n");
+  const shown = lines.slice(0, maxLines).map((line) => `\t${line}`);
+  if (lines.length > maxLines) shown.push(`\t... ${lines.length - maxLines} more lines`);
+  return shown;
 }
 
 /** What one install window produced: the exit code, its capture, and a fallback diff when no journal exists. */

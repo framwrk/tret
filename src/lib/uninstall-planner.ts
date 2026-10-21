@@ -178,7 +178,7 @@ function depth(path: AbsolutePath): number {
 }
 
 /** Every path any record other than `selfId` claims, prepared for case-correct overlap checks (D10). */
-type OtherClaims = {
+export type OtherClaims = {
   /** Raw paths, matched exactly whatever the case behavior. */
   exact: Set<AbsolutePath>;
   /** Case-folded paths claimed by records whose filesystem was case-insensitive. */
@@ -187,7 +187,7 @@ type OtherClaims = {
   foldedAll: Set<string>;
 };
 
-function claimedByOthers(records: RecordV3[], selfId: string): OtherClaims {
+export function claimedByOthers(records: RecordV3[], selfId: string): OtherClaims {
   const claims: OtherClaims = { exact: new Set(), foldedInsensitive: new Set(), foldedAll: new Set() };
   for (const record of records) {
     if (record.id === selfId) continue;
@@ -211,7 +211,7 @@ function* claimedPaths(record: RecordV3): Generator<AbsolutePath> {
  * side recorded a case-insensitive filesystem (D10): on such a mount two spellings name one file,
  * so treating them as distinct claims would let an uninstall delete a path another record owns.
  */
-function sharedClaim(claims: OtherClaims, path: AbsolutePath, caseSensitive: boolean): boolean {
+export function sharedClaim(claims: OtherClaims, path: AbsolutePath, caseSensitive: boolean): boolean {
   if (claims.exact.has(path)) return true;
   const folded = path.toLowerCase();
   if (claims.foldedInsensitive.has(folded)) return true;

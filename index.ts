@@ -1,56 +1,63 @@
-import { IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
-import { install, parseObserveFlags } from "./src/commands/install";
+import { EXIT_USAGE, IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
+import { extractNameFlag, install, parseObserveFlags } from "./src/commands/install";
 import { openRunLog, watchRunLog } from "./src/lib/runlog";
 import { DEFAULT_BACKUP_POLICY } from "./src/lib/store";
 import { checkForUpdate } from "./src/lib/updatecheck";
+import { enableJsonMode } from "./src/lib/json-output";
+import { fail } from "./src/lib/failure";
 import { find } from "./src/commands/find";
 import { forget } from "./src/commands/forget";
+import { inspect } from "./src/commands/inspect";
 import { list } from "./src/commands/list";
 import { log } from "./src/lib/utilities";
+import { trace } from "./src/commands/trace";
 import { uninstall } from "./src/commands/uninstall";
 import { update } from "./src/commands/update";
 
-const args = process.argv.slice(2).filter((arg) => arg !== "--time");
+// Everything after `--` belongs to the install script, never to Tret's own flags. `--time` is a
+// dev-only flag: timing a compiled binary is meaningless, so built runs ignore it.
+const argv = process.argv.slice(2);
+const separator = argv.indexOf("--");
+const ownArgs = (separator === -1 ? argv : argv.slice(0, separator)).filter((arg) => arg !== "--time");
+const scriptArgs = separator === -1 ? [] : argv.slice(separator + 1);
 
-const command = args[0];
+const command = ownArgs[0];
 
-// --time is a dev-only flag: timing a compiled binary is meaningless here, so built runs ignore it.
+// JSON mode is decided before anything prints, so a human line can never reach stdout in a `--json` run.
+if (ownArgs.includes("--json")) enableJsonMode();
+
 const timed = IS_DEV && process.argv.includes("--time");
 
 const start = Date.now();
 
 // `--version` prints the release tag injected at build time and stops there — no update check,
 // so a compiled run answers instantly even when offline.
-if (args.includes("--version")) {
+if (ownArgs.includes("--version")) {
   log(`${VERSION}`);
   process.exit(0);
 }
 
 // Each run writes its own log under ~/.tret/logs; a failure or crash points the user at that file.
-openRunLog(args);
+openRunLog(ownArgs);
 watchRunLog();
 
 switch (command) {
   case "add":
   case "install": {
-    // Everything after `--` goes to the installer script itself (`tret install <URL> -- --skip-browser`).
-    // The rest of the pre-`--` line, joined: a paste like `tret install curl -fsSL https://... | bash`
-    // reaches tret as separate arguments once the shell has taken the pipe.
-    const separator = args.indexOf("--");
-    const own = separator === -1 ? args : args.slice(0, separator);
-    const scriptArgs = separator === -1 ? [] : args.slice(separator + 1);
-    const observed = parseObserveFlags(own.slice(1));
-    if ("error" in observed) {
-      log("Error");
-      log(`\t${observed.error}`);
-      process.exit(1);
-    }
-    await install(observed.rest.join(" "), own.includes("--force"), scriptArgs, {
-      capture: !own.includes("--no-capture"),
+    // The pre-`--` line, joined, is the URL or a pasted `curl ... | bash` command. Tret-only flags
+    // are removed first so a flag value can never end up inside the URL text.
+    const observed = parseObserveFlags(ownArgs.slice(1));
+    if ("error" in observed) fail("install-usage", observed.error, EXIT_USAGE);
+    const named = extractNameFlag(observed.rest);
+    if ("error" in named) fail("install-usage", named.error, EXIT_USAGE);
+    await install(named.rest.join(" "), ownArgs.includes("--force"), scriptArgs, {
+      capture: !ownArgs.includes("--no-capture"),
       // D2: backups are off unless the user opts in; a captured before-image makes restore reachable.
-      backups: own.includes("--backup") ? { ...DEFAULT_BACKUP_POLICY, enabled: true } : undefined,
+      backups: ownArgs.includes("--backup") ? { ...DEFAULT_BACKUP_POLICY, enabled: true } : undefined,
       // D3: --observe/--observe-exclude scope this one install; an empty scope keeps the defaults.
       observe: observed.scope.include.length > 0 || observed.scope.exclude.length > 0 ? observed.scope : undefined,
+      yes: ownArgs.includes("--yes"),
+      ...(named.name === undefined ? {} : { name: named.name }),
     });
     break;
   }
@@ -58,7 +65,7 @@ switch (command) {
   case "unadd":
   case "remove":
   case "uninstall":
-    await uninstall(args[1], args.includes("--dry-run"), args.includes("--yes"), args.includes("--force"));
+    await uninstall(ownArgs[1], ownArgs.includes("--dry-run"), ownArgs.includes("--yes"), ownArgs.includes("--force"));
     break;
 
   case "show":
@@ -67,15 +74,25 @@ switch (command) {
     break;
 
   case "find":
-    await find(args[1]);
+    await find(ownArgs[1]);
     break;
 
   case "forget":
-    await forget(args[1]);
+    await forget(ownArgs[1]);
+    break;
+
+  case "inspect":
+    await inspect(ownArgs[1]);
+    break;
+
+  case "trace":
+    await trace(ownArgs[1], ownArgs.includes("--yes"));
     break;
 
   case "update":
-    await update();
+    // `tret update <tool>` updates one tracked tool by re-running its recorded installer; a bare
+    // `tret update` updates Tret itself, so the argument selects which workflow runs.
+    await update(ownArgs[1], ownArgs.includes("--yes"));
     break;
 
   case "help":
@@ -103,7 +120,7 @@ if (timed) {
 
 function help(): void {
   log(`Usage`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} [--version] <command> [arguments]`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} [--version] [--json] <command> [arguments]`);
   log("");
   log(`${SCRIPT_NAME} wraps installers and remembers what they added, so you can cleanly remove them later.`);
   log("");
@@ -119,13 +136,18 @@ function help(): void {
     `\tuninstall <tool>  Remove a tool by deleting what its install added, stripping its PATH lines, and dropping the record (aliases: remove, unadd)`,
   );
   log(`\tlist              Show the tools Tret is tracking (alias: show)`);
+  log(`\tinspect <tool>    Show what Tret recorded for a tool without changing anything: capture confidence, owned paths, changed files, and what uninstall would do`);
   log(`\tfind <tool>       Find the files and folders an already-installed command owns and record them for uninstall`);
+  log(`\ttrace <tool>      Run a tracked tool in a bounded observation window and append what it writes to the record (asks first)`);
   log(`\tforget <tool>     Stop tracking a tool without touching its files (escape hatch for detect-only leftovers)`);
-  log(`\tupdate            Update Tret to the latest release (skips the download when already up to date)`);
+  log(`\tupdate [tool]     Update Tret to the latest release; with a tool name, re-run that tool's recorded installer`);
+  log("");
+  log(`A <tool> argument is a display name or a record id; a name shared by several records fails and lists the ids.`);
   log("");
   log(`Options`);
   log(`\t-h, --help    Show this help and exit`);
   log(`\t--version     Print the running version and exit`);
+  log(`\t--json        Emit one JSON document on stdout instead of human text (list, inspect, trace, forget, uninstall, update)`);
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
   log(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
   log(`\t              unverified paths and state changes after planning still block removal`);
@@ -136,19 +158,33 @@ function help(): void {
   );
   log(`\t--observe <path>          install: also observe this absolute path in the install's capture window (repeatable)`);
   log(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);
+  log(`\t--name <name> install: record the tool under this display name instead of the installed command's basename`);
   log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
-  log(`\t--yes         uninstall: skip the confirmation prompt`);
+  log(`\t--yes         install: skip the installer confirmation prompt`);
+  log(`\t              uninstall, trace, update <tool>: skip the confirmation prompt`);
   log(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);
   log(`\t              a record with nothing actionable left is dropped, or remove it with tret forget <tool>`);
   log(`\t--            install: every flag after this goes to the install script itself`);
   log("");
+  log(`Exit codes (for automation; stable)`);
+  log(`\t0  the command succeeded`);
+  log(`\t1  the command failed`);
+  log(`\t2  the command line was wrong`);
+  log(`\t3  no tracked install matched the selector`);
+  log(`\t4  several tracked installs matched; select one by record id`);
+  log(`\t5  the command refused to proceed without explicit consent or force`);
+  log("");
   log(`Examples`);
   log(`\t${SCRIPT_NAME.toLowerCase()} install curl -fsSL https://example.com/install.sh | bash`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh -- --skip-browser`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --name opencode -- --skip-browser`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode --json`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} trace opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --dry-run`);
   log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --yes`);
   log(`\t${SCRIPT_NAME.toLowerCase()} find opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} forget opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} list`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} update opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} update`);
 }
