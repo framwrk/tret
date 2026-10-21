@@ -122,7 +122,7 @@ tret install curl -fsSL https://example.com/install.sh | bash
 
 ### Capture coverage and limits
 
-Capture records only changes under the platform's bounded observation roots (`$HOME` plus its tool directories; add or drop roots with `--observe`/`--observe-exclude`). Tret does not run the installed tool to discover lazy writes.
+Capture records only changes under the platform's bounded observation roots (`$HOME` plus its tool directories; add or drop roots with `--observe`/`--observe-exclude`). Tret never runs a tracked tool on its own; `tret trace <tool>` runs one when you ask it to.
 
 | Platform | Install capture                                                                                                                                                                                                                | Before-images                                                                                                                             |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -133,7 +133,7 @@ A Linux window is `complete` only when the traced process tree was fully observe
 
 Known gaps:
 
-- There is no `tret trace` command yet; writes a tool makes after its install window are not recorded automatically.
+- Install capture ends with the window. Writes a tool makes on later runs are recorded only when you run it through `tret trace <tool>`, which appends a separate segment; `tret inspect` shows what each segment covers.
 - Writes after the observation window closes are not recorded; a daemonized descendant still alive at close makes a Linux window `partial`.
 - Some Linux syscalls cannot be represented in a record, including memory-mapped writes, kernel-side copies, ownership and extended-attribute changes, and hard links. These lower the window to `partial`.
 - macOS change detection is stamp-based, so a content edit that leaves size, mtime, and inode unchanged is missed.
@@ -141,7 +141,7 @@ Known gaps:
 
 ### Trust boundary
 
-Tret downloads the install script at the URL you provide and runs it with your user privileges. Capture is forensic recording, not containment: it does not sandbox the installer, block writes, or scan for malware. Treat the script as executable code you are choosing to run, use HTTPS sources you trust, and review the script when it matters. Tret never escalates to `sudo` on your behalf; run it as root only when you intend the install to be privileged.
+Tret downloads the install script at the URL you provide and runs it with your user privileges; `tret trace` likewise runs the real tool. Treat both as executable code you are choosing to run: use HTTPS sources you trust and review the script when it matters. Tret never escalates to `sudo` on your behalf; run it as root only when you intend the install to be privileged. Capture records what a run changed so you can undo it; it is not containment.
 
 ### Uninstall a tool
 
@@ -155,7 +155,7 @@ tret list
 
 `tret find` has no install journal, so it records a `heuristic` adoption and fingerprints the command plus every node under matching tool folders. Uninstall removes only files whose fingerprints still match, removes the folders they empty, and reports changed or unrelated survivors as conflicts.
 
-Each row shows the tool's name, URL, install date, a `State` column (`installed` when the tracked executable is still on disk, `partial` when it is gone), the executable path, the script's hash, how many files the install owns, and the capture completeness (see below). A `partial` row shows `-` for the binary rather than a stale path.
+Each row shows the tool's name, URL, install date, a `State` column (`installed` when the tracked executable is still on disk, `partial` when it is gone), the executable path, the script's hash, how many files the install owns, and the capture completeness (see [Capture coverage and limits](#capture-coverage-and-limits)). A `partial` row shows `-` for the binary rather than a stale path.
 
 ### Inspect a tool
 
