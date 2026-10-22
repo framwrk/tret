@@ -83,8 +83,8 @@ fields:
 
 - `id`, `name`, `source: "install" | "find"`, `url`, `installedAt`, `executable`, `scriptSha256`.
 - `capture: { backend, completeness: "complete" | "partial" | "heuristic", segments }`; `segments`
-  reserves bounded observation windows so a later explicit `tret trace` can append without a format
-  migration (D5).
+  holds one entry per bounded observation window, so `tret trace` appends its own segment to the
+  record without a format migration (D5).
 - `privilege: "user" | "root"` (D8) and `caseSensitive: boolean` (D10).
 - `owned` (`OwnedEntry`: `kind`, optional symlink `linkTarget`, optional `installedHash`),
   `mutated` (`MutatedEntry`: before/after hashes, optional `beforeBlob`), and `deleted`

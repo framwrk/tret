@@ -8,7 +8,7 @@ Do this on a platform-neutral core so the same tool runs on macOS (arm64 and x64
 
 This file is a design and implementation plan; it does not change the current install or uninstall behavior by itself.
 
-**Implementation status:** Phases 1–8 are complete. Phase 9 (distribution, commands, docs, and rollout) is in progress; its release-distribution blocker — standalone Linux fanotify helper files the release job published but the build job never uploaded — is now fixed, and the release workflow verifies every published asset and checksum before publishing.
+**Implementation status:** Phases 1–9 are complete. The rewrite ships with the `os`/`arch` artifact matrix, an install script and self-update check that resolve the running platform's asset and verify its SHA-256, a release job that verifies every published asset and checksum before publishing, and an opt-in `tret trace` command; the release path was observed end to end in `v0.3.3` (2026-10-17).
 
 ## Pre-rewrite behavior and motivation
 
@@ -171,7 +171,7 @@ The rewrite is ready to replace the current mechanism when:
 - Should backups default off with explicit opt-in, or on for small files with consent and a strict quota?
 - Should fallback scope be curated fixed paths, user-configurable roots, or both?
 - How should ownership conflicts be resolved in commands and data: shared references, conflict requiring user action, or explicit transfer?
-- Should `tret trace` be part of the first rewrite or deferred until install-time capture is reliable?
+- Should `tret trace` be part of the first rewrite or deferred until install-time capture is reliable? (answered in D5: deferred at first, then shipped as an opt-in `tret trace` command once install-time capture was trustworthy)
 - What is the policy for a script that exits non-zero after making changes: save a partial record, prompt to keep/undo it, or both?
 - Which platform's backend is implemented first for reference: Linux (easier, unprivileged) or macOS (the primary current target)?
 - Does Tret support privileged/`sudo` installs, or refuse them and require user-writable targets on every platform?
@@ -269,10 +269,11 @@ Each entry resolves or explicitly defers one item from "Open decisions". Status 
 
 ### D5. `tret trace` scope
 
-- **Decision:** Defer `tret trace` past the first rewrite (phase 8, after install-time capture is trustworthy). **Chosen default until then:** no `trace` command; only the bounded install window is observed, its start/end is reported, and the record reserves per-segment captures so tracing can be added without a format migration. Remove the implicit `--help` first-run dependency now.
-- **Rationale:** install-time capture reliability is the plan's priority; shipping a trace surface before capture is trustworthy multiplies blind spots. The reserve-in-record choice avoids a later migration.
-- **Status:** deferred (default: not in the first rewrite; implemented in phase 8)
+- **Decision:** `tret trace` was originally deferred past the first rewrite (phase 8, after install-time capture is trustworthy). **Chosen default until then:** no `trace` command; only the bounded install window is observed, its start/end is reported, and the record reserves per-segment captures so tracing can be added without a format migration. Remove the implicit `--help` first-run dependency now. That deferral is now resolved: the command shipped once install-time capture was trustworthy, and the reserved per-segment capture is what let it be added without a record-format migration.
+- **Rationale:** install-time capture reliability is the plan's priority; shipping a trace surface before capture is trustworthy multiplies blind spots. The reserve-in-record choice avoids a later migration, and that same reservation is what the shipped trace command attaches to.
+- **Status:** decided
 - **Date:** 2026-10-09
+- **Revision (2026-10-21):** `tret trace <tool>` shipped in PR #17 (merge commit `5aa9ac4`; `src/commands/trace.ts`). The command is opt-in and explicit: it resolves exactly one record by id or by unique name, asks the user for confirmation before running the tool (`--yes` skips the prompt), and never runs a tool silently. The tool runs inside a bounded observation window through the same platform backend as install (`captureBackendFor` over the platform's install observation roots); a backend that cannot attach fails before the tool starts, so the tool is never run unwatched. The window's journal is normalized and merged into the existing record, which gains a `{ kind: "trace" }` capture segment — no record-format migration — while paths the record already tracks are left as they are and paths another record claims are skipped and reported instead of being taken over. The command reports the window and its coverage, including unsupported operations and incomplete process-tree coverage.
 
 ### D6. Non-zero installer exit policy
 
@@ -364,12 +365,14 @@ Phases follow the Implementation sequence. Each phase lists deliverables, exit c
 
 ### Phase 8 — Lazy-write workflow (complete)
 
-- **Deliverables:** removal of the automatic `--help` dependency; documented bounded install session; deferred `tret trace` design and record segment reservation.
+- **Deliverables:** removal of the automatic `--help` dependency; documented bounded install session; deferred `tret trace` design and record segment reservation (the command later shipped on that reservation; see D5).
 - **Exit criteria:** no silent execution of installed tools; the observation window and process-tree coverage are shown to the user.
 - **Dependencies:** Phase 5; D5.
 
-### Phase 9 — Distribution, commands, docs, and rollout (in progress)
+### Phase 9 — Distribution, commands, docs, and rollout (complete)
 
 - **Deliverables:** `os`/`arch` artifact matrix built and published by CI; `scripts/install.sh` and the self-update check select the running platform's archive and verify checksums; `install`, `uninstall`, `list`, and `find` updated as required; documentation for capture completeness, privacy/backup defaults, unsupported cases, migration, and recovery; legacy path retained until parity.
 - **Exit criteria:** acceptance criteria 1–7 met; README usage and safety claims match shipped behavior; the shared core builds and passes against both platform tables and adding a platform stays confined to a backend module plus a platform table.
 - **Dependencies:** all prior phases; D9.
+
+**Phase 9 outcome:** The `os`/`arch` artifact matrix (`tret-{darwin,linux}-{arm64,x64}` plus `checksums.txt`) is built by the CI matrix and published by the release job. `scripts/install.sh` resolves the running platform's archive from `uname -s`/`uname -m` and verifies its SHA-256 against `checksums.txt` (`shasum -a 256` on macOS, `sha256sum` on Linux), and the self-update check resolves the same platform artifact and compares the installed binary's SHA-256 with its published checksum entry. The release job runs `scripts/verify-release.sh dist` and refuses to publish a missing or mismatched asset. The Linux release also ships the standalone `tret-fanotify-linux-<arch>` helper asset. The legacy global snapshot/diff path is deliberately **retained** as a fallback and is not the primary mechanism: it is used only when capture is disabled with `--no-capture` or when no backend can attach a window (see the `fallback` field and the `snapshot`/`diff` imports in `src/commands/install.ts`), and its hash-less entries are treated by uninstall as unverified. The release path was observed end to end in release `v0.3.3` (2026-10-17), which published the four target binaries, the four archives, `checksums.txt`, and the two `tret-fanotify-linux-<arch>` helper assets.
