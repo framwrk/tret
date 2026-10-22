@@ -1,6 +1,6 @@
 # Plan: Finish platform support and adoption
 
-**Status:** Complete — items 1–8 are implemented. Item 3's release upload and pre-publish asset/checksum check landed on `fix/release-helper-assets`; a real tag run is still unobserved.
+**Status:** Complete — items 1–8 are implemented. Item 3's release upload and pre-publish asset/checksum check landed on `fix/release-helper-assets` and was observed on a real tag run in `v0.3.3`, which published the standalone helper assets `tret-fanotify-linux-arm64` and `tret-fanotify-linux-x64` alongside the four `tret-<os>-<arch>` binaries, their `.tar.gz` archives, and `checksums.txt`.
 
 **Priority:** P1 — complete the platform work already represented in the code
 
