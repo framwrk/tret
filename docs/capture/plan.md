@@ -365,7 +365,7 @@ Phases follow the Implementation sequence. Each phase lists deliverables, exit c
 
 ### Phase 8 — Lazy-write workflow (complete)
 
-- **Deliverables:** removal of the automatic `--help` dependency; documented bounded install session; deferred `tret trace` design and record segment reservation.
+- **Deliverables:** removal of the automatic `--help` dependency; documented bounded install session; deferred `tret trace` design and record segment reservation (the command later shipped on that reservation; see D5).
 - **Exit criteria:** no silent execution of installed tools; the observation window and process-tree coverage are shown to the user.
 - **Dependencies:** Phase 5; D5.
 
