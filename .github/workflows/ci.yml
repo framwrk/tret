@@ -32,5 +32,9 @@ jobs:
       - run: bun test
       - name: Build ${{ matrix.target }}
         run: bash scripts/build.sh ${{ matrix.target }}
+      # The ubuntu runner has passwordless sudo, so only linux-x64 runs the root install and uninstall.
+      - name: Privileged install and uninstall for ${{ matrix.target }}
+        if: matrix.target == 'linux-x64'
+        run: bash scripts/privileged-e2e.sh
       - name: Exercise the install script for ${{ matrix.target }}
         run: bash scripts/install.test.sh
