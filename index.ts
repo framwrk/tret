@@ -127,6 +127,9 @@ function help(): void {
   log(
     `Each install runs inside a bounded capture window. ${SCRIPT_NAME} reports when the window was open and how completely it covered the installer's process tree; it never runs the installed tool itself to discover lazy writes.`,
   );
+  log(
+    `Linux capture uses unprivileged strace, or the packaged fanotify helper when already root; macOS uses a scoped heuristic snapshot. Capture records changes but does not sandbox the installer or scan for malware.`,
+  );
   log("");
   log(`Commands`);
   log(
@@ -154,7 +157,7 @@ function help(): void {
   log(`\t              delegated-removal overlap always blocks, including with --force`);
   log(`\t--no-capture  install: run the installer without attaching a capture window`);
   log(
-    `\t--backup      install: capture before-images of overwritten or deleted files so uninstall can restore them (off by default)`,
+    `\t--backup      install: capture before-images of overwritten or deleted files so uninstall can restore them (off by default; eligible regular files only)`,
   );
   log(`\t--observe <path>          install: also observe this absolute path in the install's capture window (repeatable)`);
   log(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);

@@ -120,6 +120,29 @@ You can also paste the install command as it appears on the tool's site:
 tret install curl -fsSL https://example.com/install.sh | bash
 ```
 
+### Capture coverage and limits
+
+Capture records only changes under the platform's bounded observation roots (`$HOME` plus its tool directories; add or drop roots with `--observe`/`--observe-exclude`). Tret never runs a tracked tool on its own; `tret trace <tool>` runs one when you ask it to.
+
+| Platform | Install capture                                                                                                                                                                                                                | Before-images                                                                                                                             |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS    | `macos-heuristic`: a scoped before/after snapshot with no process attribution. An unrelated write inside the scope during the window can be attributed to the install.                                                         | `--backup` reads eligible pre-existing regular files (up to 1 MiB each) at window start, so overwritten or deleted files can be restored. |
+| Linux    | `linux-strace` (unprivileged process-tree tracing) by default. When already running as root, the packaged `tret-fanotify` helper is preferred. If capture cannot attach, Tret says so and uses the heuristic snapshot instead. | Same behavior; bytes are stored only for eligible regular files captured at window start.                                                 |
+
+A Linux window is `complete` only when the traced process tree was fully observed and no unsupported syscall, parser gap, or dropped out-of-root path occurred; otherwise it is `partial` and names the blind spot. macOS capture is always `heuristic`.
+
+Known gaps:
+
+- Install capture ends with the window. Writes a tool makes on later runs are recorded only when you run it through `tret trace <tool>`, which appends a separate segment; `tret inspect` shows what each segment covers.
+- Writes after the observation window closes are not recorded; a daemonized descendant still alive at close makes a Linux window `partial`.
+- Some Linux syscalls cannot be represented in a record, including memory-mapped writes, kernel-side copies, ownership and extended-attribute changes, and hard links. These lower the window to `partial`.
+- macOS change detection is stamp-based, so a content edit that leaves size, mtime, and inode unchanged is missed.
+- With backups off (the default), mutations and deletions are detected but not restorable. With backups on, files above the size limit or unreadable files remain non-restorable.
+
+### Trust boundary
+
+Tret downloads the install script at the URL you provide and runs it with your user privileges; `tret trace` likewise runs the real tool. Treat both as executable code you are choosing to run: use HTTPS sources you trust and review the script when it matters. Tret never escalates to `sudo` on your behalf; run it as root only when you intend the install to be privileged. Capture records what a run changed so you can undo it; it is not containment.
+
 ### Uninstall a tool
 
 Run `tret uninstall <tool_name>` to remove a tool's files. By default, a file is removed only while its recorded content hash matches, and a symlink only while its recorded target matches; divergent paths are kept. Plans whose records cannot prove ownership (`partial` or `heuristic` capture, including tools adopted by `find`) are labeled: Tret notes that the paths are observed, not proven to belong to the tool, and marks each `remove`/`restore` as `(observed, not proven)`. The label describes the evidence, not a weaker removal rule — the same fingerprint checks still decide what may change. `--force` may remove an owned file or symlink when both fingerprints are known but already mismatch at planning time, and may bypass shared-owner conflicts. It does not make a missing or unreadable fingerprint removable or override a kind change. Each planned `remove` or `restore` action carries the state captured by the plan and is checked again immediately before it is applied, after confirmation. If that state changes between planning and apply, the path is kept even with `--force`; run uninstall again to review the new state. Ordinary shared-path conflicts block until you pass `--force`; delegated-removal overlaps always block, including with `--force`. Uninstall asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
@@ -130,7 +153,9 @@ Run `tret uninstall <tool_name>` to remove a tool's files. By default, a file is
 tret list
 ```
 
-Each row shows the tool's name, URL, install date, a `State` column (`installed` when the tracked executable is still on disk, `partial` when it is gone), the executable path, the script's hash, how many files the install owns, and the capture completeness (see below). A `partial` row shows `-` for the binary rather than a stale path.
+`tret find` has no install journal, so it records a `heuristic` adoption and fingerprints the command plus every node under matching tool folders. Uninstall removes only files whose fingerprints still match, removes the folders they empty, and reports changed or unrelated survivors as conflicts.
+
+Each row shows the tool's name, URL, install date, a `State` column (`installed` when the tracked executable is still on disk, `partial` when it is gone), the executable path, the script's hash, how many files the install owns, and the capture completeness (see [Capture coverage and limits](#capture-coverage-and-limits)). A `partial` row shows `-` for the binary rather than a stale path.
 
 ### Inspect a tool
 
@@ -186,15 +211,18 @@ Every command except the fast-path `--version` check writes a per-run log under 
 
 ## Development
 
-| Command          | Purpose                                 |
-| ---------------- | --------------------------------------- |
-| `bun run dev`    | Run the CLI from source                 |
-| `bun run build`  | Build every release target into `dist/` |
-| `bun run test`   | Run tests (`bun test`)                  |
-| `bun run lint`   | Run ESLint                              |
-| `bun run format` | Format with Prettier                    |
+| Command             | Purpose                                 |
+| ------------------- | --------------------------------------- |
+| `bun run dev`       | Run the CLI from source                 |
+| `bun run build`     | Build every release target into `dist/` |
+| `bun run test`      | Run tests (`bun test`)                  |
+| `bun run typecheck` | Type-check with `tsc --noEmit`          |
+| `bun run lint`      | Run ESLint                              |
+| `bun run format`    | Format with Prettier                    |
 
 `bun run build` runs `scripts/build.sh`, which compiles `{darwin,linux}-{arm64,x64}` with `bun build --compile`, packages each as `tret-<os>-<arch>.tar.gz`, and writes `dist/checksums.txt`. Linux targets also compile the privileged `tret-fanotify` capture helper into the archive (a cross-build from a non-Linux host skips it with a warning). `bash scripts/build.sh <os>-<arch>` builds a single target. CI builds and tests every target on a native runner, and `scripts/install.test.sh` exercises the install script against the built archive without touching the network.
+
+Before tagging a release, follow the [release checklist](docs/release-checklist.md).
 
 Tret is written in TypeScript and runs on [Bun](https://bun.sh), compiled to a single binary. The layout is small by design: `index.ts` routes commands, `src/commands/<command>.ts` holds one function per command, and `src/lib/` holds the capture, record, and update logic. `examples/` contains reference install scripts only.
 
