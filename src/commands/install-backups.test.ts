@@ -75,7 +75,7 @@ function seedHome(home: string): void {
   chmodSync(gonePath(home), 0o640);
 }
 
-type StoredEntry = { path: string; beforeBlob?: string; installedHash?: string; mode?: number };
+type StoredEntry = { path: string; beforeBlob?: string; beforeHash?: string; installedHash?: string; mode?: number };
 type StoredRecord = { name: string; owned: StoredEntry[]; mutated: StoredEntry[]; deleted: StoredEntry[] };
 type StoredFile = { version: number; records: StoredRecord[] };
 
@@ -124,6 +124,28 @@ describe("install --backup -> uninstall restores", () => {
       expect(modeOf(configDir(home))).toBe(0o750);
       expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
       expect(readStore(home).records).toHaveLength(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--backup-size limits restorable files without dropping oversized mutations", async () => {
+    const home = makeHome();
+    seedHome(home);
+    const server = serve(INSTALL_SCRIPT);
+    try {
+      expect(await runCli(["install", server.url, "--backup", "--backup-size", "15"], home)).toBe(0);
+
+      const record = findRecord(readStore(home), "mytool");
+      const oversized = record.mutated.find((entry) => entry.path === keepPath(home));
+      const eligible = record.deleted.find((entry) => entry.path === gonePath(home));
+      // The 16-byte overwrite remains recorded and detectable, but exceeds the configured limit.
+      expect(oversized).toBeDefined();
+      expect(oversized?.installedHash).toBeDefined();
+      expect(oversized?.beforeBlob).toBeUndefined();
+      // The 14-byte deletion is within the custom limit and remains restorable.
+      expect(eligible?.beforeBlob).toBeDefined();
+      expect(existsSync(join(home, ".tret", "objects", eligible!.beforeBlob!))).toBe(true);
     } finally {
       await server.stop();
     }

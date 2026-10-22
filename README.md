@@ -84,6 +84,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 - `install --force`: fetch and validate the replacement script, then uninstall the tool and reinstall it from a clean capture.
 - `install --no-capture`: run the installer without a capture window.
 - `install --backup`: save before-images so overwritten or deleted files can be restored on uninstall.
+- `install --backup-size <bytes>`: set the per-file before-image size limit for this install (a positive integer; requires `--backup`; the default is 1 MiB).
 - `install --observe <path>`: also observe this absolute path in the install's capture window, for an installer that writes outside the default roots (repeatable).
 - `install --observe-exclude <path>`: drop one of the default observation roots for this install (repeatable; a path another remaining root still covers stays observed).
 - `install --name <name>`: record the tool under this display name instead of the installed command's basename.
@@ -124,10 +125,10 @@ tret install curl -fsSL https://example.com/install.sh | bash
 
 Capture records only changes under the platform's bounded observation roots (`$HOME` plus its tool directories; add or drop roots with `--observe`/`--observe-exclude`). Tret never runs a tracked tool on its own; `tret trace <tool>` runs one when you ask it to.
 
-| Platform | Install capture                                                                                                                                                                                                                | Before-images                                                                                                                             |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS    | `macos-heuristic`: a scoped before/after snapshot with no process attribution. An unrelated write inside the scope during the window can be attributed to the install.                                                         | `--backup` reads eligible pre-existing regular files (up to 1 MiB each) at window start, so overwritten or deleted files can be restored. |
-| Linux    | `linux-strace` (unprivileged process-tree tracing) by default. When already running as root, the packaged `tret-fanotify` helper is preferred. If capture cannot attach, Tret says so and uses the heuristic snapshot instead. | Same behavior; bytes are stored only for eligible regular files captured at window start.                                                 |
+| Platform | Install capture                                                                                                                                                                                                                | Before-images                                                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS    | `macos-heuristic`: a scoped before/after snapshot with no process attribution. An unrelated write inside the scope during the window can be attributed to the install.                                                         | `--backup` reads eligible pre-existing regular files at window start, up to 1 MiB each by default; `--backup-size <bytes>` sets a positive per-file limit. |
+| Linux    | `linux-strace` (unprivileged process-tree tracing) by default. When already running as root, the packaged `tret-fanotify` helper is preferred. If capture cannot attach, Tret says so and uses the heuristic snapshot instead. | The same limit and behavior; bytes are stored only for eligible regular files captured at window start.                                                    |
 
 A Linux window is `complete` only when the traced process tree was fully observed and no unsupported syscall, parser gap, or dropped out-of-root path occurred; otherwise it is `partial` and names the blind spot. macOS capture is always `heuristic`.
 
@@ -137,7 +138,7 @@ Known gaps:
 - Writes after the observation window closes are not recorded; a daemonized descendant still alive at close makes a Linux window `partial`.
 - Some Linux syscalls cannot be represented in a record, including memory-mapped writes, kernel-side copies, ownership and extended-attribute changes, and hard links. These lower the window to `partial`.
 - macOS change detection is stamp-based, so a content edit that leaves size, mtime, and inode unchanged is missed.
-- With backups off (the default), mutations and deletions are detected but not restorable. With backups on, files above the size limit or unreadable files remain non-restorable.
+- With backups off (the default), mutations and deletions are detected but not restorable. With backups on, only files at or under the size limit are stored: 1 MiB per file by default, or the limit `--backup-size <bytes>` sets for that install (the flag requires `--backup`). A file above the limit, or one that cannot be read, stays recorded but non-restorable.
 
 ### Trust boundary
 

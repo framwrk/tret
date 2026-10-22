@@ -103,17 +103,21 @@ describe("linux capture baseline: before-images", () => {
   test("leaves over-limit and unreadable files kind-only", async () => {
     const root = await makeRoot();
     const big = join(root, "big");
-    await writeFile(big, "0123456789");
+    await writeFile(big, "01234567890");
+    const atLimit = join(root, "at-limit");
+    await writeFile(atLimit, "0123456789");
     const blocked = join(root, "blocked");
     await writeFile(blocked, "secret\n");
 
     const { baseline, beforeImages } = await captureBaseline([root], {
-      backups: { enabled: true, sizeLimitBytes: 4 },
+      backups: { enabled: true, sizeLimitBytes: 10 },
       read: async (path) => (path === blocked ? undefined : new Uint8Array(await readFile(path))),
     });
 
-    expect(beforeImages.size).toBe(0);
-    // Both are still recorded and attributable; only the before-image is unavailable.
+    expect(beforeImages.size).toBe(1);
+    expect(beforeImages.has(sha256("0123456789"))).toBe(true);
+    expect(baseline.metadata(atLimit)).toMatchObject({ kind: "file", size: 10, hash: sha256("0123456789") });
+    // The over-limit and unreadable files are still recorded and attributable without a before-image.
     expect(baseline.kind(big)).toBe("file");
     expect(baseline.metadata(big)).toBeUndefined();
     expect(baseline.kind(blocked)).toBe("file");

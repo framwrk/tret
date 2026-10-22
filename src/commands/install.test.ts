@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { heuristicFallbackRoots, parseObserveFlags } from "./install";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { extractBackupSizeFlag, heuristicFallbackRoots, parseObserveFlags } from "./install";
 import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -66,6 +76,19 @@ async function runCliResult(
     proc.exited,
   ]);
   return { code, stdout, stderr };
+}
+
+/**
+ * The user-facing lines the CLI wrote during a run. The run log holds them on every machine, while
+ * stdout and stderr only carry them when the run has no controlling terminal to write to.
+ */
+function runLogText(home: string): string {
+  const dir = join(home, ".tret", "logs");
+  if (!existsSync(dir)) return "";
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".log"))
+    .map((name) => readFileSync(join(dir, name), "utf8"))
+    .join("\n");
 }
 
 /** Serves one raw script over loopback; the install URL needs a dotted host and a non-HTML body. */
@@ -673,6 +696,57 @@ describe("managed install removal failure", () => {
     } finally {
       await server.stop();
     }
+  });
+});
+
+describe("backup size flag", () => {
+  test("extracts a positive integer size and leaves other install arguments", () => {
+    expect(extractBackupSizeFlag(["https://example.com/install.sh", "--backup-size", "4096", "--backup"])).toEqual({
+      sizeLimitBytes: 4096,
+      rest: ["https://example.com/install.sh", "--backup"],
+    });
+    expect(extractBackupSizeFlag(["https://example.com/install.sh"])).toEqual({
+      sizeLimitBytes: undefined,
+      rest: ["https://example.com/install.sh"],
+    });
+  });
+
+  test("rejects missing, non-numeric, zero, negative, and unsafe integer values", () => {
+    expect(extractBackupSizeFlag(["--backup-size"])).toEqual({
+      error: "--backup-size requires a positive integer number of bytes",
+    });
+    for (const value of ["abc", "0", "-1", "1.5", "1e6", "0x10", "9007199254740992"]) {
+      expect(extractBackupSizeFlag(["--backup-size", value])).toEqual({
+        error: `--backup-size requires a positive integer number of bytes: ${value}`,
+      });
+    }
+    expect(extractBackupSizeFlag(["--backup-size", "4096", "--backup-size", "8192"])).toEqual({
+      error: "--backup-size may only be provided once",
+    });
+  });
+
+  test("help documents the backup size limit and its requirement", async () => {
+    const home = makeHome();
+    const result = await runCliResult(["--help"], home);
+    expect(result.code).toBe(0);
+    // The run log holds the same lines the terminal shows, on a machine with or without a tty.
+    const help = runLogText(home);
+    expect(help).toContain("--backup-size <bytes>");
+    expect(help).toContain("requires --backup; default 1048576");
+  });
+
+  test("invalid sizes and use without --backup fail as usage errors", async () => {
+    for (const value of ["abc", "0", "-1"]) {
+      const home = makeHome();
+      const result = await runCliResult(["install", "--backup-size", value], home);
+      expect(result.code).toBe(2);
+      expect(runLogText(home)).toContain("--backup-size requires a positive integer number of bytes");
+    }
+
+    const home = makeHome();
+    const result = await runCliResult(["install", "--backup-size", "4096"], home);
+    expect(result.code).toBe(2);
+    expect(runLogText(home)).toContain("--backup-size requires --backup");
   });
 });
 

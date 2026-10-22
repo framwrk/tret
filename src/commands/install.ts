@@ -134,6 +134,42 @@ export function extractNameFlag(
   return { name, rest };
 }
 
+/**
+ * Removes the Tret-only `--backup-size <bytes>` flag from the pre-`--` install arguments and
+ * validates the value as a positive, safe integer number of bytes. It is the per-file limit for
+ * the before-images this install captures: a file larger than the limit is still recorded as a
+ * mutation or deletion, it just is not claimed restorable. A missing, non-numeric, zero, or
+ * negative size is a usage error, so the message is returned instead of thrown and the CLI uses
+ * its standard failure path.
+ */
+export function extractBackupSizeFlag(
+  args: string[],
+): { sizeLimitBytes: number | undefined; rest: string[] } | { error: string } {
+  const rest: string[] = [];
+  let sizeLimitBytes: number | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg !== "--backup-size") {
+      rest.push(arg);
+      continue;
+    }
+    if (sizeLimitBytes !== undefined) return { error: "--backup-size may only be provided once" };
+    const value = args[index + 1];
+    if (value === undefined) return { error: "--backup-size requires a positive integer number of bytes" };
+    // Only plain digits count: "1.5", "1e6", "-1", and "0x10" are not byte counts.
+    if (!/^\d+$/.test(value)) {
+      return { error: `--backup-size requires a positive integer number of bytes: ${value}` };
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      return { error: `--backup-size requires a positive integer number of bytes: ${value}` };
+    }
+    sizeLimitBytes = parsed;
+    index++;
+  }
+  return { sizeLimitBytes, rest };
+}
+
 export async function install(
   url?: string,
   force = false,

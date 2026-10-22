@@ -177,7 +177,7 @@ describe("linux capture backend: before-images", () => {
 
       const tracer = new FakeLinuxTracer();
       const backend = new LinuxCaptureBackend({ tracerFactory: async () => tracer, settleMs: 10 });
-      const backups = { enabled: true, sizeLimitBytes: 1024 };
+      const backups = { enabled: true, sizeLimitBytes: 9 };
       const session = await backend.start({ pid: 42, privilege: "user", roots: [root], backups });
 
       // The installer overwrites the file; the fake tracer reports the write it performed.
@@ -201,6 +201,37 @@ describe("linux capture backend: before-images", () => {
       expect(effects.mutated).toEqual([
         { path: config, beforeHash: originalHash, installedHash, mode: 0o640, beforeBlob: originalHash },
       ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("leaves a file over the configured limit recorded but not restorable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "tret-backend-limit-"));
+    try {
+      const config = join(root, "config");
+      writeFileSync(config, "original\n");
+
+      const tracer = new FakeLinuxTracer();
+      const backend = new LinuxCaptureBackend({ tracerFactory: async () => tracer, settleMs: 10 });
+      // The limit is below the file's size, so the window captures no bytes for it.
+      const backups = { enabled: true, sizeLimitBytes: 4 };
+      const session = await backend.start({ pid: 42, privilege: "user", roots: [root], backups });
+
+      writeFileSync(config, "installed\n");
+      tracer.push({ op: "write", at: 1, pid: 7, path: config });
+      const journal = await session.stop();
+
+      expect(journal.beforeImages).toBeUndefined();
+
+      // The overwrite is still recorded as a mutation; it just carries no before-image.
+      const effects = normalizeJournal({
+        journal,
+        backups,
+        caseSensitive: true,
+        availableBeforeImages: new Set(journal.beforeImages?.keys() ?? []),
+      });
+      expect(effects.mutated).toEqual([{ path: config, installedHash: expect.any(String) }]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
