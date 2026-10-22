@@ -1,7 +1,7 @@
+import { DEFAULT_BACKUP_POLICY, DEFAULT_BACKUP_SIZE_LIMIT_BYTES } from "./src/lib/store";
 import { EXIT_USAGE, IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
-import { extractNameFlag, install, parseObserveFlags } from "./src/commands/install";
+import { extractBackupSizeFlag, extractNameFlag, install, parseObserveFlags } from "./src/commands/install";
 import { openRunLog, watchRunLog } from "./src/lib/runlog";
-import { DEFAULT_BACKUP_POLICY } from "./src/lib/store";
 import { checkForUpdate } from "./src/lib/updatecheck";
 import { enableJsonMode } from "./src/lib/json-output";
 import { fail } from "./src/lib/failure";
@@ -50,10 +50,26 @@ switch (command) {
     if ("error" in observed) fail("install-usage", observed.error, EXIT_USAGE);
     const named = extractNameFlag(observed.rest);
     if ("error" in named) fail("install-usage", named.error, EXIT_USAGE);
-    await install(named.rest.join(" "), ownArgs.includes("--force"), scriptArgs, {
+    const backupSize = extractBackupSizeFlag(named.rest);
+    if ("error" in backupSize) fail("install-usage", backupSize.error, EXIT_USAGE);
+    const backupsEnabled = ownArgs.includes("--backup");
+    // `--backup-size` only means something when backups are on, so using it alone is a usage error
+    // rather than a silently ignored flag.
+    if (backupSize.sizeLimitBytes !== undefined && !backupsEnabled) {
+      fail("install-usage", "--backup-size requires --backup", EXIT_USAGE);
+    }
+    await install(backupSize.rest.join(" "), ownArgs.includes("--force"), scriptArgs, {
       capture: !ownArgs.includes("--no-capture"),
       // D2: backups are off unless the user opts in; a captured before-image makes restore reachable.
-      backups: ownArgs.includes("--backup") ? { ...DEFAULT_BACKUP_POLICY, enabled: true } : undefined,
+      // `--backup-size` sets the per-file before-image limit for this install; without it the
+      // documented default (1 MiB) stays in force.
+      backups: backupsEnabled
+        ? {
+            ...DEFAULT_BACKUP_POLICY,
+            enabled: true,
+            sizeLimitBytes: backupSize.sizeLimitBytes ?? DEFAULT_BACKUP_POLICY.sizeLimitBytes,
+          }
+        : undefined,
       // D3: --observe/--observe-exclude scope this one install; an empty scope keeps the defaults.
       observe: observed.scope.include.length > 0 || observed.scope.exclude.length > 0 ? observed.scope : undefined,
       yes: ownArgs.includes("--yes"),
@@ -158,6 +174,9 @@ function help(): void {
   log(`\t--no-capture  install: run the installer without attaching a capture window`);
   log(
     `\t--backup      install: capture before-images of overwritten or deleted files so uninstall can restore them (off by default; eligible regular files only)`,
+  );
+  log(
+    `\t--backup-size <bytes> install: set the per-file before-image size limit for this install (positive integer; requires --backup; default ${DEFAULT_BACKUP_SIZE_LIMIT_BYTES})`,
   );
   log(`\t--observe <path>          install: also observe this absolute path in the install's capture window (repeatable)`);
   log(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);

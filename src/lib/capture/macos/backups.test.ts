@@ -19,11 +19,13 @@ describe("macOS heuristic before-image capture (D2)", () => {
       const small = join(scope, "small.conf");
       const big = join(scope, "big.conf");
       const secret = join(scope, "secret.conf");
+      const atLimit = join(scope, "at-limit.conf");
       writeFileSync(small, "small-v1\n");
       writeFileSync(big, "b".repeat(2048));
       writeFileSync(secret, "secret-v1\n");
+      writeFileSync(atLimit, "0123456789");
 
-      const backups = { enabled: true, sizeLimitBytes: 1024 };
+      const backups = { enabled: true, sizeLimitBytes: 10 };
       const backend = new MacosHeuristicCaptureBackend({
         // Simulate a file the process cannot read, so no before-image can be captured for it.
         read: async (path) => (path === secret ? undefined : readFileBytes(path)),
@@ -39,6 +41,7 @@ describe("macOS heuristic before-image capture (D2)", () => {
       const encoder = new TextEncoder();
       const images = journal.beforeImages ?? new Map<string, Uint8Array>();
       expect(images.get(hashBytes(encoder.encode("small-v1\n")))).toEqual(encoder.encode("small-v1\n"));
+      expect(images.get(hashBytes(encoder.encode("0123456789")))).toEqual(encoder.encode("0123456789"));
       expect(images.has(hashBytes(encoder.encode("b".repeat(2048))))).toBe(false);
       expect(images.has(hashBytes(encoder.encode("secret-v1\n")))).toBe(false);
 

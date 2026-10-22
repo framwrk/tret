@@ -1,6 +1,8 @@
 import {
   BlobCorruptionError,
   BlobTooLargeError,
+  DEFAULT_BACKUP_POLICY,
+  DEFAULT_BACKUP_SIZE_LIMIT_BYTES,
   FileStorage,
   InvalidRecordError,
   RecordsCorruptionError,
@@ -391,6 +393,12 @@ describe("FileStorage blobs", () => {
     expect(storage.backupsEnabled).toBe(false);
     expect(await storage.captureBeforeImage(bytes("config"))).toBeUndefined();
     expect(existsSync(objectsDir(home))).toBe(false);
+  });
+
+  test("keeps backups off with a 1 MiB per-file limit until a caller opts in", () => {
+    // The documented default: backups stay off, and the per-file before-image limit is 1 MiB.
+    expect(DEFAULT_BACKUP_POLICY).toEqual({ enabled: false, sizeLimitBytes: 1024 * 1024 });
+    expect(DEFAULT_BACKUP_SIZE_LIMIT_BYTES).toBe(1024 * 1024);
   });
 
   test("stores a before-image when backups are enabled and within the limit", async () => {
