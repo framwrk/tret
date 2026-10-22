@@ -3,6 +3,7 @@ examples
 
 # ai
 AGENTS.md
+.agents/plans/
 
 # packages
 node_modules
