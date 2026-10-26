@@ -271,6 +271,32 @@ describe("install -> list -> uninstall", () => {
     }
   });
 
+  test("only --json writes the structured result to stdout", async () => {
+    const humanHome = makeHome();
+    const humanServer = serve(INSTALL_SCRIPT);
+    try {
+      const human = await runCliResult(["install", humanServer.url], humanHome);
+      expect(human.code).toBe(0);
+      // JSON mode owns stdout; a human run must not leave a document there.
+      expect(human.stdout).toBe("");
+      expect(human.stderr).toContain("installed mytool");
+    } finally {
+      await humanServer.stop();
+    }
+
+    const jsonHome = makeHome();
+    const jsonServer = serve(INSTALL_SCRIPT);
+    try {
+      const json = await runCliResult(["install", jsonServer.url, "--json"], jsonHome);
+      expect(json.code).toBe(0);
+      expect(JSON.parse(json.stdout)).toMatchObject({ ok: true, command: "install", tool: "mytool" });
+      // Human lines stay off the data stream.
+      expect(json.stderr).toContain("installed mytool");
+    } finally {
+      await jsonServer.stop();
+    }
+  });
+
   test("--no-capture records through the legacy snapshot fallback as a hash-less v3 record", async () => {
     const home = makeHome();
     const server = serve(INSTALL_SCRIPT);

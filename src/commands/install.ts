@@ -357,19 +357,21 @@ export async function install(
     log(`\tmanaged install ${describeManagedInstall(managedInstall)} will be removed recursively first`);
 
   // The structured result a script reads; the human lines above went to the terminal (plan 03 item 5).
-  emitJson({
-    ok: true,
-    command: options.commandName ?? "install",
-    tool: name,
-    id: record.id,
-    url,
-    executable: record.executable,
-    installedAt: record.installedAt,
-    owned: effects.owned.length,
-    mutated: effects.mutated.length,
-    deleted: effects.deleted.length,
-    capture: { backend: record.capture.backend, completeness: record.capture.completeness },
-  });
+  if (isJsonMode()) {
+    emitJson({
+      ok: true,
+      command: options.commandName ?? "install",
+      tool: name,
+      id: record.id,
+      url,
+      executable: record.executable,
+      installedAt: record.installedAt,
+      owned: effects.owned.length,
+      mutated: effects.mutated.length,
+      deleted: effects.deleted.length,
+      capture: { backend: record.capture.backend, completeness: record.capture.completeness },
+    });
+  }
 }
 
 /**

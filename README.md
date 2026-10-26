@@ -95,7 +95,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 - `uninstall --yes`: skip the confirmation prompt.
 - `trace --yes`: skip the confirmation prompt before running the traced tool.
 - `update --yes`: skip the confirmation prompt when re-running a tracked tool's installer.
-- `--json` (global): write one JSON document to stdout instead of human text; supported by `list`, `inspect`, `trace`, `forget`, `uninstall`, and `update`.
+- `--json` (global): write one JSON document to stdout instead of human text; supported by `install`, `list`, `inspect`, `trace`, `forget`, `uninstall`, and `update`.
 
 ### Install a tool
 
@@ -172,7 +172,7 @@ Inspect is read-only: it changes no files and no records. It shows the record's 
 tret trace opencode
 ```
 
-`trace` runs one tracked tool inside a bounded observation window and appends what it writes to the record as a separate segment. It asks before running the tool, because it executes the real program; pass `--yes` to skip the prompt. A path another record already claims is reported and skipped, so a trace never takes ownership away from another tool, and the install's original window is left unchanged. Tracing is opt-in and never runs a tool silently.
+`trace` runs one tracked tool inside a bounded observation window and appends what it writes to the record as a separate segment. It asks before running the tool, because it executes the real program; pass `--yes` to skip the prompt. Without a terminal, or in JSON mode, it refuses with exit code `5` unless `--yes` is passed rather than running the tool unasked. A path another record already claims is reported and skipped, so a trace never takes ownership away from another tool, and the install's original window is left unchanged. Tracing is opt-in and never runs a tool silently.
 
 ### Update a tracked tool
 
@@ -184,14 +184,14 @@ With a tool name or record id, `update` re-runs that record's installer URL with
 
 ### JSON output and exit codes
 
-`--json` makes a command write exactly one JSON document to stdout and route all human text, warnings, and installer output to the terminal or stderr, so a piped run stays valid JSON. It is supported by `list`, `inspect`, `trace`, `forget`, `uninstall`, and `update`.
+`--json` makes a command write exactly one JSON document to stdout and route all human text, warnings, and installer output to the terminal or stderr, so a piped run stays valid JSON. It is supported by `install`, `list`, `inspect`, `trace`, `forget`, `uninstall`, and `update`.
 
 ```bash
 tret list --json | jq -r '.tools[].name'
 tret inspect opencode --json | jq '.tool.actions'
 ```
 
-No command prompts in JSON mode. A run that would need confirmation fails with a structured error and exit code `5`; pass `--yes` when a script needs the action to proceed.
+No command prompts in JSON mode. Commands that require explicit consent (`uninstall`, `trace`) fail with a structured error and exit code `5` without `--yes`; pass `--yes` when the action should proceed. `install` and `update <tool>` run their installer without a prompt in JSON mode; install still prints the preview and trust-boundary notice to the terminal or stderr.
 
 Exit codes are stable for automation:
 
@@ -225,7 +225,7 @@ Every command except the fast-path `--version` check writes a per-run log under 
 
 Before tagging a release, follow the [release checklist](docs/release-checklist.md).
 
-Tret is written in TypeScript and runs on [Bun](https://bun.sh), compiled to a single binary. The layout is small by design: `index.ts` routes commands, `src/commands/<command>.ts` holds one function per command, and `src/lib/` holds the capture, record, and update logic. `examples/` contains reference install scripts only.
+Tret is written in TypeScript and runs on [Bun](https://bun.sh), compiled to a single binary. The layout is small by design: `index.ts` routes commands, `src/commands/<command>.ts` holds one function per command, and `src/lib/` holds the capture, record, and update logic.
 
 ## License
 

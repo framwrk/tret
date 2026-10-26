@@ -1,4 +1,4 @@
-import { EXIT_AMBIGUOUS, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mergeTraceEffects, trace } from "./trace";
@@ -314,6 +314,26 @@ describe("trace CLI", () => {
       ok: false,
       error: { code: "trace-executable", message: "mytool has no tracked executable to run" },
     });
+  });
+
+  test("refuses to run the tool without --yes when it cannot ask", async () => {
+    const home = makeHome();
+    const sentinel = join(home, "ran");
+    const runner = join(home, "runner.sh");
+    writeFileSync(runner, `#!/bin/sh\nprintf 'ran' > "${sentinel}"\n`);
+    writeRecords(home, [record({ name: "runner", executable: runner })]);
+
+    const json = await runCliResult(["trace", "runner", "--json"], home);
+    expect(json.code).toBe(EXIT_BLOCKED);
+    expect(JSON.parse(json.stdout)).toEqual({
+      ok: false,
+      error: { code: "trace-consent", message: "pass --yes to trace without a prompt in JSON mode" },
+    });
+
+    // This CLI helper runs without a terminal, so the human path refuses for the same reason.
+    const human = await runCliResult(["trace", "runner"], home);
+    expect(human.code).toBe(EXIT_BLOCKED);
+    expect(existsSync(sentinel)).toBe(false);
   });
 
   test("JSON mode reports a missing tool as a structured error", async () => {
