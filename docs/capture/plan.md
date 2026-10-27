@@ -17,6 +17,11 @@ renames and `openat2` creates can be lost while a journal still says `complete`.
 evidence and follow-ups are in `docs/capture/linux-fidelity.md`; decisions D13–D15 below record the
 mechanism verdicts and the gate on any new backend.
 
+**macOS attributed capture decision (2026-10-27):** D16 keeps `macos-heuristic` as the only shipped
+macOS backend and leaves the attributed-capture gate closed. Endpoint Security is still the only
+attribution-capable mechanism, but it needs an Apple-granted entitlement and a signed distribution
+path; Tret has neither, so there is no runnable or testable prototype to add behind a flag.
+
 ## Pre-rewrite behavior and motivation
 
 Before this rewrite, `tret install` snapshotted `$HOME` and `/usr/local/bin`, ran a downloaded script, and diffed the snapshots. The old `ToolRecord` kept added and edited paths, but not deleted paths or file contents. Those limitations motivated the rewrite:
@@ -222,7 +227,7 @@ verdicts are in `docs/capture/linux-fidelity.md` and decisions D13–D15.
 
 ### Recommendation
 
-- **macOS:** commit to the labeled heuristic fallback (`capture.backend: "macos-heuristic"`, `capture.completeness: "heuristic"`) built from scoped snapshots plus content hashes. Keep the backend interface so an opt-in entitled/privileged tracer can be added later without a format change.
+- **macOS:** commit to the labeled heuristic fallback (`capture.backend: "macos-heuristic"`, `capture.completeness: "heuristic"`) built from scoped snapshots plus content hashes. Keep the backend interface so an opt-in entitled/privileged tracer can be added later without a format change; D16 keeps that tracer gated and records the prerequisites.
 - **Build order:** Linux first, as the reference backend that validates pure event→record normalization independently of macOS constraints. Within Linux, implement **fanotify** (`FAN_CLASS_NOTIF` + `FAN_REPORT_FID`, invoked through the chosen privilege path) as the primary backend because it yields per-event PIDs and rename/unlink pairing with kernel efficiency; keep `ptrace`/`strace -f` behind the same interface as the zero-privilege, same-uid alternative, and label capture partial when tracing is lost at a uid transition. macOS then gets only the heuristic fallback.
 
 ### Linux capture fidelity spike (2026-10-26)
@@ -307,6 +312,7 @@ Each entry resolves or explicitly defers one item from "Open decisions". Status 
 
 - **Decision:** No unprivileged macOS mechanism provides process-tree-attributing capture. Ship the labeled heuristic fallback as the macOS backend (`capture.backend: "macos-heuristic"`, `capture.completeness: "heuristic"`) and retain the backend interface so a future opt-in entitled/privileged tracer can produce the same record format.
 - **Rationale:** EndpointSecurity needs an Apple-granted entitlement plus root; DTrace/`fs_usage` need root and SIP relaxation; FSEvents/kqueue detect changes without PID attribution; DYLD injection is defeated by SIP, hardened runtime, setuid, scripts, and static binaries; `sandbox-exec` is a deprecated enforcement tool; APFS snapshots are a privileged global diff. See "macOS capture feasibility".
+- **Revision (2026-10-27):** D16 records the gate on that opt-in tracer and its distribution prerequisites. The heuristic fallback remains the only shipped macOS backend.
 - **Status:** decided
 - **Date:** 2026-10-09
 
@@ -410,6 +416,13 @@ Each entry resolves or explicitly defers one item from "Open decisions". Status 
 - **Rationale:** the spike found that the least-tested path is the one most likely to run under sudo, and that the common unprivileged path never reaches the attributed backend. Adding a third mechanism before fixing the false-ownership and silent-loss cases would multiply untrusted code and make the `complete`/`proven` labels less meaningful. The gate is deliberately about evidence, not a preference for a particular tracer.
 - **Status:** decided
 - **Date:** 2026-10-26
+
+### D16. macOS attributed capture gate
+
+- **Decision:** **Do not pursue a macOS attributed backend.** Keep `macos-heuristic` as the only macOS capture backend and treat its limits as permanent for released macOS builds. Do not add an Endpoint Security backend behind a hidden flag or an unshipped prototype. Reopen only when every gate condition holds: (1) Apple grants `com.apple.developer.endpoint-security.client` to the identity that signs Tret, and the entitlement can be carried by a notarized Developer ID distribution of the standalone CLI; (2) a signing, notarization and support decision covers the macOS floor, consent, update path, and the fallback when the entitlement or approval is absent; (3) a fidelity plan maps the events Endpoint Security actually reports into the v3 journal vocabulary, with a real-Mac test matrix analogous to D15, rather than claiming `complete` for mmap, xattr, ownership or hard-link gaps the record cannot represent.
+- **Rationale:** Endpoint Security is the only macOS mechanism with process attribution. `es_new_client` needs the Apple-granted entitlement, root, and the user's TCC Full Disk Access approval, and it observes the whole system, so Tret would also need a privileged long-running helper and PID-ancestry filtering. The macOS 27 `es_new_descendants_client` API scopes notifications to the calling process's subtree and drops the root and TCC requirements, which fits an install window, but it still requires the same Apple-granted entitlement, raises the minimum macOS version, and its packaging and signing path for a standalone CLI is unproven. Tret's macOS artifacts are ad-hoc/linker-signed release tarballs; the project has no signing identity, Developer ID certificate, provisioning profile, notarization step, or entitlement. Entitlement approval is discretionary and request-only, so a guarded prototype would add untestable privileged code that cannot attach on any released build. The heuristic limitation therefore stays stated plainly in `README.md` and `docs/capture/macos-capture.md`.
+- **Status:** deferred (gate closed)
+- **Date:** 2026-10-27
 
 ## Build execution
 
