@@ -162,7 +162,16 @@ export async function trace(
 
   // Ask before running the tool. Tracing runs the real program, so it is never silent: JSON mode and
   // non-interactive runs require --yes instead of pretending to have asked.
-  if (!yes && !isJsonMode() && process.stdin.isTTY) {
+  if (!yes) {
+    if (isJsonMode() || !process.stdin.isTTY) {
+      fail(
+        "trace-consent",
+        isJsonMode()
+          ? "pass --yes to trace without a prompt in JSON mode"
+          : "there is no terminal to confirm on; pass --yes to trace without a prompt",
+        EXIT_BLOCKED,
+      );
+    }
     const answer = confirm(`run ${record.executable} in an observation window? [y/N]`);
     if (answer === undefined) {
       fail("trace-consent", "could not read a confirmation; pass --yes to run the tool", EXIT_BLOCKED);

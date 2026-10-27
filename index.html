@@ -9,7 +9,7 @@
     <title>Tret — A CLI tool that installs other CLI tools</title>
     <meta
       name="description"
-      content="Tret installs CLI tools from their install scripts, records every file each install changes, and removes them cleanly later. Free and open source for macOS and Linux."
+      content="Tret installs CLI tools from their install scripts, records what each install changes in a bounded capture window, and removes them cleanly later. Free and open source for macOS and Linux."
     />
     <meta
       name="theme-color"
@@ -391,8 +391,8 @@
           <h1>Tret</h1>
           <p class="lead mt-4">A CLI tool that installs other CLI tools.</p>
           <p class="mt-6">
-            Tret runs a tool's installer inside a bounded capture window, records every file it creates, overwrites, or deletes,
-            and uninstalls cleanly later — a path is touched only while its recorded fingerprint still matches.
+            Tret runs a tool's installer inside a bounded capture window, records what it creates, overwrites, or deletes
+            there, and uninstalls cleanly later — a path is touched only while its recorded fingerprint still matches.
           </p>
           <div class="code mt-6">
             <code><span class="prompt">$ </span>curl -fsSL https://tret.framwrk.com/scripts/install.sh | bash</code>
@@ -473,6 +473,17 @@
           <p class="muted mt-4">
             Most commands accept <code>--json</code> for one machine-readable document, with stable exit codes for scripts
             and CI.
+          </p>
+          <p class="muted mt-4">
+            Capture is bounded and labeled, not a full filesystem diff: macOS uses a scoped heuristic snapshot with no
+            process attribution, and a Linux window is <code>complete</code> only when the traced process tree was fully
+            observed. <code>tret inspect</code> shows what a record actually covers, and the
+            <a
+              class="text-link"
+              href="https://github.com/framwrk/tret#capture-coverage-and-limits"
+              >capture limits</a
+            >
+            are documented in the README.
           </p>
         </section>
         <section class="section">

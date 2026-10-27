@@ -157,7 +157,7 @@ function help(): void {
   log(`\tlist              Show the tools Tret is tracking (alias: show)`);
   log(`\tinspect <tool>    Show what Tret recorded for a tool without changing anything: capture confidence, owned paths, changed files, and what uninstall would do`);
   log(`\tfind <tool>       Find the files and folders an already-installed command owns and record them for uninstall`);
-  log(`\ttrace <tool>      Run a tracked tool in a bounded observation window and append what it writes to the record (asks first)`);
+  log(`\ttrace <tool>      Run a tracked tool in a bounded observation window and append what it writes to the record (asks first; --yes when non-interactive)`);
   log(`\tforget <tool>     Stop tracking a tool without touching its files (escape hatch for detect-only leftovers)`);
   log(`\tupdate [tool]     Update Tret to the latest release; with a tool name, re-run that tool's recorded installer`);
   log("");
@@ -166,7 +166,7 @@ function help(): void {
   log(`Options`);
   log(`\t-h, --help    Show this help and exit`);
   log(`\t--version     Print the running version and exit`);
-  log(`\t--json        Emit one JSON document on stdout instead of human text (list, inspect, trace, forget, uninstall, update)`);
+  log(`\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, forget, uninstall, update)`);
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
   log(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
   log(`\t              unverified paths and state changes after planning still block removal`);

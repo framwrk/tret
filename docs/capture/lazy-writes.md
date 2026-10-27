@@ -108,8 +108,9 @@ name shared by several records fails and lists the ids. `--yes` skips the confir
 
 Tracing is explicit and opt-in. On an interactive terminal the command asks
 `run <executable> in an observation window? [y/N]` before it runs anything, and aborts with nothing
-traced when the answer is no. It never runs a tool silently, and a record with no tracked
-executable is refused rather than run.
+traced when the answer is no. Without a terminal, or in JSON mode, it refuses with exit code `5`
+unless `--yes` is passed, so it never runs a tool without either an answer or explicit consent. It
+never runs a tool silently, and a record with no tracked executable is refused rather than run.
 
 The tool runs inside a bounded observation window through the same platform backend `tret install`
 uses (`captureBackendFor`), over the same bounded install roots (`installObservationRoots`). If that
