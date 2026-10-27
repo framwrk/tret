@@ -22,10 +22,39 @@ short version, with the limit that disqualifies each as a general backend:
 | `sandbox-exec`                 | Deprecated enforcement, not observation; reports only denied operations.                                                                  |
 | APFS snapshots                 | Privileged/entitled and is itself a global before/after diff — the heuristic this rewrite is escaping.                                    |
 
-An opt-in tracer can be added later without a format migration: it implements `CaptureBackend`,
-returns a `Journal` with `completeness: "complete"` (or `"partial"` with a `partialReason`), and its
-`name` lands in `record.capture.backend`. Records stay distinguishable in `tret list` and uninstall
-output because completeness is stored per record.
+An opt-in tracer is still possible without a format migration: it implements `CaptureBackend`, returns
+a `Journal` with `completeness: "complete"` (or `"partial"` with a `partialReason`), and its `name`
+lands in `record.capture.backend`. Records stay distinguishable in `tret list` and uninstall output
+because completeness is stored per record. It is not scheduled, however: D16 keeps the gate closed and
+no macOS build ships one, including behind a hidden flag. The gate conditions are below.
+
+### Attributed-capture gate (D16)
+
+The plan's gate for a macOS attributed backend is **closed** as of 2026-10-27. Tret does not pursue
+it for now. Reopening requires all of the following:
+
+1. **Apple-granted entitlement.** `com.apple.developer.endpoint-security.client` is request-only and
+   granted at Apple's discretion to a Developer/Team ID. Tret has no such entitlement, and a build
+   without it fails at `es_new_client` with `ES_NEW_CLIENT_RESULT_ERR_NOT_ENTITLED`.
+2. **A signed distribution path.** The entitled binary must be signed with a Developer ID identity and
+   a provisioning profile that carries the entitlement, then notarized with the hardened runtime. The
+   macOS artifacts are currently ad-hoc/linker-signed `tar.gz` archives built by `scripts/build.sh`,
+   and the release workflow has no signing or notarization step.
+3. **A privilege and consent model.** `es_new_client` requires root and the user's TCC Full Disk Access
+   approval; it observes the whole system, so Tret would need a privileged long-running helper plus
+   PID-ancestry filtering and IPC. The macOS 27 `es_new_descendants_client` API instead reports only the
+   calling process's subtree and documents no root or TCC requirement, which fits an install window, but
+   it still needs the same entitlement, raises the minimum macOS version, and has no proven packaging
+   path for a standalone CLI.
+4. **A fidelity plan.** Endpoint Security does not eliminate every blind spot: memory-mapped writes are
+   not syscall events, and the v3 record cannot represent xattr, ownership, or hard-link changes. A
+   `complete` label would need a real-Mac event-to-record matrix and tests comparable to the Linux
+   fidelity gate (D15).
+
+Because condition 1 cannot be satisfied by the project alone, there is nothing runnable to implement
+or verify. A guarded prototype would add privileged, untestable code and an attack surface to every
+release, so the honest state is the unchanged heuristic backend. The coverage limits below are
+permanent for released macOS builds until a later decision reopens this gate.
 
 ## How the fallback works
 
