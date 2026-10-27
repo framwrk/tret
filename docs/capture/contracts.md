@@ -112,7 +112,8 @@ fields:
   like bun's shared global root, so an installer's `npm ci` churn is never attributed to the tool.
 
 `RecordFileV3` wraps `RecordV3[]` with `version: 3`. Multiple records may claim one path; conflicts
-are resolved by uninstall planning, never by silently transferring ownership (D4).
+are resolved by uninstall planning or by an explicit `tret unclaim <tool> <path>`, never by silently
+transferring ownership (D4).
 
 ## `Storage` (`src/lib/storage.ts`)
 
@@ -151,6 +152,15 @@ removable. The applier rechecks the captured state immediately before each write
 confirmation. A state change after planning is always kept, even with `force`. A dry run and the real
 uninstall share the same plan so they cannot diverge.
 
+`unclaimSharedPath(record, path, records) -> UnclaimResult` is the explicit, non-destructive
+resolution for a `shared-owner` conflict (D4). It removes the selected record's `owned`, `mutated`,
+or `deleted` claim on one path and returns the updated record plus the remaining claimant records,
+changing no files and leaving the other records untouched. It refuses with `not-claimed` when the
+record does not claim the path and `not-shared` when it is the only claimant, so it cannot act as a
+second `forget`. Exact paths always match; a case variant matches only when either side recorded a
+case-insensitive filesystem (D10). It never edits `executable`, `managedBy`, or `managedInstall`, so
+`findDelegatedRemovalConflicts` still sees those claims and a delegated-removal overlap still blocks.
+
 ## Tests
 
 Each contract has a test that compiles it and checks its shape:
@@ -163,4 +173,7 @@ Each contract has a test that compiles it and checks its shape:
 - `src/lib/storage.test.ts` — an in-memory `Storage` round-trips records and blobs, deduplicates by
   content, garbage-collects unreferenced blobs, and exposes `referencedBlobs`.
 - `src/lib/uninstall-planner.test.ts` — a stub planner emits remove/restore/skip/conflict and the
-  action union discriminates correctly.
+  action union discriminates correctly; `unclaimSharedPath` resolves one shared claim without force
+  and refuses unclaimed or unshared paths.
+- `src/commands/unclaim.test.ts` — `tret unclaim` resolves a shared path end to end, changes no
+  files, leaves the other record intact, and keeps a `find` record's observed label.

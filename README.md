@@ -74,6 +74,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `tret install <URL>` (`add`)                     | Fetch the install script at the URL, run it in a bounded capture window, then record what it changed                                      |
 | `tret uninstall <tool_name>` (`remove`, `unadd`) | Remove the files the tool's install owns, after verifying their fingerprints                                                              |
+| `tret unclaim <tool_name> <path>`                | Drop one record's claim on a path another record also claims, resolving a shared-owner conflict without `--force` (changes no files)      |
 | `tret list` (`show`)                             | List every tool installed with Tret, with its capture completeness and whether it is still installed                                      |
 | `tret inspect <tool_name>`                       | Show what Tret recorded for a tool without changing anything: capture confidence, owned paths, changed files, and what uninstall would do |
 | `tret trace <tool_name>`                         | Run a tracked tool in a bounded observation window and append what it writes to the record (asks first)                                   |
@@ -95,7 +96,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 - `uninstall --yes`: skip the confirmation prompt.
 - `trace --yes`: skip the confirmation prompt before running the traced tool.
 - `update --yes`: skip the confirmation prompt when re-running a tracked tool's installer.
-- `--json` (global): write one JSON document to stdout instead of human text; supported by `install`, `list`, `inspect`, `trace`, `forget`, `uninstall`, and `update`.
+- `--json` (global): write one JSON document to stdout instead of human text; supported by `install`, `list`, `inspect`, `trace`, `forget`, `unclaim`, `uninstall`, and `update`.
 
 ### Install a tool
 
@@ -146,7 +147,17 @@ Tret downloads the install script at the URL you provide and runs it with your u
 
 ### Uninstall a tool
 
-Run `tret uninstall <tool_name>` to remove a tool's files. By default, a file is removed only while its recorded content hash matches, and a symlink only while its recorded target matches; divergent paths are kept. Plans whose records cannot prove ownership (`partial` or `heuristic` capture, including tools adopted by `find`) are labeled: Tret notes that the paths are observed, not proven to belong to the tool, and marks each `remove`/`restore` as `(observed, not proven)`. The label describes the evidence, not a weaker removal rule — the same fingerprint checks still decide what may change. `--force` may remove an owned file or symlink when both fingerprints are known but already mismatch at planning time, and may bypass shared-owner conflicts. It does not make a missing or unreadable fingerprint removable or override a kind change. Each planned `remove` or `restore` action carries the state captured by the plan and is checked again immediately before it is applied, after confirmation. If that state changes between planning and apply, the path is kept even with `--force`; run uninstall again to review the new state. Ordinary shared-path conflicts block until you pass `--force`; delegated-removal overlaps always block, including with `--force`. Uninstall asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
+Run `tret uninstall <tool_name>` to remove a tool's files. By default, a file is removed only while its recorded content hash matches, and a symlink only while its recorded target matches; divergent paths are kept. Plans whose records cannot prove ownership (`partial` or `heuristic` capture, including tools adopted by `find`) are labeled: Tret notes that the paths are observed, not proven to belong to the tool, and marks each `remove`/`restore` as `(observed, not proven)`. The label describes the evidence, not a weaker removal rule — the same fingerprint checks still decide what may change. `--force` may remove an owned file or symlink when both fingerprints are known but already mismatch at planning time, and may bypass shared-owner conflicts. It does not make a missing or unreadable fingerprint removable or override a kind change. Each planned `remove` or `restore` action carries the state captured by the plan and is checked again immediately before it is applied, after confirmation. If that state changes between planning and apply, the path is kept even with `--force`; run uninstall again to review the new state. Ordinary shared-path conflicts block until you pass `--force` or drop one record's claim with `tret unclaim <tool_name> <path>`; delegated-removal overlaps always block, including with `--force`. Uninstall asks for confirmation first; use `--dry-run` to preview the plan or `--yes` to skip the prompt. To stop tracking a tool without touching its files, use `tret forget <tool_name>`.
+
+### Resolve a shared path
+
+When two records claim the same path, uninstall reports a `shared-owner` conflict instead of guessing which tool should lose it. Decide which record owns the path and drop the other record's claim:
+
+```bash
+tret unclaim opencode ~/.local/bin/opencode
+```
+
+`unclaim` changes no files and leaves the remaining record's evidence untouched. It refuses a path the selected record does not claim, and refuses when that record is the only claimant — use `tret forget <tool_name>` to stop tracking a tool entirely. After the unclaim, the remaining owner can plan a normal removal without `--force`. A delegated-removal overlap involving an executable, package-manager scope, or managed-install root still blocks, because `unclaim` never edits those claims.
 
 ### List installed tools
 
@@ -184,7 +195,7 @@ With a tool name or record id, `update` re-runs that record's installer URL with
 
 ### JSON output and exit codes
 
-`--json` makes a command write exactly one JSON document to stdout and route all human text, warnings, and installer output to the terminal or stderr, so a piped run stays valid JSON. It is supported by `install`, `list`, `inspect`, `trace`, `forget`, `uninstall`, and `update`.
+`--json` makes a command write exactly one JSON document to stdout and route all human text, warnings, and installer output to the terminal or stderr, so a piped run stays valid JSON. It is supported by `install`, `list`, `inspect`, `trace`, `forget`, `unclaim`, `uninstall`, and `update`.
 
 ```bash
 tret list --json | jq -r '.tools[].name'

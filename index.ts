@@ -11,6 +11,7 @@ import { inspect } from "./src/commands/inspect";
 import { list } from "./src/commands/list";
 import { log } from "./src/lib/utilities";
 import { trace } from "./src/commands/trace";
+import { unclaim } from "./src/commands/unclaim";
 import { uninstall } from "./src/commands/uninstall";
 import { update } from "./src/commands/update";
 
@@ -105,6 +106,10 @@ switch (command) {
     await trace(ownArgs[1], ownArgs.includes("--yes"));
     break;
 
+  case "unclaim":
+    await unclaim(ownArgs[1], ownArgs[2]);
+    break;
+
   case "update":
     // `tret update <tool>` updates one tracked tool by re-running its recorded installer; a bare
     // `tret update` updates Tret itself, so the argument selects which workflow runs.
@@ -154,6 +159,9 @@ function help(): void {
   log(
     `\tuninstall <tool>  Remove a tool by deleting what its install added, stripping its PATH lines, and dropping the record (aliases: remove, unadd)`,
   );
+  log(
+    `\tunclaim <tool> <path>  Drop one record's claim on a path another record also claims, resolving a shared-owner conflict without --force (changes no files)`,
+  );
   log(`\tlist              Show the tools Tret is tracking (alias: show)`);
   log(`\tinspect <tool>    Show what Tret recorded for a tool without changing anything: capture confidence, owned paths, changed files, and what uninstall would do`);
   log(`\tfind <tool>       Find the files and folders an already-installed command owns and record them for uninstall`);
@@ -166,7 +174,9 @@ function help(): void {
   log(`Options`);
   log(`\t-h, --help    Show this help and exit`);
   log(`\t--version     Print the running version and exit`);
-  log(`\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, forget, uninstall, update)`);
+  log(
+    `\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, forget, unclaim, uninstall, update)`,
+  );
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
   log(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
   log(`\t              unverified paths and state changes after planning still block removal`);
@@ -202,6 +212,7 @@ function help(): void {
   log(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode --json`);
   log(`\t${SCRIPT_NAME.toLowerCase()} trace opencode`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} unclaim opencode ~/.local/bin/opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --dry-run`);
   log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --yes`);
   log(`\t${SCRIPT_NAME.toLowerCase()} find opencode`);

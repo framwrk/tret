@@ -218,6 +218,65 @@ export function sharedClaim(claims: OtherClaims, path: AbsolutePath, caseSensiti
   return !caseSensitive && claims.foldedAll.has(folded);
 }
 
+/** The record sections a claim can live in, in the order uninstall planning checks them. */
+export type OwnershipSection = "owned" | "mutated" | "deleted";
+
+/** Another record that still claims a path after an unclaim. */
+export type OwnershipClaimant = { id: string; name: string };
+
+/**
+ * The outcome of dropping one record's claim on a path (D4). `not-claimed` means the selected record
+ * does not claim the path; `not-shared` means it was the only claimant, so dropping the claim would
+ * strand the path instead of resolving a conflict.
+ */
+export type UnclaimResult =
+  | { ok: true; record: RecordV3; removed: OwnershipSection[]; remaining: OwnershipClaimant[] }
+  | { ok: false; reason: "not-claimed" | "not-shared" };
+
+/**
+ * Drops `record`'s claim on one path, leaving every other record's claim and evidence untouched.
+ * This is the explicit resolution for a `shared-owner` conflict: it changes no files and never
+ * transfers a claim, so the remaining owner keeps exactly what its capture recorded. A case variant
+ * matches only when either side recorded a case-insensitive filesystem, the same rule the planner
+ * uses (D10). The record is returned unchanged when the path is not claimed or is not shared.
+ */
+export function unclaimSharedPath(record: RecordV3, path: AbsolutePath, records: readonly RecordV3[]): UnclaimResult {
+  const remaining = records.filter((other) => other.id !== record.id && recordClaimsPath(other, path, record.caseSensitive));
+  // A case variant names the same file when either side's filesystem is case-insensitive (D10).
+  const foldCase = !record.caseSensitive || remaining.some((other) => !other.caseSensitive);
+  const matches = (candidate: AbsolutePath): boolean =>
+    candidate === path || (foldCase && candidate.toLowerCase() === path.toLowerCase());
+
+  const owned = record.owned.filter((entry) => !matches(entry.path));
+  const mutated = record.mutated.filter((entry) => !matches(entry.path));
+  const deleted = record.deleted.filter((entry) => !matches(entry.path));
+
+  const removed: OwnershipSection[] = [];
+  if (owned.length !== record.owned.length) removed.push("owned");
+  if (mutated.length !== record.mutated.length) removed.push("mutated");
+  if (deleted.length !== record.deleted.length) removed.push("deleted");
+
+  if (removed.length === 0) return { ok: false, reason: "not-claimed" };
+  if (remaining.length === 0) return { ok: false, reason: "not-shared" };
+
+  return {
+    ok: true,
+    record: { ...record, owned, mutated, deleted },
+    removed,
+    remaining: remaining.map(({ id, name }) => ({ id, name })),
+  };
+}
+
+/** Whether one record claims `path`, under the same D10 case model as `sharedClaim`. */
+function recordClaimsPath(record: RecordV3, path: AbsolutePath, plannedCaseSensitive: boolean): boolean {
+  const folded = path.toLowerCase();
+  for (const claim of claimedPaths(record)) {
+    if (claim === path) return true;
+    if ((!plannedCaseSensitive || !record.caseSensitive) && claim.toLowerCase() === folded) return true;
+  }
+  return false;
+}
+
 /**
  * The real planner: it verifies every owned, mutated, and deleted path against current disk state
  * before emitting anything, keeps diverged or shared paths unless `force` says otherwise, removes
