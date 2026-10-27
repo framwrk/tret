@@ -6,7 +6,7 @@ behavior was preserved without changing runtime behavior. Later phases implement
 and uninstall, and wired these contracts into the commands. See `plan.md` for overall implementation
 status and the platform capture documents for current coverage.
 
-The decisions referenced below (`D1`–`D12`) live in the Decisions log of `docs/capture/plan.md`.
+The decisions referenced below (`D1`–`D15`) live in the Decisions log of `docs/capture/plan.md`.
 
 ## Where each contract lives
 

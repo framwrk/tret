@@ -10,6 +10,13 @@ This file is a design and implementation plan; it does not change the current in
 
 **Implementation status:** Phases 1–9 are complete. The rewrite ships with the `os`/`arch` artifact matrix, an install script and self-update check that resolve the running platform's asset and verify its SHA-256, a release job that verifies every published asset and checksum before publishing, and an opt-in `tret trace` command; the release path was observed end to end in `v0.3.3` (2026-10-17).
 
+**Linux fidelity spike (2026-10-26):** a post-implementation audit and measurement found that the
+shipped fanotify helper misattributes directory-entry events to parent directories, that default Yama
+(`ptrace_scope=1`) makes the unprivileged strace path unavailable in production, and that cross-root
+renames and `openat2` creates can be lost while a journal still says `complete`. The full matrix,
+evidence and follow-ups are in `docs/capture/linux-fidelity.md`; decisions D13–D15 below record the
+mechanism verdicts and the gate on any new backend.
+
 ## Pre-rewrite behavior and motivation
 
 Before this rewrite, `tret install` snapshotted `$HOME` and `/usr/local/bin`, ran a downloaded script, and diffed the snapshots. The old `ToolRecord` kept added and edited paths, but not deleted paths or file contents. Those limitations motivated the rewrite:
@@ -207,10 +214,61 @@ Conclusion: **no usable unprivileged, process-attributing macOS tracer exists.**
 
 Conclusion: Linux is the viable attributed-capture platform. `ptrace`/`strace -f` is the only genuinely unprivileged mechanism with process-tree + PID attribution (with a partial-coverage hole at uid transitions); `fanotify` gives the cleanest, lowest-overhead event stream with PIDs and move pairing but needs `CAP_SYS_ADMIN` (standard sudo, no entitlement gate). `userns` + overlayfs is a promising unprivileged alternative worth a spike but is outside the plan's named set. macOS has no equivalent.
 
+**Post-implementation caveat (2026-10-26):** this table describes _mechanism feasibility_, not the
+shipped helper. The implemented helper does not request directory FIDs/names or `FAN_ONDIR`, so its
+directory-entry events resolve to parent directories, and default Yama blocks the unprivileged
+`strace -p` attach used by `install`. The measured fidelity, root causes and candidate-mechanism
+verdicts are in `docs/capture/linux-fidelity.md` and decisions D13–D15.
+
 ### Recommendation
 
 - **macOS:** commit to the labeled heuristic fallback (`capture.backend: "macos-heuristic"`, `capture.completeness: "heuristic"`) built from scoped snapshots plus content hashes. Keep the backend interface so an opt-in entitled/privileged tracer can be added later without a format change.
 - **Build order:** Linux first, as the reference backend that validates pure event→record normalization independently of macOS constraints. Within Linux, implement **fanotify** (`FAN_CLASS_NOTIF` + `FAN_REPORT_FID`, invoked through the chosen privilege path) as the primary backend because it yields per-event PIDs and rename/unlink pairing with kernel efficiency; keep `ptrace`/`strace -f` behind the same interface as the zero-privilege, same-uid alternative, and label capture partial when tracing is lost at a uid transition. macOS then gets only the heuristic fallback.
+
+### Linux capture fidelity spike (2026-10-26)
+
+Step 5 of the next-up ordering. Full evidence, the 22-row accuracy matrix, probe results and
+follow-ups are in `docs/capture/linux-fidelity.md`; this is the summary the decisions rely on.
+
+**Measured baseline.** CI run `40426724090` (`linux-x64`, job `121934216555`) passed the real-strace
+smoke test (a representative installer under parent-mode `strace`) and the privileged end-to-end
+test; the local Linux capture suite passed 58 tests with 2 platform skips. Synthetic traces through
+the shipped parser/reconstruction/normalization confirmed `openat2` misclassification, silent
+cross-root rename loss, rename-overwrite destination loss, chmod prior-mode loss, and a silent
+unresolved-fd drop.
+
+**What the shipped path actually captures.**
+
+- The unprivileged `strace` backend is faithful on ordinary creates, writes, deletes, renames,
+  symlinks, directories and background-churn exclusion when it can attach. It is partial or silent
+  for mmap writes, xattrs/ownership, hard links, uid transitions, cross-root renames, `openat2`
+  creates, rename-overwrite restoration, chmod prior modes, `io_uring` and `mprotect`.
+- Under the kernel-default `ptrace_scope=1` (Ubuntu, Arch, openSUSE), a child cannot attach to its
+  parent, so `install` falls back to the labeled heuristic scanner (`macos-heuristic`). This is the
+  common unprivileged configuration.
+- The shipped fanotify helper is not high-fidelity: without `FAN_REPORT_DFID_NAME`/`TARGET_FID` the
+  kernel reports the modified **parent directory** for create/delete/move/rename, and without
+  `FAN_ONDIR` it reports no directory entries at all. The helper emits `mkdir(parent)` for a file
+  create and `unlink(parent)` for a file delete; the created file then arrives only as a write and
+  normalizes as a mutation, so uninstall leaves it behind. `FAN_ATTRIB` also collapses chown/xattr/
+  timestamp changes into a chmod, and mmap/network changes are never reported.
+- The privileged CI test does not exercise the helper: `dist/tret-linux-x64` has the helper at
+  `dist/tret-fanotify-linux-x64`, not beside the binary, so root `strace` is selected. The packaged
+  archive does place them together, so release users get the untested helper.
+
+**Mechanism verdicts.** eBPF is deferred (D13): it has the same practical privilege gate as fanotify,
+adds BTF/CO-RE/kernel-floor and per-arch packaging burden, and still cannot represent xattr/
+ownership/hard links in a v3 record or see mmap stores per operation; its uid-transition robustness
+only matters after the record can use it. userns + overlayfs is rejected as a capture backend (D14):
+it is an execution sandbox with no PID attribution, changes the install environment, cannot perform
+host-root installs, and is restricted by default on Ubuntu 24.04+ and some other distros; it would be
+an opt-in `--sandbox` mode, not a tracer. D15 gates any new backend on fixing and measuring the
+shipped path first.
+
+**Follow-ups recorded, not started:** repair or disable fanotify until it has a real-kernel test;
+make or document unprivileged attach; preserve in-root halves of cross-root renames; decode
+`openat2` flags and destination/chmod before-state; make the strace trace set distro-safe; add a
+real-kernel fidelity matrix (including the packaged helper layout). Each needs its own plan.
 
 ### Sources
 
@@ -233,6 +291,13 @@ Conclusion: Linux is the viable attributed-capture platform. `ptrace`/`strace -f
 - Yama `ptrace_scope` semantics: https://www.kernel.org/doc/html/latest/admin-guide/LSM/Yama.html
 - `inotify(7)` — no process/user attribution, non-recursive, racy rename pairing: https://man7.org/linux/man-pages/man7/inotify.7.html
 - `bwrap(1)` — unprivileged namespaces, `--overlay`/`--tmp-overlay`: https://manpages.debian.org/testing/bubblewrap/bwrap.1.en.html
+- fanotify FID semantics — dirent events report the modified directory without `FAN_REPORT_TARGET_FID`: https://github.com/torvalds/linux/blob/master/fs/notify/fanotify/fanotify.c
+- `fanotify_init(2)` — `FAN_REPORT_DFID_NAME` (5.9) / `FAN_REPORT_TARGET_FID` (5.17): https://manpages.ubuntu.com/manpages/stonking/man2/fanotify_init.2.html
+- Yama `ptrace_scope` (kernel default 1; distribution overrides): https://docs.kernel.org/admin-guide/LSM/Yama.html and https://www.fedoraproject.org/wiki/Changes/Restrict_ptrace_by_default
+- strace 6.5 — first `fchmodat2` decoding; older strace rejects unknown names in `-e trace=` sets: https://github.com/strace/strace/releases/tag/v6.5
+- eBPF program types (`fentry`/`fexit` since 5.5) and capability split (`CAP_BPF`/`CAP_PERFMON`): https://docs.ebpf.io/linux/program-type/BPF_PROG_TYPE_TRACING/ and https://docs.ebpf.io/linux/concepts/token
+- Overlayfs in user namespaces (5.11) and `userxattr`: https://github.com/torvalds/linux/commit/92dbc9dedccb9759c7f9f2f0ae6242396376988f and https://docs.kernel.org/filesystems/overlayfs.html
+- Ubuntu 24.04 AppArmor unprivileged-userns restriction: https://gitlab.com/apparmor/apparmor/-/wikis/unprivileged_userns_restriction
 
 ## Decisions log
 
@@ -325,6 +390,27 @@ Each entry resolves or explicitly defers one item from "Open decisions". Status 
 - **Status:** decided
 - **Date:** 2026-10-26
 
+### D13. eBPF tracepoint backend
+
+- **Decision:** **Defer.** Do not implement an eBPF backend now. Keep fanotify plus strace as the Linux mechanisms and revisit eBPF only if a record-format plan adds ownership/xattr/hard-link representation and the shipped fanotify path has been fixed and measured on a real kernel.
+- **Rationale:** eBPF needs root or `CAP_BPF` + `CAP_PERFMON` in practice (`unprivileged_bpf_disabled` is commonly 2 and `perf_event_paranoid` gates tracepoints), so it sits behind the same privilege gate as fanotify. It adds a BTF/CO-RE kernel floor (`fentry` since 5.5, capability split at 5.8), per-arch BPF objects, a loader, and seccomp/lockdown/container caveats. Its real gains are full syscall arguments and coverage across uid transitions, but a v3 record cannot store xattr/ownership/hard-link changes, mmap stores remain invisible without a content diff, and syscall tracepoints do not see `io_uring` file operations. Those gains are unusable until the shipped dirent bug is fixed and the record can represent the extra metadata. See `docs/capture/linux-fidelity.md`.
+- **Status:** deferred (default: no eBPF backend)
+- **Date:** 2026-10-26
+
+### D14. userns + overlayfs backend
+
+- **Decision:** **Reject as a capture backend.** Keep it out of the backend seam. It may be reconsidered later as an explicit opt-in `--sandbox` install mode with consent and a clear warning that it changes the install environment, but it must never be the transparent capture path.
+- **Rationale:** the overlay upper is a final-state diff with no PID attribution and no operation order. Running the installer inside a user/mount/pid namespace changes what the installer can do: `no_new_privs` blocks setuid/`sudo` escalation, host-root operations are impossible, and a daemonized child is killed or loses the namespace when the sandbox tears down. Availability is not portable — unprivileged overlayfs needs Linux 5.11+ with `userxattr`, and unprivileged user namespaces are restricted by default on Ubuntu 24.04+ AppArmor, by `kernel.unprivileged_userns_clone` on some Debian-derived kernels, and by `user.max_user_namespaces`/containers. It would capture mmap and io_uring-backed writes that reach the overlay, but that does not compensate for losing attribution and privileged installs.
+- **Status:** decided
+- **Date:** 2026-10-26
+
+### D15. Linux fidelity gate before a new backend
+
+- **Decision:** No new Linux capture backend (eBPF, overlayfs or another mechanism) is built until the shipped path is corrected and measured: (1) the fanotify helper either gains real directory-entry attribution (`FAN_REPORT_DFID_NAME` + `FAN_ONDIR`, parent+name construction) or is not selected; (2) unprivileged production attach works, or the `ptrace_scope` requirement and heuristic fallback are stated plainly; (3) in-root halves of cross-root renames, `openat2` creates, rename-overwrite destinations and chmod prior modes are handled; and (4) a real-kernel fidelity matrix runs in CI, including the packaged `tret`/`tret-fanotify` layout. Until then, documentation must not call the fanotify helper high-fidelity, and a `complete` fanotify journal must not be treated as `proven` ownership.
+- **Rationale:** the spike found that the least-tested path is the one most likely to run under sudo, and that the common unprivileged path never reaches the attributed backend. Adding a third mechanism before fixing the false-ownership and silent-loss cases would multiply untrusted code and make the `complete`/`proven` labels less meaningful. The gate is deliberately about evidence, not a preference for a particular tracer.
+- **Status:** decided
+- **Date:** 2026-10-26
+
 ## Build execution
 
 Phases follow the Implementation sequence. Each phase lists deliverables, exit criteria, and dependencies.
@@ -352,6 +438,7 @@ Phases follow the Implementation sequence. Each phase lists deliverables, exit c
 - **Deliverables:** Linux backend first (`fanotify` primary, `ptrace`/`strace -f` unprivileged alternative) plus the macOS labeled heuristic fallback; completeness metadata (`complete`/`partial`/`heuristic`).
 - **Exit criteria:** backends pass conformance tests against shared fixture event streams; unrelated churn is not attributed by a complete backend; partial/daemonized cases are reported incomplete, never complete.
 - **Dependencies:** Phase 2 interface, Phase 3 normalization, D1, D7.
+- **Post-spike caveat (2026-10-26):** conformance proves the tracers agree on a supplied record stream; it does not exercise the C fanotify helper on a kernel. The fidelity spike found the helper's directory-entry attribution is wrong as shipped and that the privileged CI test selects root `strace` instead of the helper. See `docs/capture/linux-fidelity.md` and D15; the phase remains complete for the shared normalization/backends seam, not as evidence that fanotify is currently trustworthy.
 
 ### Phase 5 — Install integration (complete)
 
