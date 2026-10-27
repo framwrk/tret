@@ -1,5 +1,5 @@
 import type { UninstallAction, UninstallPlan, UninstallPlanner, UninstallVerification } from "./uninstall-planner";
-import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "./uninstall-planner";
+import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath, unclaimSharedPath } from "./uninstall-planner";
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { RecordV3 } from "../types";
@@ -605,6 +605,186 @@ describe("dry-run parity", () => {
 
     expect(plan.actions.map((action) => action.action)).toEqual(["conflict"]);
     expect(formatUninstallPlan(plan, "dry-run")).toEqual(["conflict /h/bin/tool (modified)"]);
+  });
+});
+
+describe("unclaimSharedPath", () => {
+  const sharedFile = "/h/bin/tool";
+
+  function twoOwners(caseSensitive = true): { target: RecordV3; other: RecordV3 } {
+    const entry = { path: sharedFile, kind: "file" as const, installedHash: h("b") };
+    return {
+      target: { ...record(), caseSensitive, owned: [entry] },
+      other: { ...record(), id: "rec-2", name: "other", caseSensitive, owned: [entry] },
+    };
+  }
+
+  test("drops one owned claim and names the remaining owner", () => {
+    const { target, other } = twoOwners();
+
+    const result = unclaimSharedPath(target, sharedFile, [target, other]);
+
+    expect(result).toEqual({
+      ok: true,
+      record: { ...target, owned: [] },
+      removed: ["owned"],
+      remaining: [{ id: "rec-2", name: "other" }],
+    });
+    // The input record is not mutated; the caller saves the returned record.
+    expect(target.owned).toHaveLength(1);
+  });
+
+  test("drops mutated and deleted claims too, leaving the other record's evidence alone", () => {
+    const target = {
+      ...record(),
+      caseSensitive: true,
+      owned: [],
+      mutated: [{ path: "/h/rc", installedHash: h("b") }],
+      deleted: [{ path: "/h/gone" }],
+    };
+    const other = {
+      ...record(),
+      id: "rec-2",
+      name: "other",
+      caseSensitive: true,
+      owned: [],
+      mutated: [{ path: "/h/rc", installedHash: h("b") }],
+      deleted: [{ path: "/h/gone" }],
+    };
+
+    expect(unclaimSharedPath(target, "/h/rc", [target, other])).toEqual({
+      ok: true,
+      record: { ...target, mutated: [], deleted: [{ path: "/h/gone" }] },
+      removed: ["mutated"],
+      remaining: [{ id: "rec-2", name: "other" }],
+    });
+    expect(unclaimSharedPath(target, "/h/gone", [target, other])).toEqual({
+      ok: true,
+      record: { ...target, mutated: [{ path: "/h/rc", installedHash: h("b") }], deleted: [] },
+      removed: ["deleted"],
+      remaining: [{ id: "rec-2", name: "other" }],
+    });
+    expect(other.mutated).toHaveLength(1);
+    expect(other.deleted).toHaveLength(1);
+  });
+
+  test("refuses a path the selected record does not claim", () => {
+    const { target, other } = twoOwners();
+    expect(unclaimSharedPath(target, "/h/bin/elsewhere", [target, other])).toEqual({
+      ok: false,
+      reason: "not-claimed",
+    });
+  });
+
+  test("refuses when the selected record is the only claimant", () => {
+    const { target } = twoOwners();
+    const unrelated = { ...record(), id: "rec-3", name: "unrelated", owned: [] };
+
+    expect(unclaimSharedPath(target, sharedFile, [target, unrelated])).toEqual({
+      ok: false,
+      reason: "not-shared",
+    });
+  });
+
+  test("case variants resolve only where D10 treats the spellings as one path", () => {
+    const target = {
+      ...record(),
+      caseSensitive: true,
+      owned: [{ path: "/h/bin/Tool", kind: "file" as const, installedHash: h("b") }],
+    };
+    const otherSensitive = {
+      ...record(),
+      id: "rec-2",
+      name: "other",
+      caseSensitive: true,
+      owned: [{ path: "/h/bin/tool", kind: "file" as const, installedHash: h("b") }],
+    };
+
+    // Both filesystems are case-sensitive: the two spellings are different paths.
+    expect(unclaimSharedPath(target, "/h/bin/tool", [target, otherSensitive])).toEqual({
+      ok: false,
+      reason: "not-claimed",
+    });
+
+    // The other record was on a case-insensitive filesystem, so its spelling is this same file.
+    const otherInsensitive = { ...otherSensitive, caseSensitive: false };
+    const result = unclaimSharedPath(target, "/h/bin/tool", [target, otherInsensitive]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.record.owned).toEqual([]);
+    expect(result.remaining).toEqual([{ id: "rec-2", name: "other" }]);
+  });
+
+  test("a case-insensitive record drops a case variant when an exact claimant remains", () => {
+    const target = {
+      ...record(),
+      caseSensitive: false,
+      owned: [{ path: "/h/bin/Tool", kind: "file" as const, installedHash: h("b") }],
+    };
+    const other = {
+      ...record(),
+      id: "rec-2",
+      name: "other",
+      caseSensitive: true,
+      owned: [{ path: "/h/bin/tool", kind: "file" as const, installedHash: h("b") }],
+    };
+
+    const result = unclaimSharedPath(target, "/h/bin/tool", [target, other]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.record.owned).toEqual([]);
+  });
+
+  test("after the claim is dropped, the same planner removes or detects without force (D4)", async () => {
+    const { target, other } = twoOwners();
+    const state = { [sharedFile]: { exists: true, kind: "file" as const, hash: h("b") } };
+
+    const blocked = await planFor(target, state, { otherRecords: [target, other] });
+    expect(blocked.actions).toEqual([{ action: "conflict", path: sharedFile, reason: "shared-owner" }]);
+    expect(blocked.incomplete).toBe(true);
+
+    const resolved = unclaimSharedPath(target, sharedFile, [target, other]);
+    if (!resolved.ok) throw new Error("expected the shared claim to be resolved");
+
+    // The record that gave up the claim has nothing to remove for this path.
+    const resigned = await planFor(resolved.record, state, { otherRecords: [resolved.record, other] });
+    expect(resigned.actions).toEqual([]);
+    expect(resigned.incomplete).toBe(false);
+
+    // The remaining owner plans an ordinary removal, with no forced fingerprint bypass.
+    const owner = await planFor(other, state, { otherRecords: [resolved.record, other] });
+    expect(owner.actions).toEqual([
+      {
+        action: "remove",
+        path: sharedFile,
+        kind: "file",
+        plannedState: { exists: true, kind: "file", hash: h("b") },
+      },
+    ]);
+    expect(owner.incomplete).toBe(false);
+  });
+
+  test("a shared detect-only mutation becomes the existing non-blocking detected action", async () => {
+    const target = { ...record(), caseSensitive: true, owned: [], mutated: [{ path: "/h/rc", installedHash: h("b") }] };
+    const other = {
+      ...record(),
+      id: "rec-2",
+      name: "other",
+      caseSensitive: true,
+      owned: [],
+      mutated: [{ path: "/h/rc", installedHash: h("b") }],
+    };
+    const state = { "/h/rc": { exists: true, kind: "file" as const, hash: h("b") } };
+
+    const blocked = await planFor(target, state, { otherRecords: [target, other] });
+    expect(blocked.actions).toEqual([{ action: "conflict", path: "/h/rc", reason: "shared-owner" }]);
+
+    const resolved = unclaimSharedPath(target, "/h/rc", [target, other]);
+    if (!resolved.ok) throw new Error("expected the shared claim to be resolved");
+    const owner = await planFor(other, state, { otherRecords: [resolved.record, other] });
+
+    expect(owner.actions).toEqual([{ action: "detected", path: "/h/rc", kind: "mutated" }]);
+    expect(owner.incomplete).toBe(false);
   });
 });
 

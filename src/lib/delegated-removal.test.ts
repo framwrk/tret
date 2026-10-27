@@ -2,6 +2,7 @@ import type { ManagedPackage, RecordV3 } from "../types";
 import { describe, expect, test } from "bun:test";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "./delegated-removal";
 import { join } from "node:path";
+import { unclaimSharedPath } from "./uninstall-planner";
 
 const HOME = "/home/user";
 const globalRoot = join(HOME, ".npm-global", "lib");
@@ -145,6 +146,33 @@ describe("findDelegatedRemovalConflicts", () => {
     const partial = record({ id: "rec-partial", name: "partial", executable: "" });
 
     expect(findDelegatedRemovalConflicts([process.cwd()], [removing, partial], removing, HOME)).toEqual([]);
+  });
+
+  test("unclaiming an owned overlap cannot hide an executable claim from the delegated guard", () => {
+    const claimed = join(packageScope, "dist", "cli.js");
+    const shim = join(packageScope, "bin", "acme");
+    const removing = record({
+      id: "rec-acme",
+      name: "acme",
+      managedBy: npmPackage,
+      owned: [{ path: claimed, kind: "file" }],
+    });
+    const other = record({
+      id: "rec-other",
+      name: "other",
+      executable: shim,
+      owned: [{ path: claimed, kind: "file" }],
+    });
+
+    const resolved = unclaimSharedPath(other, claimed, [removing, other]);
+    if (!resolved.ok) throw new Error("expected the shared claim to be resolved");
+    expect(resolved.record.owned).toEqual([]);
+
+    // `unclaim` edits only owned/mutated/deleted entries; the executable remains a claim, so the
+    // delegated removal is still blocked even though the shared file conflict is resolved.
+    expect(findDelegatedRemovalConflicts([packageScope], [removing, resolved.record], removing, HOME)).toEqual([
+      { scope: packageScope, path: shim, recordName: "other" },
+    ]);
   });
 });
 

@@ -266,6 +266,7 @@ Each entry resolves or explicitly defers one item from "Open decisions". Status 
 - **Rationale:** "latest record owns the path" and basename pruning are exactly the unsafe heuristics the rewrite removes; explicit shared ownership makes conflicts visible instead of destructive.
 - **Status:** decided
 - **Date:** 2026-10-09
+- **Revision (2026-10-26):** the explicit resolution primitive shipped as `tret unclaim <tool> <path>` (`src/commands/unclaim.ts`, `unclaimSharedPath` in `src/lib/uninstall-planner.ts`). It drops the selected record's claim — `owned`, `mutated`, or `deleted` — on one path, changes no files, and leaves every other record's claim and evidence untouched. It refuses a path the record does not claim and refuses when that record is the only claimant (`forget` is the command for that). Path matching follows D10: exact paths always match, and case variants match only when either side recorded a case-insensitive filesystem. `--force` is unchanged and remains a destructive plan-time bypass; `unclaim` only removes the shared-owner conflict without bypassing fingerprint checks. It never edits `executable`, `managedBy`, or `managedInstall`, so delegated-removal overlaps still block, including with `--force`. A `find` record's adopted paths are ordinary owned entries, so it resolves the same way and keeps its `heuristic` label after an unclaim.
 
 ### D5. `tret trace` scope
 
