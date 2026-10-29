@@ -177,6 +177,7 @@ function help(): void {
   log(
     `\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, forget, unclaim, uninstall, update)`,
   );
+  log(`\t              Human text and installer output go to the terminal or stderr, so a piped run stays valid JSON`);
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
   log(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
   log(`\t              unverified paths and state changes after planning still block removal`);
@@ -186,7 +187,7 @@ function help(): void {
     `\t--backup      install: capture before-images of overwritten or deleted files so uninstall can restore them (off by default; eligible regular files only)`,
   );
   log(
-    `\t--backup-size <bytes> install: set the per-file before-image size limit for this install (positive integer; requires --backup; default ${DEFAULT_BACKUP_SIZE_LIMIT_BYTES})`,
+    `\t--backup-size <bytes> install: set the per-file before-image size limit for this install (positive integer; requires --backup; default ${DEFAULT_BACKUP_SIZE_LIMIT_BYTES} bytes, 1 MiB)`,
   );
   log(`\t--observe <path>          install: also observe this absolute path in the install's capture window (repeatable)`);
   log(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);
@@ -194,6 +195,7 @@ function help(): void {
   log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
   log(`\t--yes         install: skip the installer confirmation prompt`);
   log(`\t              uninstall, trace, update <tool>: skip the confirmation prompt`);
+  log(`\t              uninstall and trace require --yes in JSON mode; install and update <tool> never prompt there`);
   log(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);
   log(`\t              a record with nothing actionable left is dropped, or remove it with tret forget <tool>`);
   log(`\t--            install: every flag after this goes to the install script itself`);
@@ -209,9 +211,12 @@ function help(): void {
   log(`Examples`);
   log(`\t${SCRIPT_NAME.toLowerCase()} install curl -fsSL https://example.com/install.sh | bash`);
   log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --name opencode -- --skip-browser`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --backup --backup-size 524288`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --json`);
   log(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode --json`);
   log(`\t${SCRIPT_NAME.toLowerCase()} trace opencode`);
+  log(`\t${SCRIPT_NAME.toLowerCase()} trace opencode --yes --json`);
   log(`\t${SCRIPT_NAME.toLowerCase()} unclaim opencode ~/.local/bin/opencode`);
   log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --dry-run`);
   log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --yes`);

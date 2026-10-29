@@ -110,6 +110,12 @@ tret install
 
 Tret gets the tool's name from the executable that the installer puts on disk. The file in a `bin` folder is ranked first, otherwise the first executable it added. The tool's own installer output passes through to your terminal. If the installer exits non-zero after producing a discoverable executable, Tret keeps a partial record rather than silently undoing anything, and tells you how to inspect or remove the changes.
 
+To make overwritten or deleted files restorable, opt in with `--backup`. `--backup-size <bytes>` sets the per-file before-image limit for that install (a positive integer; the default is 1 MiB), so this example stores files up to 512 KiB:
+
+```bash
+tret install https://example.com/install.sh --backup --backup-size 524288
+```
+
 For `install --force`, a failed download leaves the current install and its record untouched. Once the old install has been removed, Tret does not roll it back: if the replacement exits non-zero or creates no discoverable executable, Tret saves a partial recovery record under the old tool name with the changes the capture observed. A no-executable record is shown as `partial` with no binary. Use `tret list` to inspect it and `tret uninstall <name>` to remove its recorded changes. Recovery is limited to observed changes; only before-images captured with `--backup` can be restored.
 
 Each install runs inside a bounded capture window. Tret prints a line describing it: the backend, whether coverage is `complete`, `partial`, or `heuristic`, the window's start and end, and how many events and roots were observed.
@@ -184,6 +190,10 @@ Inspect is read-only: it changes no files and no records. It shows the record's 
 tret trace opencode
 ```
 
+```bash
+tret trace opencode --yes --json | jq '.added'
+```
+
 `trace` runs one tracked tool inside a bounded observation window and appends what it writes to the record as a separate segment. It asks before running the tool, because it executes the real program; pass `--yes` to skip the prompt. Without a terminal, or in JSON mode, it refuses with exit code `5` unless `--yes` is passed rather than running the tool unasked. A path another record already claims is reported and skipped, so a trace never takes ownership away from another tool, and the install's original window is left unchanged. Tracing is opt-in and never runs a tool silently.
 
 ### Update a tracked tool
@@ -199,6 +209,7 @@ With a tool name or record id, `update` re-runs that record's installer URL with
 `--json` makes a command write exactly one JSON document to stdout and route all human text, warnings, and installer output to the terminal or stderr, so a piped run stays valid JSON. It is supported by `install`, `list`, `inspect`, `trace`, `forget`, `unclaim`, `uninstall`, and `update`.
 
 ```bash
+tret install https://example.com/install.sh --json | jq '{tool, owned, capture}'
 tret list --json | jq -r '.tools[].name'
 tret inspect opencode --json | jq '.tool.actions'
 ```
