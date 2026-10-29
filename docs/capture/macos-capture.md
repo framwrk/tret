@@ -132,8 +132,8 @@ read. A created file always gets an `installedHash` (sha256 of its content); `ha
 
 When backups are enabled (`--backup`), the start snapshot additionally reads each pre-existing
 regular file within the size limit (1 MiB by default, or the limit `--backup-size <bytes>` sets for
-that install), records its bytes in the journal's `beforeImages` map (keyed by
-content address), and sets its `beforeHash`. That is the one place content is read before the
+that install; the flag requires `--backup`), records its bytes in the journal's `beforeImages` map
+(keyed by content address), and sets its `beforeHash`. That is the one place content is read before the
 installer runs, and it is what makes a later overwrite or deletion restorable; with backups off the
 start snapshot stores stamps only, exactly as before.
 

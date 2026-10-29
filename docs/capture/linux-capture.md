@@ -214,7 +214,7 @@ source) falls back to existence/kind, or to the baseline metadata below.
 Because an overwrite destroys the prior bytes before a post-hoc tracer can read them, before-images
 are captured at window start. When `--backup` is enabled, the baseline walk reads each pre-existing
 regular file that fits the backup size limit (1 MiB by default, or the limit `--backup-size <bytes>`
-sets for that install) once, keeps its bytes under their sha256 content
+sets for that install; the flag requires `--backup`) once, keeps its bytes under their sha256 content
 address, and stores the file's prior hash, size, mode, and mtime alongside its kind; reconstruction
 attaches that metadata as the `before` of an overwrite, truncating open, unlink, or rename source,
 so the record is restorable with its prior permission bits. Over-limit or unreadable files stay
