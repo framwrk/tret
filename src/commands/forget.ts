@@ -7,9 +7,9 @@
 // shared by several records fails and lists the ids instead of silently dropping the first one.
 
 import { EXIT_AMBIGUOUS, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
-import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import type { RecordV3 } from "../types";
 import { fail } from "../lib/failure";
 import { log } from "../lib/utilities";

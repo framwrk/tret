@@ -1,5 +1,6 @@
 import type { AbsolutePath, ManagedInstall, ManagedPackage, RecordV3 } from "../types";
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { confirm, log } from "../lib/utilities";
@@ -20,7 +21,6 @@ import { emitJson, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
-import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { fail } from "../lib/failure";
 import { runLogPhase } from "../lib/runlog";
 

@@ -237,8 +237,8 @@ printf 'second\\n' > "$HOME/.config/newtool.conf"
       expect(existsSync(blobPath(home, oldBlob))).toBe(false);
       const saved = readRecords(home);
       expect(saved).toHaveLength(1);
-      expect(saved[0].id).not.toBe("rec-old");
-      expect(saved[0].name).toBe("mytool");
+      expect(saved[0]!.id).not.toBe("rec-old");
+      expect(saved[0]!.name).toBe("mytool");
     } finally {
       await server.stop();
     }
