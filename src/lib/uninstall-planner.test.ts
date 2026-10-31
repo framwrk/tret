@@ -43,13 +43,20 @@ function lister(map: Record<string, string[]>): (path: string) => string[] {
 function planFor(
   record: RecordV3,
   state: Record<string, UninstallVerification>,
-  options: { force?: boolean; otherRecords?: RecordV3[]; list?: Record<string, string[]>; delegatedRoots?: string[] } = {},
+  options: {
+    force?: boolean;
+    otherRecords?: RecordV3[];
+    list?: Record<string, string[]>;
+    delegatedRoots?: string[];
+    skipNonEmptyOwnedDirectories?: boolean;
+  } = {},
 ): Promise<UninstallPlan> {
   const planner = new VerifiedUninstallPlanner(inspector(state), lister(options.list ?? {}));
   return planner.plan(record, {
     force: options.force,
     otherRecords: options.otherRecords,
     delegatedRoots: options.delegatedRoots,
+    skipNonEmptyOwnedDirectories: options.skipNonEmptyOwnedDirectories,
   });
 }
 
@@ -207,6 +214,47 @@ describe("VerifiedUninstallPlanner directories", () => {
     );
 
     expect(plan.actions).toEqual([{ action: "conflict", path: "/h/dir", reason: "not-empty" }]);
+    expect(plan.incomplete).toBe(true);
+  });
+
+  test("forced replacement skips a non-empty owned directory without recursing into it", async () => {
+    const target = { ...record(), owned: [{ path: "/h/dir", kind: "directory" as const }] };
+    const plan = await planFor(
+      target,
+      { "/h/dir": { exists: true, kind: "directory" } },
+      { force: true, skipNonEmptyOwnedDirectories: true, list: { "/h/dir": ["/h/dir/other-tool.conf"] } },
+    );
+
+    // The shared directory and the other tool's file are left alone, and the leftover never blocks
+    // the replacement record.
+    expect(plan.actions).toEqual([{ action: "skip", path: "/h/dir", reason: "not-empty" }]);
+    expect(plan.incomplete).toBe(false);
+  });
+
+  test("forced replacement still blocks diverged and unverified paths", async () => {
+    const target = {
+      ...record(),
+      owned: [
+        { path: "/h/dir", kind: "directory" as const },
+        { path: "/h/diverged", kind: "file" as const, installedHash: h("b") },
+        { path: "/h/unverified", kind: "file" as const },
+      ],
+    };
+    const plan = await planFor(
+      target,
+      {
+        "/h/dir": { exists: true, kind: "directory" },
+        "/h/diverged": { exists: true, kind: "directory" },
+        "/h/unverified": { exists: true, kind: "file", hash: h("d") },
+      },
+      { force: true, skipNonEmptyOwnedDirectories: true, list: { "/h/dir": ["/h/dir/other-tool.conf"] } },
+    );
+
+    expect(plan.actions).toEqual([
+      { action: "skip", path: "/h/dir", reason: "not-empty" },
+      { action: "conflict", path: "/h/diverged", reason: "diverged" },
+      { action: "conflict", path: "/h/unverified", reason: "unverified" },
+    ]);
     expect(plan.incomplete).toBe(true);
   });
 

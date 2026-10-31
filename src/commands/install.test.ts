@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -146,6 +147,25 @@ if [ -e "$HOME/.local/bin/mytool" ]; then exit 99; fi
 mkdir -p "$HOME/.config/mytool"
 printf 'recovery data\\n' > "$HOME/.config/mytool/recovery.txt"
 exit 9
+`;
+
+// Two tools sharing a directory the first one created. The second only adds its own file, so a
+// forced replacement of the first must remove the first tool's files without recursing into (or
+// stranding a record on) the shared directory the second tool now also uses.
+const SHARED_PARENT_A_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.sharedparent" "$HOME/.local/bin"
+printf '#!/bin/sh\\necho shared-a\\n' > "$HOME/.local/bin/shared-a"
+chmod +x "$HOME/.local/bin/shared-a"
+printf 'a\\n' > "$HOME/.sharedparent/a.conf"
+`;
+
+const SHARED_PARENT_B_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.sharedparent" "$HOME/.local/bin"
+printf '#!/bin/sh\\necho shared-b\\n' > "$HOME/.local/bin/shared-b"
+chmod +x "$HOME/.local/bin/shared-b"
+printf 'b\\n' > "$HOME/.sharedparent/b.conf"
 `;
 
 // Defect #3: an installer that writes a tool directory and a dotfile directly at `$HOME` (the shape
@@ -400,6 +420,70 @@ describe("install -> list -> uninstall", () => {
       expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
       expect(existsSync(recoveryPath)).toBe(false);
       expect(readStore(home).records).toHaveLength(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("--force replaces a tool whose created parent directory a second tool now shares", async () => {
+    const home = makeHome();
+    const serverA = serve(SHARED_PARENT_A_SCRIPT);
+    const serverB = serve(SHARED_PARENT_B_SCRIPT);
+    const sharedParent = join(home, ".sharedparent");
+    const aFile = join(sharedParent, "a.conf");
+    const bFile = join(sharedParent, "b.conf");
+    try {
+      expect(await runCli(["install", serverA.url], home)).toBe(0);
+      expect(await runCli(["install", serverB.url], home)).toBe(0);
+
+      const before = readStore(home).records;
+      const previousA = before.find((entry) => entry.name === "shared-a");
+      expect(previousA).toBeDefined();
+      expect(previousA?.owned.some((entry) => entry.path === sharedParent)).toBe(true);
+
+      expect(await runCli(["install", serverA.url, "--force"], home)).toBe(0);
+
+      // The replacement removed A's own files, but the shared directory and B's file survive.
+      expect(readFileSync(aFile, "utf8")).toBe("a\n");
+      expect(readFileSync(bFile, "utf8")).toBe("b\n");
+      // B's record is untouched, and exactly one A record remains: no reduced parent-only record.
+      const after = readStore(home).records;
+      expect(after.filter((entry) => entry.name === "shared-b")).toHaveLength(1);
+      const aRecords = after.filter((entry) => entry.name === "shared-a");
+      expect(aRecords).toHaveLength(1);
+      expect(aRecords[0]?.id).not.toBe(previousA?.id);
+      expect(aRecords[0]?.executable).toBe(join(home, ".local", "bin", "shared-a"));
+      expect(aRecords[0]?.owned.some((entry) => entry.path === aFile)).toBe(true);
+      expect(after.some((entry) => entry.id === previousA?.id)).toBe(false);
+    } finally {
+      await serverA.stop();
+      await serverB.stop();
+    }
+  });
+
+  test("--force aborts before changing a diverged previous install and keeps its record byte-identical", async () => {
+    const home = makeHome();
+    const server = serveResponses({ body: INSTALL_SCRIPT }, { body: INSTALL_SCRIPT });
+    const executable = join(home, ".local", "bin", "mytool");
+    const config = join(home, ".config", "mytool", "config");
+    const recordsPath = join(home, ".tret", "records.json");
+    try {
+      expect(await runCli(["install", server.url], home)).toBe(0);
+      const previousRecords = readFileSync(recordsPath, "utf8");
+      const previousExecutable = readFileSync(executable, "utf8");
+
+      // A recorded file that is now a directory is a hard kind conflict; force never overrides it.
+      rmSync(config);
+      mkdirSync(config);
+
+      const result = await runCliResult(["install", server.url, "--force"], home);
+
+      expect(result.code).not.toBe(0);
+      expect(runLogText(home)).toContain("previous install is unchanged");
+      // Nothing destructive ran: the old executable and the record are exactly as they were.
+      expect(readFileSync(executable, "utf8")).toBe(previousExecutable);
+      expect(readFileSync(recordsPath, "utf8")).toBe(previousRecords);
+      expect(lstatSync(config).isDirectory()).toBe(true);
     } finally {
       await server.stop();
     }

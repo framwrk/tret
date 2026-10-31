@@ -582,6 +582,10 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   const plan = await planner.plan(target, {
     otherRecords: records,
     force: true,
+    // A shared parent directory another tool has since written into is a safe leftover during a
+    // replacement: the old tool's own files are removed, but the directory and the other files are
+    // never recursed into. Ordinary uninstall keeps its blocking `not-empty` conflict.
+    skipNonEmptyOwnedDirectories: true,
     ...(managedInstall === undefined ? {} : { delegatedRoots: [managedInstall.root] }),
   });
 
@@ -603,6 +607,15 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   // Show the same labeled plan as uninstall before a forced reinstall removes anything (D11).
   for (const line of formatUninstallPlan(plan, "apply")) {
     log(`\t${line}`);
+  }
+
+  // A conflict force cannot resolve aborts before package removal, managed-root removal, file
+  // removal, or shell cleanup. The previous install and its record are left exactly as they were,
+  // so a replacement never deletes the old executable and then strands a parent-directory record.
+  if (plan.incomplete) {
+    log("Error");
+    log("\tprevious install is unchanged; resolve the conflicts above, then retry the forced reinstall");
+    process.exit(1);
   }
 
   // The package manager goes first, mirroring `uninstall`: only once it reports the package gone
