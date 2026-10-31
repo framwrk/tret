@@ -2,11 +2,12 @@
 
 This is the durable record of the Linux x64 verification run for the Linux validation fixes, and the
 operator guide for repeating the host-dependent checks before a release. It separates what was
-actually run from what still needs an approved host or a merged CI run. See the
-[release checklist](release-checklist.md) for the complete release gate.
+actually run from what still needs an approved host. See the [release checklist](release-checklist.md)
+for the complete release gate.
 
-**Recorded:** 2026-10-31 against `main` at `09d0343` (Part 1 merged). Part 2 changes are on feature
-branches; this record describes the Linux x64 path only.
+**Recorded:** 2026-10-31 against `main` at `f088802` after all Part 2 PRs merged. This record
+describes the Linux x64 path only. The [main CI run
+41221754679](https://github.com/framwrk/tret/actions/runs/41221754679) passed on all four targets.
 
 ## Host
 
@@ -21,16 +22,16 @@ branches; this record describes the Linux x64 path only.
 
 ## Status at a glance
 
-| Check                                                         | Status          | Summary                                                                                              |
-| ------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------- |
-| V1 source checks                                              | Passed          | `lint` and `typecheck` pass; `bun test` is 573 pass, 1 skip, 0 fail.                                 |
-| V2 build, install script, release verification                | Passed          | All four targets built; `tret-linux-x64` install test and the four-target release verification pass. |
-| V6 package-manager, managed-install, delegated-removal suites | Passed          | Ran as part of `bun test`; focused rerun is 40 pass, 0 fail.                                         |
-| V3 sandboxed acceptance matrix                                | Pending         | `scripts/linux-acceptance.ts` is not on this branch; no result is claimed.                           |
-| V4 production `linux-strace`                                  | Skipped here    | Needs an approved host with `ptrace_scope=0`; this host is `1`. Never automated.                     |
-| V5 privileged root strace/fanotify                            | Skipped locally | Needs passwordless `sudo`; CI runs it on `linux-x64`.                                                |
-| V7 cross-target CI                                            | Pending         | Required after the Part 2 PRs merge; no green run is claimed.                                        |
-| V8 real `$HOME` and `/etc/profile.d` integrity                | Pending         | Measured by the acceptance harness; not available on this branch.                                    |
+| Check                                                         | Status          | Summary                                                                                                                             |
+| ------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| V1 source checks                                              | Passed          | `lint` and `typecheck` pass; `bun test` is 573 pass, 1 skip, 0 fail.                                                                |
+| V2 build, install script, release verification                | Passed          | All four targets built; `tret-linux-x64` install test and the four-target release verification pass.                                |
+| V6 package-manager, managed-install, delegated-removal suites | Passed          | Ran as part of `bun test`; focused rerun is 40 pass, 0 fail.                                                                        |
+| V3 sandboxed acceptance matrix                                | Passed          | `scripts/linux-acceptance.ts` passed 10/10 scenarios with 0 skips locally and in the `linux-x64` CI job.                            |
+| V4 production `linux-strace`                                  | Skipped/blocked | Not run. Needs an explicitly approved host with `ptrace_scope=0`; this host is `1`. Never automated.                                |
+| V5 privileged root strace/fanotify                            | Passed (CI)     | CI `linux-x64` selected `linux-strace` (complete) and `linux-fanotify` (partial); selection is proven, attribution accuracy is not. |
+| V7 cross-target CI                                            | Passed          | The main CI run passed `darwin-arm64`, `darwin-x64`, `linux-arm64`, and `linux-x64`.                                                |
+| V8 real `$HOME` and `/etc/profile.d` integrity                | Passed          | The acceptance harness reported 20 host paths unchanged locally; CI also runs the strict acceptance step.                           |
 
 ## V1: source checks
 
@@ -102,37 +103,39 @@ and fake runners.
 
 ## V3 and V8: sandboxed acceptance harness
 
-**Pending.** The sandboxed acceptance harness at `scripts/linux-acceptance.ts` runs the original
-Ubuntu 26.04 scenarios against the built binary with a temporary `HOME` and loopback-hosted local
-installers. It also snapshots the real `$HOME` and `/etc/profile.d` before and after, and fails if
-either changes. The harness is landing in a parallel Part 2 PR and is not present on this branch, so
-this record does not claim V3 or V8 passed.
+**Passed.** The sandboxed harness at [scripts/linux-acceptance.ts](../scripts/linux-acceptance.ts)
+drives the built `tret-linux-x64` artifact through the ten Linux findings with a temporary `HOME` and
+loopback-hosted local installers. It also snapshots the real `$HOME` and `/etc/profile.d` before and
+after.
 
-Required before release:
+- Local run: **10/10 scenarios passed, 0 skips**.
+- CI run: `linux-x64` runs the same harness with `TRET_ACCEPTANCE_STRICT=1`, so an environmental skip
+  would fail the gate; the [main CI run](https://github.com/framwrk/tret/actions/runs/41221754679)
+  passed with 10/10 and 0 skips.
+- V8 host integrity: **20 paths unchanged**, covering the real `$HOME` configs,
+  `~/.tret/records.json`, and `/etc/profile.d` files and directory.
 
-1. Run the harness against the built `tret-linux-x64` artifact on a Linux host.
-2. Attach the scenario results and the before/after `$HOME` and `/etc/profile.d` checksums to the
-   release PR; both checksums must match.
-3. If the harness is unavailable, record an explicit, reviewed skip in the release notes rather than
-   treating the matrix as passed.
-
-V8 specifically depends on this harness: the checks in V1, V2, and V6 use temporary directories, but
-they do not measure host-state checksums.
+The harness only reads the real user state; every artifact run uses a throwaway `HOME`. CI also runs
+the strict acceptance step on the `linux-x64` target.
 
 ## V4: production `linux-strace` on an approved host
 
-**Skipped locally.** This host has `kernel.yama.ptrace_scope=1`, so an unprivileged tracer cannot
-attach to its parent. The shipped behavior is the labeled `linux-heuristic` fallback, which is
-covered by the test suite; it is not a real `linux-strace` production attach.
+**Skipped/blocked: not run.** This host has `kernel.yama.ptrace_scope=1`, and no explicitly approved
+disposable host was used, so the real production `linux-strace` attach has not been exercised. The
+stock behavior here is the labeled `linux-heuristic` fallback, which is covered by the test suite; it
+is not a real `linux-strace` production attach.
 
-The production-strace check requires an explicitly approved disposable Linux host:
+The gated check at [scripts/linux-strace-e2e.ts](../scripts/linux-strace-e2e.ts) refuses to pass
+without the prerequisites: Linux, a non-root user, `strace` on `PATH`, and `ptrace_scope=0`. It never
+changes a sysctl and never escalates. To run it:
 
-1. Record the current value of `kernel.yama.ptrace_scope` and set it to `0` temporarily, with a trap
-   that restores the original value even on failure.
-2. Run real install and trace windows, for example `tret install <release-url> --yes` and
-   `tret trace <tool> --yes`.
-3. Assert from `tret inspect --json` that `capture.backend` is `linux-strace` and that completeness is
-   the expected value for the run.
+1. Use an explicitly approved disposable Linux host. Record the current value of
+   `kernel.yama.ptrace_scope` and set it to `0` temporarily, with a trap that restores the original
+   value even on failure.
+2. Run `bun scripts/linux-strace-e2e.ts`, or set `TRET_REQUIRE_STRACE=1` to turn a missing
+   prerequisite into a failure.
+3. Assert from `tret inspect --json` that `capture.backend` is `linux-strace` with the expected
+   completeness, and that the traced tool ran exactly once.
 4. Confirm the original `ptrace_scope` value is restored.
 
 Never automate the sysctl change in tests or CI, and never change it on a host without explicit
@@ -140,29 +143,27 @@ approval.
 
 ## V5: privileged root strace and fanotify
 
-**Skipped locally; required in CI.** The check needs passwordless `sudo`. On this host
-`sudo -n true` fails with `interactive authentication is required`, so no privileged run was made.
-CI runs `bash scripts/privileged-e2e.sh` on the `linux-x64` target, where the runner has passwordless
-sudo.
+**Passed in CI on `linux-x64`.** The workstation run is skipped because `sudo -n true` fails with
+`interactive authentication is required`, so the recorded result is the CI run. The [main CI
+run](https://github.com/framwrk/tret/actions/runs/41221754679) includes the privileged step and runs
+[scripts/privileged-e2e.sh](../scripts/privileged-e2e.sh) explicitly against both backends:
 
-The privileged script covers a root-owned install, the root privilege recorded in the record, the
-non-root dry-run requiring sudo, and the root uninstall. To verify the capture backend, not just flow
-success:
+- Root strace: `capture.backend: linux-strace`, completeness `complete`.
+- Fanotify: `capture.backend: linux-fanotify`, completeness `partial`, using the packaged helper
+  staged beside a copy of the binary.
 
-1. Run it once with the fanotify helper explicitly selected (`TRET_FANOTIFY`, or by staging the
-   helper under its adjacent `tret-fanotify` name) and once without it, so root strace is selected.
-2. Read the actual backend from `tret inspect --json` (`capture.backend`) or the run log and record
-   which backend ran for each run.
-3. Keep the documented fanotify fidelity limits visible; a completed privileged flow is not proof of
-   correct directory-entry attribution. See [Linux capture fidelity](capture/linux-fidelity.md) and
-   [Linux capture](capture/linux-capture.md).
+This proves the intended backend was selected for each privileged flow. It does **not** prove
+fanotify attribution accuracy: the shipped helper still has the documented F1–F4 fidelity gaps, so a
+completed fanotify run is not proof that its directory-entry records are correct. See [Linux capture
+fidelity](capture/linux-fidelity.md) and [Linux capture](capture/linux-capture.md).
 
 ## V7: cross-target CI
 
-**Pending.** The full suite and release build must run on `linux-x64`, `linux-arm64`, `darwin-x64`,
-and `darwin-arm64` after the Part 2 PRs merge. This branch has not produced that CI run, and no green
-cross-target result is claimed here. Record the CI link and any host-specific skips in the release
-PR.
+**Passed.** The [main CI run
+41221754679](https://github.com/framwrk/tret/actions/runs/41221754679) passed on all four targets:
+`darwin-arm64`, `darwin-x64`, `linux-arm64`, and `linux-x64`. Each target builds and passes `bun run
+lint`, `bun run typecheck`, `bun test`, and `scripts/install.test.sh`. The `linux-x64` job also runs
+the strict acceptance harness and the privileged backend checks above.
 
 ## Known skips and environment gates
 
@@ -171,9 +172,9 @@ PR.
 | `trace command (macOS heuristic capture)` in `src/commands/trace.test.ts` | Skipped unless `process.platform === "darwin"`. This is the single skip in the recorded Linux run.                                                                                                                                                                                                                                                                                                                              |
 | `linux real-strace smoke` in `src/lib/capture/linux/linux.smoke.test.ts`  | Skipped unless the host is Linux and `strace` is on `PATH`. It ran on this host; a host without `strace` skips it.                                                                                                                                                                                                                                                                                                              |
 | Root-sensitive permission tests                                           | `install.test.ts` (`--force reports a failed shell cleanup as failed and keeps the affected record entry`), `macos.test.ts` (`a permission-denied subdirectory is pruned quietly, but an unreadable root is reported`), and `shellconfig.test.ts` (`a failed snippet write reports failed and never cleaned`) are skipped when the suite runs as root, because root can read or write the files the assertions require to fail. |
-| V4 production strace                                                      | Requires an approved disposable host with `ptrace_scope=0`; the stock `ptrace_scope=1` fallback is `linux-heuristic`, not `linux-strace`. Never automated.                                                                                                                                                                                                                                                                      |
-| V5 privileged flow                                                        | Requires passwordless `sudo`; `scripts/privileged-e2e.sh` skips with exit 0 when it is not available. CI runs it on `linux-x64` only.                                                                                                                                                                                                                                                                                           |
-| Acceptance harness and host checksums                                     | `scripts/linux-acceptance.ts` is not on this branch; V3 and V8 remain pending until it lands and runs.                                                                                                                                                                                                                                                                                                                          |
+| V4 production strace                                                      | Requires an explicitly approved disposable host with `ptrace_scope=0`; the stock `ptrace_scope=1` fallback is `linux-heuristic`, not `linux-strace`. Not run, and never automated.                                                                                                                                                                                                                                              |
+| Local V5 privileged run                                                   | Requires passwordless `sudo`; this workstation asks for a password. CI covers the privileged step on `linux-x64`, and that is the recorded result.                                                                                                                                                                                                                                                                              |
+| Acceptance harness environmental skips                                    | The absolute `/etc/profile.d` variant needs `bwrap` and an existing `/etc/profile.d`; elsewhere it would skip. CI sets `TRET_ACCEPTANCE_STRICT=1` so a skip fails the gate. The recorded local and CI runs had 0 skips.                                                                                                                                                                                                         |
 
 Host-specific skips belong in the release notes for that release, not in the permanent support
 contract. See the [release checklist](release-checklist.md) before tagging.
