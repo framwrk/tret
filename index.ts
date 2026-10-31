@@ -16,16 +16,20 @@ import { uninstall } from "./src/commands/uninstall";
 import { update } from "./src/commands/update";
 
 // Everything after `--` belongs to the install script, never to Tret's own flags. `--time` is a
-// dev-only flag: timing a compiled binary is meaningless, so built runs ignore it.
+// dev-only flag: timing a compiled binary is meaningless, so built runs ignore it. `--json` is
+// global, so it is removed here — before the command is chosen — rather than read as a command or a
+// selector; installer arguments after `--` are left untouched.
 const argv = process.argv.slice(2);
 const separator = argv.indexOf("--");
-const ownArgs = (separator === -1 ? argv : argv.slice(0, separator)).filter((arg) => arg !== "--time");
+const preSeparator = separator === -1 ? argv : argv.slice(0, separator);
+const jsonMode = preSeparator.includes("--json");
+const ownArgs = preSeparator.filter((arg) => arg !== "--time" && arg !== "--json");
 const scriptArgs = separator === -1 ? [] : argv.slice(separator + 1);
 
 const command = ownArgs[0];
 
 // JSON mode is decided before anything prints, so a human line can never reach stdout in a `--json` run.
-if (ownArgs.includes("--json")) enableJsonMode();
+if (jsonMode) enableJsonMode();
 
 const timed = IS_DEV && process.argv.includes("--time");
 
@@ -112,8 +116,9 @@ switch (command) {
 
   case "update":
     // `tret update <tool>` updates one tracked tool by re-running its recorded installer; a bare
-    // `tret update` updates Tret itself, so the argument selects which workflow runs.
-    await update(ownArgs[1], ownArgs.includes("--yes"));
+    // `tret update` updates Tret itself, so the argument selects which workflow runs. The selector
+    // is the first non-flag argument, so `update --yes` never names a tool called `--yes`.
+    await update(ownArgs.slice(1).find((arg) => arg !== "--yes"), ownArgs.includes("--yes"));
     break;
 
   case "help":
@@ -177,6 +182,7 @@ function help(): void {
   log(
     `\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, forget, unclaim, uninstall, update)`,
   );
+  log(`\t              --json works before or after the command; after -- it is passed to the install script`);
   log(`\t              Human text and installer output go to the terminal or stderr, so a piped run stays valid JSON`);
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
   log(`\t              shell cleanup edits only config files the old record attributes to the tool; a write failure keeps the old record`);
