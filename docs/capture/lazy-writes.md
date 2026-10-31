@@ -67,8 +67,10 @@ observed the install with macos-heuristic: heuristic attribution, no process tre
 ```
 
 `--no-capture` skips attaching a backend entirely; the installer still runs and the CLI says no window
-was recorded. Capture is **best-effort but never silent**: if a backend cannot attach, the install
-proceeds without a window and says so. The installer runs once either way.
+was recorded. Capture is **best-effort but never silent**: if the platform tracer cannot attach
+before the work starts, `install` and `trace` try the labeled heuristic backend (`linux-heuristic` on
+Linux, `macos-heuristic` on macOS); an install whose fallback also cannot start still runs once
+through the legacy snapshot/diff path. The observed work runs at most once either way.
 
 ### Boundary guarantees
 
