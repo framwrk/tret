@@ -96,7 +96,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 - `uninstall --yes`: skip the confirmation prompt.
 - `trace --yes`: skip the confirmation prompt before running the traced tool.
 - `update --yes`: skip the confirmation prompt when re-running a tracked tool's installer.
-- `--json` (global): write one JSON document to stdout instead of human text; supported by `install`, `list`, `inspect`, `trace`, `forget`, `unclaim`, `uninstall`, and `update`.
+- `--json` (global): write one JSON document to stdout instead of human text; supported by `install`, `list`, `inspect`, `trace`, `forget`, `unclaim`, `uninstall`, and `update`. It works before or after the command; a `--json` after `--` is passed to the install script.
 
 ### Install a tool
 
@@ -172,7 +172,7 @@ tret unclaim opencode ~/.local/bin/opencode
 tret list
 ```
 
-`tret find` has no install journal, so it records a `heuristic` adoption and fingerprints the command plus every node under matching tool folders. Uninstall removes only files whose fingerprints still match, removes the folders they empty, and reports changed or unrelated survivors as conflicts.
+`tret find` has no install journal, so it records a `heuristic` adoption and fingerprints the command plus every node under matching tool folders. Uninstall removes only files whose fingerprints still match, removes the folders they empty, and reports changed or unrelated survivors as conflicts. A missing command name, a name containing a slash, or a flag where the name belongs is a usage error (exit code `2`); a name that is simply not on `PATH` is reported and exits `0`.
 
 Each row shows the tool's name, URL, install date, a `State` column (`installed` when the tracked executable is still on disk, `partial` when it is gone), the executable path, the script's hash, how many files the install owns, and the capture completeness (see [Capture coverage and limits](#capture-coverage-and-limits)). A `partial` row shows `-` for the binary rather than a stale path.
 
@@ -202,7 +202,7 @@ tret trace opencode --yes --json | jq '.added'
 tret update opencode
 ```
 
-With a tool name or record id, `update` re-runs that record's installer URL with the arguments it was originally installed with, keeping the same record id and display name. Tret downloads and validates the replacement script before it removes the working install, so a failed download or validation leaves the current install untouched; a failure while replacing it leaves a reduced record so `uninstall` can still clean up. A bare `tret update` updates Tret itself.
+With a tool name or record id, `update` re-runs that record's installer URL with the arguments it was originally installed with, keeping the same record id and display name. Tret downloads and validates the replacement script before it removes the working install, so a failed download or validation leaves the current install untouched; a failure while replacing it leaves a reduced record so `uninstall` can still clean up. A bare `tret update` updates Tret itself. Global and `update` flags may appear before or after the command and selector (`update --json`, `update <tool> --yes`); only arguments after `--` go to the installer.
 
 ### JSON output and exit codes
 

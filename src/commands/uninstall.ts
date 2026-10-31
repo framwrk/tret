@@ -62,6 +62,9 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     fail("uninstall-not-found", selection.message, EXIT_NOT_FOUND);
   }
   const record = selection.record;
+  // The selector may be a record id; user-facing text, JSON `tool`, and PATH-line matching all use
+  // the record's display name, while the id stays alongside it in JSON.
+  name = record.name;
 
   // A bin shim that points into a package manager's shared global state is removed through the
   // manager, not by deleting that state. The recorded `managedBy` is preferred; a record written
