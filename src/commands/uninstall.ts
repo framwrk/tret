@@ -1,7 +1,7 @@
 import type { AbsolutePath, ManagedInstall, ManagedPackage, RecordV3 } from "../types";
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
-import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "../lib/uninstall-planner";
+import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { confirm, log } from "../lib/utilities";
 import {
@@ -20,17 +20,10 @@ import {
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
-import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
+import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
+import type { ShellCleanup } from "../lib/shellconfig";
 import { fail } from "../lib/failure";
 import { runLogPhase } from "../lib/runlog";
-
-/** The shell-config work an uninstall may do, kept separate from the file plan. */
-type ShellCleanup = {
-  /** Owned paths whose mention in a config line the install is allowed to strip. */
-  dirs: AbsolutePath[];
-  /** Attributed config files with no before-image, still matching their installed state, safe to line-clean. */
-  files: AbsolutePath[];
-};
 
 /**
  * Removes a tool by planning an evidence-based uninstall, printing exactly what it will do, then
@@ -164,7 +157,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   for (const line of formatUninstallPlan(plan, "apply")) {
     log(`\t${line}`);
   }
-  printUnresolvedShell(name, shell.dirs, shell.files, true);
+  const previewedShell = printUnresolvedShell(name, shell.dirs, shell.files, true, shell.hashes);
 
   if (!yes) {
     // JSON mode never prompts; a script that needs the removal to happen must pass --yes.
@@ -232,12 +225,15 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     log(`\t${describeOutcome(outcome)}`, true);
   }
 
-  const rc = removeRcLines(name, shell.dirs, false, shell.files);
+  const rc = removeRcLines(name, shell.dirs, false, shell.files, undefined, shell.hashes);
   for (const cleaned of rc.cleaned) {
     log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
   }
   const cleanedShell = new Set(rc.cleaned.map((cleaned) => cleaned.file));
-  const unresolved = shell.files.filter((file) => !cleanedShell.has(file));
+  const failedShell = new Set(rc.failed);
+  const unresolved = shell.files.filter(
+    (file) => !cleanedShell.has(file) && !failedShell.has(file) && !previewedShell.has(file),
+  );
   for (const file of unresolved) {
     // A shell config with no before-image is detect-only: report it, but never let it block (D2).
     log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
@@ -320,7 +316,7 @@ function printDryRun(
   for (const line of lines) {
     log(`\t${line}`);
   }
-  printUnresolvedShell(name, shell.dirs, shell.files, true);
+  printUnresolvedShell(name, shell.dirs, shell.files, true, shell.hashes);
 
   if (plan.requiresSudo) {
     log("\tnote: some entries are root-owned; re-run with sudo to remove them");
@@ -330,19 +326,29 @@ function printDryRun(
 /**
  * Prints the shell-config lines the cleaner would strip, and reports any attributed config where no
  * line can be safely matched. A config without a before-image is detect-only: it is reported but
- * never keeps the record alive (D2).
+ * never keeps the record alive (D2). Returns the files already reported, so the apply pass does not
+ * repeat a detect-only line the preview already printed.
  */
-function printUnresolvedShell(name: string, dirs: AbsolutePath[], files: AbsolutePath[], dryRun: boolean): void {
-  const rc = removeRcLines(name, dirs, dryRun, files);
+function printUnresolvedShell(
+  name: string,
+  dirs: AbsolutePath[],
+  files: AbsolutePath[],
+  dryRun: boolean,
+  hashes: ReadonlyMap<AbsolutePath, string>,
+): Set<AbsolutePath> {
+  const rc = removeRcLines(name, dirs, dryRun, files, undefined, hashes);
   for (const cleaned of rc.cleaned) {
     log(`\t${dryRun ? "would clean" : "clean"} ${cleaned.file}: ${cleaned.line.trim()}`);
   }
   const cleanedFiles = new Set(rc.cleaned.map((cleaned) => cleaned.file));
+  const failedFiles = new Set(rc.failed);
+  const reported = new Set<AbsolutePath>();
   for (const file of files) {
-    if (!cleanedFiles.has(file)) {
-      log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
-    }
+    if (cleanedFiles.has(file) || failedFiles.has(file)) continue;
+    log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
+    reported.add(file);
   }
+  return reported;
 }
 
 /**
@@ -379,31 +385,8 @@ function withoutManagedInstallState(record: RecordV3, managed: ManagedInstall): 
 }
 
 /**
- * Selects the attributed shell-config mutations the narrow line cleaner should handle: those with
- * no before-image (a before-image is restored by the planner like any other mutation) and whose
- * bytes still match the recorded installed state. A config edited after install is left to the
- * planner, which reports it as a conflict rather than risking a user's later edit.
+ * Saves the reduced record, or drops it when nothing is left to retry.
  */
-function planShellCleanup(record: RecordV3, shellPaths: Set<AbsolutePath>): ShellCleanup {
-  const dirs = record.owned.map((entry) => entry.path);
-  const files: AbsolutePath[] = [];
-
-  for (const entry of record.mutated) {
-    if (!shellPaths.has(entry.path)) continue;
-    if (entry.beforeBlob !== undefined) continue;
-    if (entry.installedHash !== undefined) {
-      const verification = inspectPath(entry.path);
-      if (verification.exists && verification.hash !== undefined && verification.hash !== entry.installedHash) {
-        continue;
-      }
-    }
-    files.push(entry.path);
-  }
-
-  return { dirs, files };
-}
-
-/** Saves the reduced record, or drops it when nothing is left to retry. */
 async function persistRetry(storage: FileStorage, reduced: RecordV3): Promise<void> {
   const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
   if (remaining === 0) {

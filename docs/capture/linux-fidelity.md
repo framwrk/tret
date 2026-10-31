@@ -2,6 +2,11 @@
 
 **Status:** research complete; no capture or trace behavior changed.
 
+> **Naming update (2026-10-31):** the tables and findings below record the backend names at
+> measurement time. The Linux pre-run fallback now reports `capture.backend: "linux-heuristic"` for
+> both `install` and `trace`, with the same `heuristic` completeness value. The measured findings are
+> otherwise unchanged.
+
 This document is the written result of step 5 in `.agents/plans/next-up-ordering.md`. It measures
 what the shipped Linux backend actually records, separates verified behavior from code/kernel
 inference, and evaluates the two mechanisms the rewrite plan had left unspiked: eBPF tracepoints and
@@ -49,7 +54,7 @@ Backend selection is `defaultTracerFactory` in `src/lib/capture/linux/backend.ts
 | Unprivileged, no `strace` on `PATH`                                             | `macos-heuristic` via the install fallback | `heuristic`                        | `selectDefaultTracer` throws before the installer runs                                                 |
 | Root and `tret-fanotify` beside the binary (release archive layout)             | `linux-fanotify`                           | may report `complete`              | Dirent attribution is wrong as shipped (F1–F3)                                                         |
 | Root, no helper found                                                           | `linux-strace`                             | as above                           | Root attach is permitted                                                                               |
-| `--no-capture`, or both backends fail to start                                  | legacy snapshot/diff                       | legacy/unknown                     | No journal                                                                                             |
+| `--no-capture`, or both backends fail to start                                  | legacy snapshot/diff                       | legacy/heuristic                   | No journal; added paths are fingerprinted at record time, while mutation/deletion stays detect-only |
 
 Two consequences worth stating plainly:
 

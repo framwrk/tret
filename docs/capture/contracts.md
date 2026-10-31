@@ -150,6 +150,10 @@ context can carry other records that claim the same paths (D4 shared ownership),
 subtree a recursive removal will clear (see `managedInstall` above). The planner treats each
 delegated root as already gone, so an owned ancestor directory that only held the root is still
 planned for removal instead of being reported `not-empty` against payload the record never owns.
+`skipNonEmptyOwnedDirectories` is set only by forced replacement: a non-empty owned directory
+becomes a non-blocking `skip` (`not-empty`) instead of a conflict, and the directory and its
+surviving files are never recursed into. Ordinary `uninstall` leaves the option off, so the same
+state remains a blocking `not-empty` conflict.
 Each `remove` and `restore` action carries the filesystem state inspected when the plan was made.
 `force` may bypass a known file-hash or symlink-target mismatch already present at that point, as
 well as shared ownership; it does not make a missing/unreadable fingerprint or kind change

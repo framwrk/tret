@@ -1,10 +1,10 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, Diff, RecordV3 } from "../types";
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
-import type { BoundedSessionResult, SessionCoverage } from "../lib/session";
 import { DEFAULT_BACKUP_POLICY, FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { EXIT_BLOCKED, EXIT_USAGE } from "../constants";
 import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
+import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
 import { caseSensitiveForPaths, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
 import { confirm, extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
 import {
@@ -22,19 +22,20 @@ import {
 } from "../lib/package-manager";
 import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
-import { formatCoverage, runBoundedSession } from "../lib/session";
+import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
+import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
-import { MacosHeuristicCaptureBackend } from "../lib/capture/macos";
 import type { ObservationRootsOptions } from "../lib/platform";
 import type { Platform } from "../lib/platform";
-import { captureBackendFor } from "../lib/capture/current";
+import type { SessionCoverage } from "../lib/session";
+import { adoptedEntries } from "../lib/adoption";
 import { diff } from "../lib/diff";
 import { fail } from "../lib/failure";
+import { formatCoverage } from "../lib/session";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
-import { removeRcLines } from "../lib/shellconfig";
 import { resolve } from "node:path";
 import { runInstaller } from "../lib/installer";
 import { runLogPhase } from "../lib/runlog";
@@ -263,7 +264,8 @@ export async function install(
 
   // The installer runs inside a bounded capture window. With capture on, the journal is the sole
   // effects source, so no global snapshot runs. `--no-capture` (or a backend that cannot attach)
-  // falls back to the legacy snapshot/diff, whose hash-less entries uninstall treats as unverified.
+  // falls back to the legacy snapshot/diff; its added paths are fingerprinted from disk at record
+  // time, while mutations and deletions stay detect-only without before-images.
   runLogPhase("run-installer");
   const window = await observeInstall(platform, script, scriptArgs, options, backups, roots, caseSensitive);
   log(
@@ -277,10 +279,13 @@ export async function install(
   // The tool name comes from the executable the install actually put on disk, not the URL or a
   // prompt; when the URL is already tracked, keep the name that install used rather than re-deriving.
   const executable = pickExecutable(effects.owned.map((entry) => entry.path));
-  const name = options.name ?? existing?.name ?? executable?.split("/").pop();
+  const name = recordDisplayName(options.name, existing?.name, executable, url, scriptSha256);
   const missingExecutable = executable === undefined;
-  const canRecordWithoutExecutable = existing !== undefined && force;
-  if (!name || (missingExecutable && !canRecordWithoutExecutable)) {
+  const effectCount = effects.owned.length + effects.mutated.length + effects.deleted.length;
+
+  // A no-executable install that changed observed paths still keeps a partial record, so its files
+  // are never untracked leftovers; one that changed nothing has nothing to record and fails as before.
+  if (missingExecutable && effectCount === 0) {
     fail("install-executable", `install script added no executable command: ${url}`);
   }
 
@@ -346,7 +351,7 @@ export async function install(
     log("Error");
     if (window.exitCode !== 0) log(`\tinstall script exited with code ${window.exitCode}: ${url}`);
     if (missingExecutable) log(`\tinstall script added no executable command: ${url}`);
-    log(`\tkept a partial record for ${name}; inspect it with tret list, remove it with tret uninstall ${name}`);
+    log(`\tkept a partial record for ${name}; inspect it with tret inspect ${name}, remove it with tret uninstall ${name}`);
     emitJsonError("install-partial", failureReason ?? `install script exited with code ${window.exitCode}`);
     process.exit(1);
   }
@@ -400,11 +405,12 @@ type InstallWindow = {
 
 /**
  * Runs the installer once inside a bounded capture window when capture is enabled. Capture is
- * best-effort: a backend that cannot attach must not block the install, but the failure is never
- * silent — the caller reports that no window was observed. The installer runs exactly once either
- * way, and a failed capture close is reported as partial coverage by the session rather than
- * re-running the script. `caseSensitive` is the record-wide probe (D10), handed to both backends so
- * their path keys match the record and journal normalization.
+ * best-effort for `install`: the shared pre-run fallback tries the platform tracer, then the
+ * platform's labeled heuristic backend (`linux-heuristic`/`macos-heuristic`), and only a window that
+ * never starts keeps the legacy snapshot/diff. The installer runs exactly once either way, and a
+ * failed capture close is reported as partial coverage by the session rather than re-running the
+ * script. `caseSensitive` is the record-wide probe (D10), handed to both backends so their path keys
+ * match the record and journal normalization.
  */
 async function observeInstall(
   platform: Platform,
@@ -421,63 +427,85 @@ async function observeInstall(
     return { exitCode, fallback: diff(before, snapshot()) };
   }
 
-  let session: BoundedSessionResult<number>;
-  try {
-    session = await runBoundedSession({
-      backend: options.backend ?? captureBackendFor(platform, caseSensitive),
-      // The installer is spawned as a child of this process, so observing this pid covers it.
-      pid: process.pid,
-      privilege: processPrivilege(),
-      roots,
-      backups,
-      run: () => runInstaller(script, scriptArgs),
-    });
-  } catch (error) {
-    // The platform tracer could not attach (for example `ptrace_scope=1` refuses a child tracing its
-    // parent). The installer has not run yet, so observe it with the labeled scoped-snapshot fallback
-    // instead of running it unwatched; a fallback that itself fails keeps the legacy snapshot/diff.
-    log(`capture unavailable (${message(error)}); observing the install with a heuristic window`);
-    try {
-      const fallback = await runBoundedSession({
-        backend: new MacosHeuristicCaptureBackend({ caseSensitive }),
-        pid: process.pid,
-        privilege: processPrivilege(),
-        roots: heuristicFallbackRoots(roots),
-        backups,
-        run: () => runInstaller(script, scriptArgs),
-      });
-      if (fallback.error !== undefined) throw fallback.error;
-      return { exitCode: fallback.value ?? 1, coverage: fallback.coverage, journal: fallback.journal };
-    } catch (fallbackError) {
-      log(`heuristic capture unavailable (${message(fallbackError)}); the install runs without an observation window`);
-      const before = snapshot();
-      const exitCode = await runInstaller(script, scriptArgs);
-      return { exitCode, fallback: diff(before, snapshot()) };
-    }
+  const attempt = await runCaptureFallback({
+    primary: options.backend ?? captureBackendFor(platform, caseSensitive),
+    fallback: heuristicCaptureBackendFor(platform, caseSensitive),
+    // The installer is spawned as a child of this process, so observing this pid covers it.
+    pid: process.pid,
+    privilege: processPrivilege(),
+    roots,
+    fallbackRoots: heuristicFallbackRoots(roots),
+    backups,
+    run: () => runInstaller(script, scriptArgs),
+    onPrimaryFailure: (error) =>
+      log(`capture unavailable (${message(error)}); observing the install with a heuristic window`),
+    onFallbackFailure: (error) =>
+      log(`heuristic capture unavailable (${message(error)}); the install runs without an observation window`),
+  });
+
+  if (attempt.session === undefined) {
+    // Both backends failed before the installer started, so it has not run yet. Keep the legacy
+    // snapshot/diff path for the install instead of running it unwatched with no observation at all.
+    const before = snapshot();
+    const exitCode = await runInstaller(script, scriptArgs);
+    return { exitCode, fallback: diff(before, snapshot()) };
   }
 
-  if (session.error !== undefined) throw session.error;
-  return { exitCode: session.value ?? 1, coverage: session.coverage, journal: session.journal };
+  if (attempt.session.error !== undefined) throw attempt.session.error;
+  return {
+    exitCode: attempt.session.value ?? 1,
+    coverage: attempt.session.coverage,
+    journal: attempt.session.journal,
+  };
 }
 
 /**
- * Roots for the heuristic fallback: the install scope minus the unbounded system trees `/opt` and
- * `/usr/bin`. The scoped-snapshot engine scans a non-home root whole and, with `--backup`, reads
- * every pre-existing file to keep its bytes; those two trees are shared multi-GB surfaces (a
- * runner's tool cache and system binaries), so keeping them would replay the very stall the
- * baseline walk now prunes. `$HOME` is already part of the install scope on every platform
- * (`captureHomeRoot`), so it is not re-added here: an explicit `--observe-exclude $HOME` must narrow
- * the fallback the same way it narrows a real capture. The narrower `/usr/local/bin` install surface
- * stays.
+ * The record's display name, in the documented precedence order: an explicit `--name`, the name of
+ * the record this install replaces, the installed executable's basename, the final non-empty URL
+ * path segment with a trailing `.sh` removed, and finally a script-hash prefix. The last fallback
+ * keeps a no-executable install nameable even when its URL has no usable path; record ids remain
+ * the unambiguous selector when two fallback names collide.
  */
-export function heuristicFallbackRoots(roots: AbsolutePath[]): AbsolutePath[] {
-  const scoped = new Set(roots);
-  scoped.delete("/opt");
-  scoped.delete("/usr/bin");
-  return [...scoped].sort();
+export function recordDisplayName(
+  provided: string | undefined,
+  replaced: string | undefined,
+  executable: AbsolutePath | undefined,
+  url: string,
+  scriptSha256: string,
+): string {
+  if (provided !== undefined) return provided;
+  if (replaced !== undefined) return replaced;
+  const basename = executable?.split("/").pop();
+  if (basename !== undefined && basename.length > 0) return basename;
+  const segment = finalUrlSegment(url);
+  if (segment !== undefined) return segment;
+  return `partial-${scriptSha256.slice(0, 12)}`;
 }
 
-/** Normalizes the captured journal into effects; a fallback diff maps to hash-less legacy entries. */
+/** The last non-empty URL path segment, without a trailing `.sh`; undefined when the URL has none. */
+function finalUrlSegment(url: string): string | undefined {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    pathname = url;
+  }
+  const segment = pathname
+    .split("/")
+    .filter((part) => part.length > 0)
+    .at(-1);
+  if (segment === undefined) return undefined;
+  const name = segment.replace(/\.sh$/, "");
+  return name.length === 0 ? undefined : name;
+}
+
+/**
+ * Normalizes the captured journal into effects. A fallback diff has no journal, so its added paths
+ * are fingerprinted from their on-disk state at record time: that is the only evidence a later
+ * uninstall can verify, and it keeps `--no-capture` installs removable without relaxing the
+ * planner's rule for records that genuinely lack a fingerprint. Mutations and deletions stay
+ * detect-only because the legacy diff captured no before-image.
+ */
 function buildEffects(window: InstallWindow, caseSensitive: boolean, backups: BackupPolicy): NormalizedEffects {
   if (window.journal) {
     return normalizeJournal({
@@ -491,7 +519,7 @@ function buildEffects(window: InstallWindow, caseSensitive: boolean, backups: Ba
 
   const changes = window.fallback ?? { added: [], edited: [], deleted: [] };
   return {
-    owned: changes.added.map((path) => ({ path, kind: "unknown" as const })),
+    owned: adoptedEntries(changes.added),
     mutated: changes.edited.map((path) => ({ path })),
     deleted: changes.deleted.map((path) => ({ path })),
     diagnostics: [],
@@ -583,9 +611,23 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     };
   }
 
-  const plan = await planner.plan(target, {
+  // Shell configs with no before-image are handled by the narrow line cleaner, not the file planner,
+  // so the two never double-handle a path. Only files this install recorded as mutated are eligible;
+  // a scan of every shell config because a directory is owned is exactly what forced reinstall must
+  // not do.
+  const platform = currentPlatform();
+  const shellPaths = new Set(shellConfigPaths(platform));
+  const shell = planShellCleanup(target, shellPaths);
+  const lineClean = new Set(shell.files);
+  const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
+
+  const plan = await planner.plan(fileRecord, {
     otherRecords: records,
     force: true,
+    // A shared parent directory another tool has since written into is a safe leftover during a
+    // replacement: the old tool's own files are removed, but the directory and the other files are
+    // never recursed into. Ordinary uninstall keeps its blocking `not-empty` conflict.
+    skipNonEmptyOwnedDirectories: true,
     ...(managedInstall === undefined ? {} : { delegatedRoots: [managedInstall.root] }),
   });
 
@@ -607,6 +649,15 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   // Show the same labeled plan as uninstall before a forced reinstall removes anything (D11).
   for (const line of formatUninstallPlan(plan, "apply")) {
     log(`\t${line}`);
+  }
+
+  // A conflict force cannot resolve aborts before package removal, managed-root removal, file
+  // removal, or shell cleanup. The previous install and its record are left exactly as they were,
+  // so a replacement never deletes the old executable and then strands a parent-directory record.
+  if (plan.incomplete) {
+    log("Error");
+    log("\tprevious install is unchanged; resolve the conflicts above, then retry the forced reinstall");
+    process.exit(1);
   }
 
   // The package manager goes first, mirroring `uninstall`: only once it reports the package gone
@@ -652,19 +703,22 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     log(`\t${describeOutcome(outcome)}`);
   }
 
-  const rc = removeRcLines(
-    target.name,
-    target.owned.map((entry) => entry.path),
-    false,
-  );
+  const rc = removeRcLines(target.name, shell.dirs, false, shell.files, platform, shell.hashes);
   for (const cleaned of rc.cleaned) {
     log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
   }
+  for (const file of rc.failed) {
+    log(`\tcould not clean ${file}`);
+  }
 
-  if (result.incomplete) {
+  // A shell config Tret could not write is incomplete work like a failed file removal: keep the
+  // affected record entries for a retry instead of reporting the reinstall as clean.
+  const incomplete = result.incomplete || rc.failed.length > 0;
+  if (incomplete) {
     const reduced = reduceRecordForRetry(
       target,
       result,
+      // A failed file is absent from `cleaned`, so its mutation stays in the reduced record.
       rc.cleaned.map((cleaned) => cleaned.file),
     );
     const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
