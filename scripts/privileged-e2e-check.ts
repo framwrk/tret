@@ -6,11 +6,15 @@
  * Modes (the JSON document is read from stdin):
  *   `name`          a `tret list --json` document; prints the single tracked tool's name
  *   `installed`     a `tret inspect --json` document; the record is root-privileged and owns the fixture
+ *   `capture`       a `tret inspect --json` document; the record reports the expected capture backend
+ *                   (and, when given, the expected completeness) and is root-privileged
  *   `requires-sudo` a `tret uninstall --dry-run --json` document; the plan needs sudo for the fixture
  *   `removed`       a `tret uninstall --json` document; the root-owned path was removed
  *   `dropped`       a `tret list --json` document; the tool is no longer tracked
  *
- * The tool name and the fixture path are the two arguments every mode but `name` needs.
+ * The tool name and the fixture path are the two arguments every mode but `name` needs. The `capture`
+ * mode additionally takes the expected backend (for example `linux-strace`) and an optional expected
+ * completeness after those.
  */
 
 /** One owned path as `tret inspect` reports it. */
@@ -25,6 +29,11 @@ type InspectDocument = {
     privilege: string;
     executable: string;
     state: string;
+    capture: {
+      backend: string;
+      completeness: "complete" | "partial" | "heuristic";
+      confidence: string;
+    };
     owned: InspectOwned[];
     actions: PlannedAction[];
     requiresSudo: boolean;
@@ -37,7 +46,7 @@ type ListDocument = { tools: { name: string }[] };
 /** The `tret uninstall --json` document. */
 type UninstallDocument = { ok: boolean; removed: string[] };
 
-const [mode = "", tool = "", entry = ""] = process.argv.slice(2);
+const [mode = "", tool = "", entry = "", expectedBackend = "", expectedCompleteness = ""] = process.argv.slice(2);
 
 /** Reports a failed assertion and ends the run; every mode below returns only on success. */
 function fail(message: string): never {
@@ -74,6 +83,25 @@ switch (mode) {
     if (owned === undefined) fail(`the record does not own ${entry}`);
     if (owned.kind !== "file") fail(`the record owns ${entry} as ${owned.kind}, expected a file`);
     if (!owned.exists) fail(`the record owns ${entry}, but it is not on disk`);
+    break;
+  }
+
+  case "capture": {
+    if (expectedBackend === "") fail("usage: privileged-e2e-check.ts capture <tool> <entry> <expected-backend> [completeness]");
+    const report = (document as InspectDocument).tool;
+    if (report.privilege !== "root") fail(`the record's privilege is ${report.privilege}, expected root`);
+    const backend = report.capture?.backend;
+    if (backend !== expectedBackend) {
+      fail(`capture.backend is ${String(backend)}, expected ${expectedBackend}`);
+    }
+    const completeness = report.capture.completeness;
+    if (completeness !== "complete" && completeness !== "partial" && completeness !== "heuristic") {
+      fail(`capture.completeness is ${String(completeness)}, expected complete, partial, or heuristic`);
+    }
+    if (expectedCompleteness !== "" && completeness !== expectedCompleteness) {
+      fail(`capture.completeness is ${completeness}, expected ${expectedCompleteness}`);
+    }
+    console.log(`capture.backend ${backend}, completeness ${completeness}`);
     break;
   }
 

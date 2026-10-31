@@ -32,6 +32,14 @@ jobs:
       - run: bun test
       - name: Build ${{ matrix.target }}
         run: bash scripts/build.sh ${{ matrix.target }}
+      # Drive the built Linux x64 artifact through the reported acceptance findings in a throwaway
+      # HOME. Strict mode turns an environmental skip (for example a non-stock Yama setting) into a
+      # failure so a release gate cannot pass without the trace coverage.
+      - name: Linux release acceptance for ${{ matrix.target }}
+        if: matrix.target == 'linux-x64'
+        env:
+          TRET_ACCEPTANCE_STRICT: "1"
+        run: bun scripts/linux-acceptance.ts
       # The ubuntu runner has passwordless sudo, so only linux-x64 runs the root install and uninstall.
       - name: Privileged install and uninstall for ${{ matrix.target }}
         if: matrix.target == 'linux-x64'
