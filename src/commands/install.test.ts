@@ -10,7 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { extractBackupSizeFlag, heuristicFallbackRoots, parseObserveFlags } from "./install";
+import { extractBackupSizeFlag, heuristicFallbackRoots, parseObserveFlags, recordDisplayName } from "./install";
 import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -146,6 +146,28 @@ if [ -e "$HOME/.local/bin/mytool" ]; then exit 99; fi
 mkdir -p "$HOME/.config/mytool"
 printf 'recovery data\\n' > "$HOME/.config/mytool/recovery.txt"
 exit 9
+`;
+
+// A fresh installer that changes tracked state but adds no executable. It must leave a partial
+// record so those changes stay inspectable and removable instead of untracked leftovers.
+const NO_EXECUTABLE_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.config/noexec"
+printf 'config\\n' > "$HOME/.config/noexec/config"
+printf 'state\\n' > "$HOME/.local/share/noexec-state"
+`;
+
+// The same shape with a non-zero exit, so the partial record also has to carry the failure reason.
+const NO_EXECUTABLE_FAIL_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.config/noexec"
+printf 'config\\n' > "$HOME/.config/noexec/config"
+exit 4
+`;
+
+// An installer that changes nothing and adds no executable has nothing to record.
+const ZERO_EFFECT_SCRIPT = `#!/bin/bash
+exit 0
 `;
 
 // Defect #3: an installer that writes a tool directory and a dotfile directly at `$HOME` (the shape
@@ -400,6 +422,78 @@ describe("install -> list -> uninstall", () => {
       expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
       expect(existsSync(recoveryPath)).toBe(false);
       expect(readStore(home).records).toHaveLength(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a fresh no-executable install keeps a partial record and uninstalls its changes", async () => {
+    const home = makeHome();
+    const server = serve(NO_EXECUTABLE_SCRIPT);
+    const config = join(home, ".config", "noexec", "config");
+    try {
+      expect(await runCli(["install", server.url], home)).not.toBe(0);
+
+      const records = readStore(home).records;
+      expect(records).toHaveLength(1);
+      const record = records[0]!;
+      // Without --name, the final URL path segment (`install.sh`) is the deterministic fallback.
+      expect(record).toMatchObject({ name: "install", executable: "", capture: { completeness: "partial" } });
+      expect(record.capture.segments[0]?.partialReason).toContain("no executable command");
+      expect(record.owned.some((entry) => entry.path === config)).toBe(true);
+
+      // `list` shows it as a partial record with no binary; `inspect` can read it.
+      const listed = await runCliResult(["list"], home);
+      expect(listed.code).toBe(0);
+      const row = listed.stderr.split("\n").find((line) => line.startsWith("install "));
+      expect(row).toMatch(/\bpartial\s+-\s/);
+
+      const inspected = await runCliResult(["inspect", "install", "--json"], home);
+      expect(inspected.code).toBe(0);
+      expect(JSON.parse(inspected.stdout).tool).toMatchObject({ name: "install", executable: "", state: "partial" });
+
+      // There is no executable to run, so trace refuses instead of tracing nothing.
+      const traced = await runCliResult(["trace", "install", "--yes"], home);
+      expect(traced.code).toBe(2);
+      expect(traced.stderr).toContain("no tracked executable to run");
+
+      expect(await runCli(["uninstall", "install", "--yes"], home)).toBe(0);
+      expect(existsSync(config)).toBe(false);
+      expect(readStore(home).records).toHaveLength(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a non-zero no-executable install honors --name and cleans up on uninstall", async () => {
+    const home = makeHome();
+    const server = serve(NO_EXECUTABLE_FAIL_SCRIPT);
+    const config = join(home, ".config", "noexec", "config");
+    try {
+      expect(await runCli(["install", server.url, "--name", "noexec-tool"], home)).not.toBe(0);
+
+      const records = readStore(home).records;
+      expect(records).toHaveLength(1);
+      const record = records[0]!;
+      expect(record).toMatchObject({ name: "noexec-tool", executable: "", capture: { completeness: "partial" } });
+      expect(record.capture.segments[0]?.partialReason).toContain("4");
+      expect(record.capture.segments[0]?.partialReason).toContain("no executable command");
+      expect(record.owned.some((entry) => entry.path === config)).toBe(true);
+
+      expect(await runCli(["uninstall", "noexec-tool", "--yes"], home)).toBe(0);
+      expect(existsSync(config)).toBe(false);
+      expect(readStore(home).records).toHaveLength(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a no-executable install with no observed changes creates no record", async () => {
+    const home = makeHome();
+    const server = serve(ZERO_EFFECT_SCRIPT);
+    try {
+      expect(await runCli(["install", server.url], home)).not.toBe(0);
+      expect(existsSync(join(home, ".tret", "records.json"))).toBe(false);
     } finally {
       await server.stop();
     }
@@ -694,6 +788,25 @@ describe("install -> list -> uninstall", () => {
     } finally {
       await server.stop();
     }
+  });
+});
+
+describe("record display names", () => {
+  test("follows the documented precedence and never returns an empty name", () => {
+    const sha = "a".repeat(64);
+    const url = "https://example.com/tools/install.sh";
+
+    expect(recordDisplayName("flag-name", "old-name", "/home/u/.local/bin/tool", url, sha)).toBe("flag-name");
+    expect(recordDisplayName(undefined, "old-name", "/home/u/.local/bin/tool", url, sha)).toBe("old-name");
+    expect(recordDisplayName(undefined, undefined, "/home/u/.local/bin/tool", url, sha)).toBe("tool");
+    expect(recordDisplayName(undefined, undefined, undefined, url, sha)).toBe("install");
+    expect(recordDisplayName(undefined, undefined, undefined, "https://example.com/tools/runner", sha)).toBe("runner");
+    expect(recordDisplayName(undefined, undefined, undefined, "https://example.com/", sha)).toBe(
+      `partial-${sha.slice(0, 12)}`,
+    );
+    expect(recordDisplayName(undefined, undefined, undefined, "https://example.com/.sh", sha)).toBe(
+      `partial-${sha.slice(0, 12)}`,
+    );
   });
 });
 
