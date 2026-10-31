@@ -17,7 +17,8 @@
 #             *selection* only: the shipped helper's documented F1-F4 fidelity gaps (see
 #             docs/capture/linux-fidelity.md and docs/capture/linux-capture.md) mean it does not
 #             attribute the fixture file correctly, so its record is not claimed as proven and no
-#             ownership or uninstall assertion is made for it.
+#             ownership or uninstall assertion is made for it. A helper that cannot attach at all is
+#             a hard failure that reports the kernel's loss reason, never a skipped assertion.
 #
 # The fixture installer is served over loopback HTTP and every `tret` run gets its own temporary
 # HOME, so no real user state is touched. Each run uses its own unique fixture path under /opt, and
@@ -276,6 +277,13 @@ esac
 FANOTIFY_ENTRY="$FIXTURE_FANOTIFY/bin/$TOOL"
 FANOTIFY_NAME="$(sudo -n env HOME="$HOME_FANOTIFY" "$BIN" list --json | "$BUN" "$CHECK" name)" || {
   cat "$WORK/fanotify-install.log" >&2
+  # The shipped helper requests FAN_CREATE, FAN_ATTRIB and FAN_MOVED_* together with
+  # FAN_MARK_MOUNT. The kernel rejects that combination with EINVAL (mount marks may only request
+  # events that can be reported with an fd), so the helper can never attach. Keep the backend
+  # assertion strict and name the reproduction instead of accepting the empty record.
+  if grep -q "fanotify_mark failed" "$WORK/fanotify-install.log"; then
+    fail "linux-fanotify was selected but the packaged helper could not mark an observe root: fanotify_mark rejected its mask (FAN_MARK_MOUNT with FAN_CREATE/FAN_ATTRIB/FAN_MOVED_*) with EINVAL, so it captured no events and saved no record. This is a product bug in src/lib/capture/linux/helper/tret-fanotify.c; the assertion is intentionally not weakened."
+  fi
   fail "the fanotify root install did not record exactly one tool"
 }
 inspect_capture fanotify "$HOME_FANOTIFY" "$FANOTIFY_NAME" "$FANOTIFY_ENTRY" linux-fanotify
