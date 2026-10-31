@@ -277,10 +277,13 @@ export async function install(
   // The tool name comes from the executable the install actually put on disk, not the URL or a
   // prompt; when the URL is already tracked, keep the name that install used rather than re-deriving.
   const executable = pickExecutable(effects.owned.map((entry) => entry.path));
-  const name = options.name ?? existing?.name ?? executable?.split("/").pop();
+  const name = recordDisplayName(options.name, existing?.name, executable, url, scriptSha256);
   const missingExecutable = executable === undefined;
-  const canRecordWithoutExecutable = existing !== undefined && force;
-  if (!name || (missingExecutable && !canRecordWithoutExecutable)) {
+  const effectCount = effects.owned.length + effects.mutated.length + effects.deleted.length;
+
+  // A no-executable install that changed observed paths still keeps a partial record, so its files
+  // are never untracked leftovers; one that changed nothing has nothing to record and fails as before.
+  if (missingExecutable && effectCount === 0) {
     fail("install-executable", `install script added no executable command: ${url}`);
   }
 
@@ -342,7 +345,7 @@ export async function install(
     log("Error");
     if (window.exitCode !== 0) log(`\tinstall script exited with code ${window.exitCode}: ${url}`);
     if (missingExecutable) log(`\tinstall script added no executable command: ${url}`);
-    log(`\tkept a partial record for ${name}; inspect it with tret list, remove it with tret uninstall ${name}`);
+    log(`\tkept a partial record for ${name}; inspect it with tret inspect ${name}, remove it with tret uninstall ${name}`);
     emitJsonError("install-partial", failureReason ?? `install script exited with code ${window.exitCode}`);
     process.exit(1);
   }
@@ -471,6 +474,46 @@ export function heuristicFallbackRoots(roots: AbsolutePath[]): AbsolutePath[] {
   scoped.delete("/opt");
   scoped.delete("/usr/bin");
   return [...scoped].sort();
+}
+
+/**
+ * The record's display name, in the documented precedence order: an explicit `--name`, the name of
+ * the record this install replaces, the installed executable's basename, the final non-empty URL
+ * path segment with a trailing `.sh` removed, and finally a script-hash prefix. The last fallback
+ * keeps a no-executable install nameable even when its URL has no usable path; record ids remain
+ * the unambiguous selector when two fallback names collide.
+ */
+export function recordDisplayName(
+  provided: string | undefined,
+  replaced: string | undefined,
+  executable: AbsolutePath | undefined,
+  url: string,
+  scriptSha256: string,
+): string {
+  if (provided !== undefined) return provided;
+  if (replaced !== undefined) return replaced;
+  const basename = executable?.split("/").pop();
+  if (basename !== undefined && basename.length > 0) return basename;
+  const segment = finalUrlSegment(url);
+  if (segment !== undefined) return segment;
+  return `partial-${scriptSha256.slice(0, 12)}`;
+}
+
+/** The last non-empty URL path segment, without a trailing `.sh`; undefined when the URL has none. */
+function finalUrlSegment(url: string): string | undefined {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    pathname = url;
+  }
+  const segment = pathname
+    .split("/")
+    .filter((part) => part.length > 0)
+    .at(-1);
+  if (segment === undefined) return undefined;
+  const name = segment.replace(/\.sh$/, "");
+  return name.length === 0 ? undefined : name;
 }
 
 /** Normalizes the captured journal into effects; a fallback diff maps to hash-less legacy entries. */
