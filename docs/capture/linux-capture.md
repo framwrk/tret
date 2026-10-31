@@ -268,6 +268,32 @@ bun run lint
 
 The fixture scripts require only POSIX `sh` and execute no network or privileged operations.
 
+## Production-attach verification (manual, gated)
+
+`linux.smoke.test.ts` runs the installer **under** strace, so it cannot cover the parent attach that
+`install` and `trace` use in production. `scripts/linux-strace-e2e.ts` is the separate real check for
+that path (plan V4). It drives a built `dist/tret-linux-<arch>` (or `TRET_BIN`) against a temporary
+HOME and a loopback fixture installer:
+
+- `install` must save a record whose `capture.backend` is `linux-strace`; the script prints the
+  completeness and any partial reason.
+- `trace` must use `linux-strace`, append exactly one `trace` segment, and run the fixture tool
+  exactly once.
+- The real `~/.tret/records.json` and `~/.bashrc` are hashed before and after and must be unchanged;
+  the fixtures and temporary HOME are removed afterward.
+
+It requires `/proc/sys/kernel/yama/ptrace_scope` to already be `0` on a disposable host. The script
+only reads that file; it never changes it, any other sysctl, or machine settings, and it is not part
+of CI or `bun test`. On any other scope (or a non-Linux/root host without `strace`) it prints a
+precise skip and exits 0. Set `TRET_REQUIRE_STRACE=1` to make a skip an error instead:
+
+```
+bash scripts/build.sh linux-x64
+bun scripts/linux-strace-e2e.ts                        # scope must already be 0
+TRET_REQUIRE_STRACE=1 bun scripts/linux-strace-e2e.ts  # required host: skip fails
+TRET_BIN=/path/to/tret bun scripts/linux-strace-e2e.ts
+```
+
 ## Known limitations
 
 Measured details and evidence are in `docs/capture/linux-fidelity.md`; this list is the short
