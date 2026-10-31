@@ -108,7 +108,7 @@ export type OwnedEntry = {
   kind: OwnedKind;
   /** Symlink target, recorded instead of following the link; only set when `kind` is "symlink". */
   linkTarget?: AbsolutePath;
-  /** sha256 of the installed content; absent for directories and for hash-less heuristic records. */
+  /** sha256 of the installed content; absent for directories and for legacy records recorded without one. */
   installedHash?: string;
 };
 

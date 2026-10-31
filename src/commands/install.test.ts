@@ -2,9 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
   rmSync,
   symlinkSync,
@@ -123,6 +125,18 @@ chmod +x "$HOME/.local/bin/mytool"
 printf 'setting = 1\\n' > "$HOME/.config/mytool/config"
 `;
 
+// The no-capture fallback records a before/after diff: the executable and symlink appear as added
+// files inside the shared `~/.local/bin`, while the config tree and empty state folder are added
+// directories whose contents only a record-time fingerprint can make removable.
+const NO_CAPTURE_SCRIPT = `#!/bin/bash
+set -e
+mkdir -p "$HOME/.local/bin" "$HOME/.config/nct" "$HOME/.nct-state"
+printf '#!/bin/sh\\necho nct\\n' > "$HOME/.local/bin/nct"
+chmod +x "$HOME/.local/bin/nct"
+ln -s nct "$HOME/.local/bin/nct-link"
+printf 'setting = 1\\n' > "$HOME/.config/nct/config"
+`;
+
 const FAIL_SCRIPT = `#!/bin/bash
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho boo\\n' > "$HOME/.local/bin/badtool"
@@ -225,8 +239,8 @@ type StoredRecord = {
   name: string;
   source: string;
   executable: string;
-  capture: { completeness: string; segments: { kind: string; partialReason?: string }[] };
-  owned: { path: string; kind?: string; installedHash?: string }[];
+  capture: { backend: string; completeness: string; segments: { kind: string; partialReason?: string }[] };
+  owned: { path: string; kind?: string; installedHash?: string; linkTarget?: string }[];
   managedBy?: { manager: string; package: string; globalRoot?: string };
   managedInstall?: { kind: string; layout: string; root: string };
 };
@@ -297,21 +311,111 @@ describe("install -> list -> uninstall", () => {
     }
   });
 
-  test("--no-capture records through the legacy snapshot fallback as a hash-less v3 record", async () => {
+  test("--no-capture fingerprints added paths so a fresh install uninstalls normally", async () => {
     const home = makeHome();
-    const server = serve(INSTALL_SCRIPT);
+    const server = serve(NO_CAPTURE_SCRIPT);
+    const executable = join(home, ".local", "bin", "nct");
+    const link = join(home, ".local", "bin", "nct-link");
+    const configDir = join(home, ".config", "nct");
+    const config = join(configDir, "config");
+    const stateDir = join(home, ".nct-state");
     try {
       expect(await runCli(["install", server.url, "--no-capture"], home)).toBe(0);
 
       const file = readStore(home);
       expect(file.version).toBe(3);
-      const record = file.records.find((entry) => entry.name === "mytool");
+      const record = file.records.find((entry) => entry.name === "nct");
       expect(record).toBeDefined();
+      expect(record?.capture.backend).toBe("none");
       expect(record?.capture.completeness).toBe("heuristic");
-      // With no journal there are no fingerprints: uninstall must treat these as unverified.
-      expect(record?.owned.every((entry) => entry.installedHash === undefined)).toBe(true);
+      expect(record?.capture.segments[0]?.partialReason).toContain("capture disabled");
+
+      const owned = new Map(record?.owned.map((entry) => [entry.path, entry]));
+      expect(owned.get(executable)).toMatchObject({ kind: "file" });
+      expect(owned.get(executable)?.installedHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(owned.get(link)).toMatchObject({ kind: "symlink", linkTarget: "nct" });
+      expect(owned.get(config)).toMatchObject({ kind: "file" });
+      expect(owned.get(config)?.installedHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(owned.get(configDir)).toMatchObject({ kind: "directory" });
+      expect(owned.get(configDir)?.installedHash).toBeUndefined();
+      expect(owned.get(stateDir)).toMatchObject({ kind: "directory" });
+      expect(owned.size).toBe(5);
+      expect(record?.owned.every((entry) => entry.kind !== "unknown")).toBe(true);
+
+      // An ordinary uninstall verifies those fingerprints, removes the additions, and drops the record.
+      expect(await runCli(["uninstall", "nct", "--yes"], home)).toBe(0);
+      expect(existsSync(executable)).toBe(false);
+      expect(existsSync(link)).toBe(false);
+      expect(existsSync(configDir)).toBe(false);
+      expect(existsSync(stateDir)).toBe(false);
+      expect(readStore(home).records).toHaveLength(0);
     } finally {
       await server.stop();
+    }
+  });
+
+  test("--no-capture uninstall keeps changed content and symlink targets without --force", async () => {
+    const home = makeHome();
+    const server = serve(NO_CAPTURE_SCRIPT);
+    const executable = join(home, ".local", "bin", "nct");
+    const link = join(home, ".local", "bin", "nct-link");
+    try {
+      expect(await runCli(["install", server.url, "--no-capture"], home)).toBe(0);
+      writeFileSync(executable, "changed by the user\n");
+      rmSync(link);
+      symlinkSync("elsewhere", link);
+
+      const result = await runCliResult(["uninstall", "nct", "--yes"], home);
+
+      expect(result.code).toBe(1);
+      expect(readFileSync(executable, "utf8")).toBe("changed by the user\n");
+      expect(readlinkSync(link)).toBe("elsewhere");
+      expect(result.stderr).toContain(`keep ${executable} (modified)`);
+      expect(result.stderr).toContain(`keep ${link} (modified)`);
+      const records = readStore(home).records;
+      expect(records).toHaveLength(1);
+      expect(records[0]?.owned.map((entry) => entry.path)).toEqual(expect.arrayContaining([executable, link]));
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a hand-written unknown record stays unremovable with and without force", async () => {
+    const home = makeHome();
+    const legacy = join(home, ".local", "bin", "legacy");
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(legacy, "#!/bin/sh\necho legacy\n");
+    writeRecords(home, [
+      {
+        id: "rec-legacy",
+        name: "legacy",
+        source: "install",
+        url: "https://example.com/install.sh",
+        installedAt: "2026-10-01T00:00:00.000Z",
+        executable: legacy,
+        scriptSha256: "a".repeat(64),
+        capture: {
+          backend: "legacy-v2",
+          completeness: "heuristic",
+          segments: [{ kind: "install", startedAt: "2026-10-01T00:00:00.000Z" }],
+        },
+        privilege: "user",
+        caseSensitive: true,
+        owned: [{ path: legacy, kind: "unknown" }],
+        mutated: [],
+        deleted: [],
+      },
+    ]);
+
+    for (const extra of [[], ["--force"]] as string[][]) {
+      const result = await runCliResult(["uninstall", "legacy", "--yes", ...extra], home);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(`keep ${legacy} (unverified)`);
+      expect(existsSync(legacy)).toBe(true);
+      const records = readStore(home).records;
+      expect(records).toHaveLength(1);
+      expect(records[0]?.owned).toEqual([{ path: legacy, kind: "unknown" }]);
     }
   });
 

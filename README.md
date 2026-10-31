@@ -83,7 +83,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 | `tret update [tool_name]`                        | Update Tret to the latest release; with a tool name, re-run that tool's recorded installer                                                |
 
 - `install --force`: fetch and validate the replacement script, then uninstall the tool and reinstall it from a clean capture.
-- `install --no-capture`: run the installer without a capture window.
+- `install --no-capture`: run the installer without a capture window. The fallback snapshot fingerprints each added file and symlink (and every node under a newly added folder) at record time, so a fresh `--no-capture` install can still be uninstalled normally; mutations and deletions without before-images stay detect-only, and older records that lack fingerprints remain unverified.
 - `install --backup`: save before-images so overwritten or deleted files can be restored on uninstall.
 - `install --backup-size <bytes>`: set the per-file before-image size limit for this install (a positive integer; requires `--backup`; the default is 1 MiB).
 - `install --observe <path>`: also observe this absolute path in the install's capture window, for an installer that writes outside the default roots (repeatable).
