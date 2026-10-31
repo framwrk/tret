@@ -82,7 +82,7 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 | `tret forget <tool_name>`                        | Stop tracking a tool without touching its files                                                                                           |
 | `tret update [tool_name]`                        | Update Tret to the latest release; with a tool name, re-run that tool's recorded installer                                                |
 
-- `install --force`: fetch and validate the replacement script, then uninstall the tool and reinstall it from a clean capture.
+- `install --force`: fetch and validate the replacement script, then uninstall the tool and reinstall it from a clean capture. Shell cleanup touches only config files the old record attributes to the tool; a config it cannot rewrite keeps the old record for a retry.
 - `install --no-capture`: run the installer without a capture window.
 - `install --backup`: save before-images so overwritten or deleted files can be restored on uninstall.
 - `install --backup-size <bytes>`: set the per-file before-image size limit for this install (a positive integer; requires `--backup`; the default is 1 MiB).
@@ -116,7 +116,7 @@ To make overwritten or deleted files restorable, opt in with `--backup`. `--back
 tret install https://example.com/install.sh --backup --backup-size 524288
 ```
 
-For `install --force`, a failed download leaves the current install and its record untouched. Once the old install has been removed, Tret does not roll it back: if the replacement exits non-zero or creates no discoverable executable, Tret saves a partial recovery record under the old tool name with the changes the capture observed. A no-executable record is shown as `partial` with no binary. Use `tret list` to inspect it and `tret uninstall <name>` to remove its recorded changes. Recovery is limited to observed changes; only before-images captured with `--backup` can be restored.
+For `install --force`, a failed download leaves the current install and its record untouched. Once the old install has been removed, Tret does not roll it back: if the replacement exits non-zero or creates no discoverable executable, Tret saves a partial recovery record under the old tool name with the changes the capture observed. A no-executable record is shown as `partial` with no binary. Use `tret list` to inspect it and `tret uninstall <name>` to remove its recorded changes. Recovery is limited to observed changes; only before-images captured with `--backup` can be restored. The previous install's shell cleanup uses the same attributed-file selection as `uninstall`: it edits only config files the record says the install changed, never other files in a shared snippet directory such as `/etc/profile.d`. If a selected config cannot be rewritten, the failed file is reported as failed, no `cleaned` line is printed for it, and the old record keeps that entry so the reinstall stops before running the replacement.
 
 Each install runs inside a bounded capture window. Tret prints a line describing it: the backend, whether coverage is `complete`, `partial`, or `heuristic`, the window's start and end, and how many events and roots were observed.
 

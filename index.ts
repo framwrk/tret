@@ -179,6 +179,7 @@ function help(): void {
   );
   log(`\t              Human text and installer output go to the terminal or stderr, so a piped run stays valid JSON`);
   log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
+  log(`\t              shell cleanup edits only config files the old record attributes to the tool; a write failure keeps the old record`);
   log(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
   log(`\t              unverified paths and state changes after planning still block removal`);
   log(`\t              delegated-removal overlap always blocks, including with --force`);

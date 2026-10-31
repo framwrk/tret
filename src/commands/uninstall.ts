@@ -1,6 +1,6 @@
 import type { AbsolutePath, ManagedInstall, ManagedPackage, RecordV3 } from "../types";
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
-import { VerifiedUninstallPlanner, formatUninstallPlan, inspectPath } from "../lib/uninstall-planner";
+import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { confirm, log } from "../lib/utilities";
 import {
@@ -19,18 +19,11 @@ import {
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
-import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
+import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
+import type { ShellCleanup } from "../lib/shellconfig";
 import { FileStorage } from "../lib/store";
 import { fail } from "../lib/failure";
 import { runLogPhase } from "../lib/runlog";
-
-/** The shell-config work an uninstall may do, kept separate from the file plan. */
-type ShellCleanup = {
-  /** Owned paths whose mention in a config line the install is allowed to strip. */
-  dirs: AbsolutePath[];
-  /** Attributed config files with no before-image, still matching their installed state, safe to line-clean. */
-  files: AbsolutePath[];
-};
 
 /**
  * Removes a tool by planning an evidence-based uninstall, printing exactly what it will do, then
@@ -375,31 +368,8 @@ function withoutManagedInstallState(record: RecordV3, managed: ManagedInstall): 
 }
 
 /**
- * Selects the attributed shell-config mutations the narrow line cleaner should handle: those with
- * no before-image (a before-image is restored by the planner like any other mutation) and whose
- * bytes still match the recorded installed state. A config edited after install is left to the
- * planner, which reports it as a conflict rather than risking a user's later edit.
+ * Saves the reduced record, or drops it when nothing is left to retry.
  */
-function planShellCleanup(record: RecordV3, shellPaths: Set<AbsolutePath>): ShellCleanup {
-  const dirs = record.owned.map((entry) => entry.path);
-  const files: AbsolutePath[] = [];
-
-  for (const entry of record.mutated) {
-    if (!shellPaths.has(entry.path)) continue;
-    if (entry.beforeBlob !== undefined) continue;
-    if (entry.installedHash !== undefined) {
-      const verification = inspectPath(entry.path);
-      if (verification.exists && verification.hash !== undefined && verification.hash !== entry.installedHash) {
-        continue;
-      }
-    }
-    files.push(entry.path);
-  }
-
-  return { dirs, files };
-}
-
-/** Saves the reduced record, or drops it when nothing is left to retry. */
 async function persistRetry(storage: FileStorage, reduced: RecordV3): Promise<void> {
   const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
   if (remaining === 0) {

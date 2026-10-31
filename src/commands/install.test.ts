@@ -227,9 +227,14 @@ type StoredRecord = {
   executable: string;
   capture: { completeness: string; segments: { kind: string; partialReason?: string }[] };
   owned: { path: string; kind?: string; installedHash?: string }[];
+  mutated?: { path: string; installedHash?: string }[];
   managedBy?: { manager: string; package: string; globalRoot?: string };
   managedInstall?: { kind: string; layout: string; root: string };
 };
+
+function sha256Text(text: string): string {
+  return new Bun.CryptoHasher("sha256").update(text).digest("hex");
+}
 
 function readStore(home: string): { version: number; records: StoredRecord[] } {
   return JSON.parse(readFileSync(join(home, ".tret", "records.json"), "utf8"));
@@ -376,6 +381,65 @@ describe("install -> list -> uninstall", () => {
       await server.stop();
     }
   });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "--force reports a failed shell cleanup as failed and keeps the affected record entry",
+    async () => {
+      const home = makeHome();
+      const server = serve(INSTALL_SCRIPT);
+      const executable = join(home, ".local", "bin", "mytool");
+      const binary = "#!/bin/sh\necho mytool\n";
+      const rcFile = join(home, ".zshrc");
+      const rcContent = `export PATH=${executable}:$PATH\n`;
+      mkdirSync(join(home, ".local", "bin"), { recursive: true });
+      writeFileSync(executable, binary);
+      chmodSync(executable, 0o755);
+      writeFileSync(rcFile, rcContent);
+      // Readable but not writable: the line cleaner can only fail after selecting this attributed file.
+      chmodSync(rcFile, 0o444);
+      writeRecords(home, [
+        {
+          id: "rec-old",
+          name: "mytool",
+          source: "install",
+          url: server.url,
+          installedAt: "2026-10-01T00:00:00.000Z",
+          executable,
+          scriptSha256: "a".repeat(64),
+          capture: {
+            backend: "none",
+            completeness: "heuristic",
+            segments: [{ kind: "install", startedAt: "2026-10-01T00:00:00.000Z" }],
+          },
+          privilege: "user",
+          caseSensitive: true,
+          owned: [{ path: executable, kind: "file", installedHash: sha256Text(binary) }],
+          mutated: [{ path: rcFile, installedHash: sha256Text(rcContent) }],
+          deleted: [],
+        },
+      ]);
+
+      try {
+        const result = await runCliResult(["install", server.url, "--force", "--no-capture"], home);
+
+        expect(result.code).not.toBe(0);
+        const output = `${result.stdout}\n${result.stderr}\n${runLogText(home)}`;
+        expect(output).toContain(`could not clean ${rcFile}`);
+        expect(output).not.toContain(`cleaned ${rcFile}`);
+        expect(readFileSync(rcFile, "utf8")).toBe(rcContent);
+        // The failed previous removal stops the reinstall before the replacement runs.
+        expect(existsSync(executable)).toBe(false);
+
+        const records = readStore(home).records;
+        expect(records).toHaveLength(1);
+        expect(records[0]?.id).toBe("rec-old");
+        expect(records[0]?.owned).toEqual([]);
+        expect(records[0]?.mutated).toEqual([{ path: rcFile, installedHash: sha256Text(rcContent) }]);
+      } finally {
+        await server.stop();
+      }
+    },
+  );
 
   test("--force records and allows removal of changes when the replacement adds no executable", async () => {
     const home = makeHome();

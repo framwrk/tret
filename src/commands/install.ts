@@ -34,7 +34,7 @@ import { fail } from "../lib/failure";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
-import { removeRcLines } from "../lib/shellconfig";
+import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import { resolve } from "node:path";
 import { runInstaller } from "../lib/installer";
 import { runLogPhase } from "../lib/runlog";
@@ -579,7 +579,17 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     };
   }
 
-  const plan = await planner.plan(target, {
+  // Shell configs with no before-image are handled by the narrow line cleaner, not the file planner,
+  // so the two never double-handle a path. Only files this install recorded as mutated are eligible;
+  // a scan of every shell config because a directory is owned is exactly what forced reinstall must
+  // not do.
+  const platform = currentPlatform();
+  const shellPaths = new Set(shellConfigPaths(platform));
+  const shell = planShellCleanup(target, shellPaths);
+  const lineClean = new Set(shell.files);
+  const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
+
+  const plan = await planner.plan(fileRecord, {
     otherRecords: records,
     force: true,
     ...(managedInstall === undefined ? {} : { delegatedRoots: [managedInstall.root] }),
@@ -648,19 +658,22 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     log(`\t${describeOutcome(outcome)}`);
   }
 
-  const rc = removeRcLines(
-    target.name,
-    target.owned.map((entry) => entry.path),
-    false,
-  );
+  const rc = removeRcLines(target.name, shell.dirs, false, shell.files, platform);
   for (const cleaned of rc.cleaned) {
     log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
   }
+  for (const file of rc.failed) {
+    log(`\tcould not clean ${file}`);
+  }
 
-  if (result.incomplete) {
+  // A shell config Tret could not write is incomplete work like a failed file removal: keep the
+  // affected record entries for a retry instead of reporting the reinstall as clean.
+  const incomplete = result.incomplete || rc.failed.length > 0;
+  if (incomplete) {
     const reduced = reduceRecordForRetry(
       target,
       result,
+      // A failed file is absent from `cleaned`, so its mutation stays in the reduced record.
       rc.cleaned.map((cleaned) => cleaned.file),
     );
     const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;

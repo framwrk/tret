@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { removeRcLines, shellConfigPaths } from "./shellconfig";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { planShellCleanup, removeRcLines, shellConfigPaths } from "./shellconfig";
 import { LINUX_PLATFORM } from "./platform";
 import type { Platform } from "./platform";
+import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -16,6 +17,41 @@ function testHome(): string {
   const home = mkdtempSync(join(tmpdir(), "tret-test-"));
   process.env.HOME = home;
   return home;
+}
+
+function sha256(text: string): string {
+  return new Bun.CryptoHasher("sha256").update(text).digest("hex");
+}
+
+function record(home: string, overrides: Partial<RecordV3> = {}): RecordV3 {
+  return {
+    id: "rec-1",
+    name: "mytool",
+    source: "install",
+    url: "https://example.com/install.sh",
+    installedAt: "2026-10-09T00:00:00.000Z",
+    executable: join(home, ".mytool/bin/mytool"),
+    scriptSha256: "a".repeat(64),
+    capture: {
+      backend: "macos-heuristic",
+      completeness: "heuristic",
+      segments: [{ kind: "install", startedAt: "2026-10-09T00:00:00.000Z" }],
+    },
+    privilege: "user",
+    caseSensitive: true,
+    owned: [],
+    mutated: [],
+    deleted: [],
+    ...overrides,
+  };
+}
+
+/** A platform whose only shell config is an absolute, temporary snippet directory. */
+function snippetPlatform(dir: string): Platform {
+  return {
+    ...LINUX_PLATFORM,
+    shellConfigs: [{ shell: "sh", scope: "absolute", path: dir, kind: "directory" }],
+  };
 }
 
 describe("shellconfig", () => {
@@ -153,5 +189,79 @@ describe("shellconfig", () => {
     expect(rc.failed).toEqual([]);
     expect(readFileSync(mine, "utf8")).toBe("");
     expect(readFileSync(other, "utf8")).toBe("export PATH=/usr/local/bin:$PATH\n");
+  });
+
+  test("an unattributed snippet stays byte-for-byte unchanged even when it names an owned directory", () => {
+    const home = testHome();
+    const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
+    const unattributed = join(snippets, "other.sh");
+    const before = `export PATH=${home}/.config/bin:$PATH\n`;
+    writeFileSync(unattributed, before);
+    const platform = snippetPlatform(snippets);
+
+    // The record owns `$HOME/.config`, but never recorded this absolute snippet as mutated.
+    const shell = planShellCleanup(
+      record(home, { owned: [{ path: join(home, ".config"), kind: "directory" }] }),
+      new Set(shellConfigPaths(platform)),
+    );
+    expect(shell.files).toEqual([]);
+
+    const rc = removeRcLines("mytool", shell.dirs, false, shell.files, platform);
+
+    expect(rc.cleaned).toEqual([]);
+    expect(rc.failed).toEqual([]);
+    expect(readFileSync(unattributed, "utf8")).toBe(before);
+  });
+
+  test("cleans only an attributed snippet that still matches its recorded installed state", () => {
+    const home = testHome();
+    const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
+    const attributed = join(snippets, "mytool.sh");
+    const unattributed = join(snippets, "other.sh");
+    const content = `export PATH=${home}/.config/bin:$PATH\n`;
+    writeFileSync(attributed, content);
+    writeFileSync(unattributed, content);
+    const platform = snippetPlatform(snippets);
+
+    const shell = planShellCleanup(
+      record(home, {
+        owned: [{ path: join(home, ".config"), kind: "directory" }],
+        mutated: [{ path: attributed, installedHash: sha256(content) }],
+      }),
+      new Set(shellConfigPaths(platform)),
+    );
+    expect(shell.files).toEqual([attributed]);
+
+    const rc = removeRcLines("mytool", shell.dirs, false, shell.files, platform);
+
+    expect(rc.cleaned.map((cleaned) => cleaned.file)).toEqual([attributed]);
+    expect(rc.failed).toEqual([]);
+    expect(readFileSync(attributed, "utf8")).toBe("");
+    expect(readFileSync(unattributed, "utf8")).toBe(content);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a failed snippet write reports failed and never cleaned", () => {
+    const home = testHome();
+    const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
+    const attributed = join(snippets, "mytool.sh");
+    const content = `export PATH=${home}/.config/bin:$PATH\n`;
+    writeFileSync(attributed, content);
+    chmodSync(attributed, 0o444);
+    const platform = snippetPlatform(snippets);
+
+    const shell = planShellCleanup(
+      record(home, {
+        owned: [{ path: join(home, ".config"), kind: "directory" }],
+        mutated: [{ path: attributed, installedHash: sha256(content) }],
+      }),
+      new Set(shellConfigPaths(platform)),
+    );
+    expect(shell.files).toEqual([attributed]);
+
+    const rc = removeRcLines("mytool", shell.dirs, false, shell.files, platform);
+
+    expect(rc.cleaned).toEqual([]);
+    expect(rc.failed).toEqual([attributed]);
+    expect(readFileSync(attributed, "utf8")).toBe(content);
   });
 });
