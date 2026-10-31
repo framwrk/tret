@@ -20,7 +20,7 @@ import { emitJson, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
 import { removeRcLines, shellConfigPaths } from "../lib/shellconfig";
-import { FileStorage } from "../lib/store";
+import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { fail } from "../lib/failure";
 import { runLogPhase } from "../lib/runlog";
 
@@ -145,6 +145,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
 
   if (!hasFileWork && !hasShellWork && !hasPackageWork && !hasManagedInstallWork) {
     await storage.removeRecord(record.id);
+    await collectUnreferencedBlobs();
     if (isJsonMode()) {
       emitJson({ ok: true, command: "uninstall", tool: name, id: record.id, removed: [], nothingToRemove: true });
       return;
@@ -275,6 +276,9 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   }
 
   await storage.removeRecord(record.id);
+  // Best-effort, outside the records lock: the record is gone, so its before-images are now
+  // unreferenced. A failed sweep never turns this successful uninstall into a failure.
+  await collectUnreferencedBlobs();
   if (isJsonMode()) {
     const removed = result.outcomes.filter((outcome) => outcome.outcome === "removed").map((outcome) => outcome.path);
     const restored = result.outcomes.filter((outcome) => outcome.outcome === "restored").map((outcome) => outcome.path);

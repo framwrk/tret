@@ -9,7 +9,7 @@
 import { EXIT_AMBIGUOUS, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
-import { FileStorage } from "../lib/store";
+import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import type { RecordV3 } from "../types";
 import { fail } from "../lib/failure";
 import { log } from "../lib/utilities";
@@ -38,6 +38,9 @@ export async function forget(selector: string | undefined): Promise<void> {
 
   const record = selection.record;
   await new FileStorage().removeRecord(record.id);
+  // The dropped record no longer keeps its before-images alive; collect them after the fact, and
+  // never fail the completed forget if cleanup does.
+  await collectUnreferencedBlobs();
 
   if (isJsonMode()) {
     emitJson({ ok: true, command: "forget", tool: record.name, id: record.id });

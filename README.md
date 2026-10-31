@@ -116,6 +116,8 @@ To make overwritten or deleted files restorable, opt in with `--backup`. `--back
 tret install https://example.com/install.sh --backup --backup-size 524288
 ```
 
+Before-image bytes live under `~/.tret/objects/`, named by content hash. After a successful `uninstall`, `forget`, `unclaim`, or forced replacement saves its new record, Tret removes blobs no remaining record references. Collection is best-effort and eventually consistent: blobs modified in the last 60 seconds are kept so a concurrent install that stored a before-image but has not saved its record yet cannot lose it, and a cleanup failure never turns a completed command into a failure. An unreferenced blob may therefore survive until the next record change after that window.
+
 For `install --force`, a failed download leaves the current install and its record untouched. Once the old install has been removed, Tret does not roll it back: if the replacement exits non-zero or creates no discoverable executable, Tret saves a partial recovery record under the old tool name with the changes the capture observed. A no-executable record is shown as `partial` with no binary. Use `tret list` to inspect it and `tret uninstall <name>` to remove its recorded changes. Recovery is limited to observed changes; only before-images captured with `--backup` can be restored.
 
 Each install runs inside a bounded capture window. Tret prints a line describing it: the backend, whether coverage is `complete`, `partial`, or `heuristic`, the window's start and end, and how many events and roots were observed.

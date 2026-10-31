@@ -1,7 +1,7 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, Diff, RecordV3 } from "../types";
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
 import type { BoundedSessionResult, SessionCoverage } from "../lib/session";
-import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
+import { DEFAULT_BACKUP_POLICY, FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { EXIT_BLOCKED, EXIT_USAGE } from "../constants";
 import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
@@ -336,6 +336,10 @@ export async function install(
   };
   runLogPhase("save-record");
   await storage.saveRecord(record);
+
+  // A replacement dropped the previous record's claims, so its before-images may now be
+  // unreferenced. Sweep after the new record is durable; the helper never fails this install.
+  if (existing !== undefined) await collectUnreferencedBlobs();
 
   if (failed) {
     // A non-zero exit or missing executable keeps observed changes in a labeled partial record.
