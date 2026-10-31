@@ -23,6 +23,7 @@ import {
 import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatCoverage, runBoundedSession } from "../lib/session";
+import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
 import { MacosHeuristicCaptureBackend } from "../lib/capture/macos";
@@ -34,7 +35,6 @@ import { fail } from "../lib/failure";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
-import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import { resolve } from "node:path";
 import { runInstaller } from "../lib/installer";
 import { runLogPhase } from "../lib/runlog";

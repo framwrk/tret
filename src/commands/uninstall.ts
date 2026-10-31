@@ -20,8 +20,8 @@ import { emitJson, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
 import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
-import type { ShellCleanup } from "../lib/shellconfig";
 import { FileStorage } from "../lib/store";
+import type { ShellCleanup } from "../lib/shellconfig";
 import { fail } from "../lib/failure";
 import { runLogPhase } from "../lib/runlog";
 

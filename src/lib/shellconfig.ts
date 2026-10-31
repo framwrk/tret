@@ -1,6 +1,6 @@
+import type { AbsolutePath, RecordV3 } from "../types";
 import type { Platform, ShellConfigEntry } from "./platform";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import type { AbsolutePath, RecordV3 } from "../types";
 import { currentPlatform } from "./platform";
 import { inspectPath } from "./uninstall-planner";
 import { join } from "node:path";
