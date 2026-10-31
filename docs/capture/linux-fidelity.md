@@ -2,6 +2,11 @@
 
 **Status:** research complete; no capture or trace behavior changed.
 
+> **Naming update (2026-10-31):** the tables and findings below record the backend names at
+> measurement time. The Linux pre-run fallback now reports `capture.backend: "linux-heuristic"` for
+> both `install` and `trace`, with the same `heuristic` completeness value. The measured findings are
+> otherwise unchanged.
+
 This document is the written result of step 5 in `.agents/plans/next-up-ordering.md`. It measures
 what the shipped Linux backend actually records, separates verified behavior from code/kernel
 inference, and evaluates the two mechanisms the rewrite plan had left unspiked: eBPF tracepoints and

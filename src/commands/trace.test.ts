@@ -1,8 +1,11 @@
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mergeTraceEffects, trace } from "./trace";
 import { FileStorage } from "../lib/store";
+import { FakeCaptureBackend } from "../lib/capture/fake";
+import type { CaptureBackend, CaptureSession } from "../lib/capture/backend";
+import { parentAttachRestricted } from "../lib/capture/linux/backend";
 import type { NormalizedEffects } from "../lib/capture/normalize";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
@@ -346,6 +349,113 @@ describe("trace CLI", () => {
       ok: false,
       error: { code: "trace-not-found", message: "no tracked install matches nope" },
     });
+  });
+});
+
+/** A primary tracer that refuses to attach, like strace under Yama `ptrace_scope=1`. */
+class ThrowingStartBackend implements CaptureBackend {
+  readonly name: string;
+  readonly completeness = "complete" as const;
+  starts = 0;
+
+  constructor(name = "linux-strace") {
+    this.name = name;
+  }
+
+  async start(): Promise<CaptureSession> {
+    this.starts += 1;
+    throw new Error("strace could not attach: Operation not permitted");
+  }
+}
+
+describe("trace capture fallback", () => {
+  test("an injected attach failure runs the tool exactly once under the heuristic window", async () => {
+    const home = makeHome();
+    const scope = join(home, "scope");
+    mkdirSync(scope, { recursive: true });
+    const storage = new FileStorage({ homeDir: home });
+    writeRecords(home, [record({ executable: join(home, "bin", "mytool") })]);
+    const primary = new ThrowingStartBackend();
+    let runs = 0;
+
+    await trace("mytool", true, {
+      storage,
+      roots: [scope],
+      backend: primary,
+      run: async () => {
+        runs += 1;
+        writeFileSync(join(scope, "created.txt"), "hello");
+        writeFileSync(join(home, "outside.txt"), "not in scope");
+        return 0;
+      },
+    });
+
+    expect(primary.starts).toBe(1);
+    expect(runs).toBe(1);
+
+    const saved = (await storage.loadRecords())[0]!;
+    expect(saved.capture.segments.map((segment) => segment.kind)).toEqual(["install", "trace"]);
+    expect(saved.owned.some((entry) => entry.path === join(scope, "created.txt"))).toBe(true);
+    expect(
+      [...saved.owned, ...saved.mutated, ...saved.deleted].some((entry) => entry.path === join(home, "outside.txt")),
+    ).toBe(false);
+  });
+
+  test("a started primary that reports partial coverage does not rerun the tool", async () => {
+    const home = makeHome();
+    const scope = join(home, "scope");
+    mkdirSync(scope, { recursive: true });
+    const storage = new FileStorage({ homeDir: home });
+    writeRecords(home, [record({ executable: join(home, "bin", "mytool") })]);
+    const primary = new FakeCaptureBackend({
+      name: "linux-fanotify",
+      completeness: "partial",
+      partialReason: "dropped a directory-entry event",
+    });
+    const fallback = new ThrowingStartBackend("linux-heuristic");
+    let runs = 0;
+
+    await trace("mytool", true, {
+      storage,
+      roots: [scope],
+      backend: primary,
+      fallbackBackend: fallback,
+      run: async () => {
+        runs += 1;
+        return 0;
+      },
+    });
+
+    expect(runs).toBe(1);
+    expect(fallback.starts).toBe(0);
+    const saved = (await storage.loadRecords())[0]!;
+    expect(saved.capture.segments).toHaveLength(2);
+    expect(saved.capture.segments[1]?.partialReason).toContain("directory-entry");
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("trace CLI on the host tracer", () => {
+  test("traces under the available backend and reports linux-heuristic when Yama blocks attach", async () => {
+    const home = makeHome();
+    const sentinel = join(home, "ran.log");
+    const runner = join(home, "runner.sh");
+    writeFileSync(runner, `#!/bin/sh\nprintf 'ran\\n' >> "${sentinel}"\n`);
+    writeRecords(home, [record({ name: "runner", executable: runner })]);
+
+    const result = await runCliResult(["trace", "runner", "--yes", "--json"], home);
+    expect(result.code).toBe(0);
+    const output = JSON.parse(result.stdout) as { ok: boolean; backend: string; completeness: string };
+    expect(output.ok).toBe(true);
+
+    if (parentAttachRestricted()) {
+      expect(output.backend).toBe("linux-heuristic");
+      expect(output.completeness).toBe("heuristic");
+    } else {
+      expect(["linux-strace", "linux-fanotify", "linux-heuristic"]).toContain(output.backend);
+    }
+
+    // The observed work ran once no matter which backend won the pre-run selection.
+    expect(readFileSync(sentinel, "utf8").trim().split("\n")).toEqual(["ran"]);
   });
 });
 

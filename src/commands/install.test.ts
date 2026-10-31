@@ -10,7 +10,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { extractBackupSizeFlag, heuristicFallbackRoots, parseObserveFlags } from "./install";
+import { extractBackupSizeFlag, parseObserveFlags } from "./install";
+import { heuristicFallbackRoots } from "../lib/capture/fallback";
+import type { CaptureBackend, CaptureSession } from "../lib/capture/backend";
+import { install } from "./install";
 import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -225,11 +228,20 @@ type StoredRecord = {
   name: string;
   source: string;
   executable: string;
-  capture: { completeness: string; segments: { kind: string; partialReason?: string }[] };
+  capture: { backend: string; completeness: string; segments: { kind: string; partialReason?: string }[] };
   owned: { path: string; kind?: string; installedHash?: string }[];
   managedBy?: { manager: string; package: string; globalRoot?: string };
   managedInstall?: { kind: string; layout: string; root: string };
 };
+
+/** A primary tracer that refuses to attach, like strace under Yama `ptrace_scope=1`. */
+class ThrowingStartBackend implements CaptureBackend {
+  readonly name = "linux-strace";
+  readonly completeness = "complete" as const;
+  async start(): Promise<CaptureSession> {
+    throw new Error("strace could not attach: Operation not permitted");
+  }
+}
 
 function readStore(home: string): { version: number; records: StoredRecord[] } {
   return JSON.parse(readFileSync(join(home, ".tret", "records.json"), "utf8"));
@@ -806,6 +818,23 @@ describe("capture scope flags", () => {
 
   test("the heuristic fallback trims the unbounded trees and never re-adds $HOME", () => {
     expect(heuristicFallbackRoots(["/opt", "/usr/bin", "/usr/local/bin"])).toEqual(["/usr/local/bin"]);
+  });
+
+  test("an attach failure records the platform's named heuristic fallback", async () => {
+    const home = makeHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    const server = serve(INSTALL_SCRIPT);
+    try {
+      await install(server.url, false, [], { backend: new ThrowingStartBackend(), roots: [home] });
+
+      const record = readStore(home).records.find((entry) => entry.name === "mytool");
+      expect(record?.capture.completeness).toBe("heuristic");
+      expect(record?.capture.backend).toBe(process.platform === "linux" ? "linux-heuristic" : "macos-heuristic");
+    } finally {
+      process.env.HOME = previousHome;
+      await server.stop();
+    }
   });
 
   test("--observe adds a root so a write outside the defaults is owned", async () => {
