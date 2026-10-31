@@ -1,6 +1,6 @@
-import { EXIT_USAGE } from "../constants";
 import { caseSensitiveForPaths, currentPlatform, processPrivilege } from "../lib/platform";
 import { detectManagedInstall, withoutManagedInstallPaths } from "../lib/managed-install";
+import { EXIT_USAGE } from "../constants";
 import { FileStorage } from "../lib/store";
 import type { RecordV3 } from "../types";
 import { adoptedEntries } from "../lib/adoption";

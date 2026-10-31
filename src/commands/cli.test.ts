@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { RecordV3 } from "../types";
 
 // Cross-command cover for the documented global flag positions and selector handling. `--json` is
 // global, so it must work before or after the command; after `--` it belongs to the installer. A
