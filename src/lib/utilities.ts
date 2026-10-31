@@ -31,13 +31,34 @@ export function log(message: string, devOnly = false): void {
     if (process.stdout.isTTY && !isJsonMode()) {
       console.log(message);
     } else {
-      const fd = ttyOutput();
-      if (fd === undefined) {
-        console.error(message);
-      } else {
-        writeSync(fd, `${message}\n`);
-      }
+      writeTerminal(message);
     }
+  }
+}
+
+/**
+ * Prints read-only informational text — `--version`, `help`, and the human `list` table — to stdout
+ * even when it is piped, so shell pipelines can consume it. JSON mode is unchanged: stdout carries
+ * exactly one JSON document, so the line falls back to the same terminal or stderr path as `log()`.
+ * Commands that run an installer or prompt must keep using `log()`; this helper is only for output
+ * that is safe to feed into `bash` in the pasted `tret install curl ... | bash` form.
+ */
+export function info(message: string): void {
+  if (isJsonMode()) {
+    log(message);
+    return;
+  }
+  runLogLine(message);
+  process.stdout.write(`${message}\n`);
+}
+
+/** Writes a human line to the controlling terminal, or stderr when the run has none. */
+function writeTerminal(message: string): void {
+  const fd = ttyOutput();
+  if (fd === undefined) {
+    console.error(message);
+  } else {
+    writeSync(fd, `${message}\n`);
   }
 }
 

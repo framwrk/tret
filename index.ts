@@ -9,7 +9,7 @@ import { find } from "./src/commands/find";
 import { forget } from "./src/commands/forget";
 import { inspect } from "./src/commands/inspect";
 import { list } from "./src/commands/list";
-import { log } from "./src/lib/utilities";
+import { info, log } from "./src/lib/utilities";
 import { trace } from "./src/commands/trace";
 import { unclaim } from "./src/commands/unclaim";
 import { uninstall } from "./src/commands/uninstall";
@@ -31,10 +31,10 @@ const timed = IS_DEV && process.argv.includes("--time");
 
 const start = Date.now();
 
-// `--version` prints the release tag injected at build time and stops there — no update check,
-// so a compiled run answers instantly even when offline.
+// `--version` prints the release tag injected at build time and stops there — no logging or
+// update check, so a compiled run answers instantly even when offline or stdout is piped.
 if (ownArgs.includes("--version")) {
-  log(`${VERSION}`);
+  info(`${VERSION}`);
   process.exit(0);
 }
 
@@ -140,89 +140,92 @@ if (timed) {
 }
 
 function help(): void {
-  log(`Usage`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} [--version] [--json] <command> [arguments]`);
-  log("");
-  log(`${SCRIPT_NAME} wraps installers and remembers what they added, so you can cleanly remove them later.`);
-  log("");
-  log(
+  info(`Usage`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} [--version] [--json] <command> [arguments]`);
+  info("");
+  info(`${SCRIPT_NAME} wraps installers and remembers what they added, so you can cleanly remove them later.`);
+  info("");
+  info(
     `Each install runs inside a bounded capture window. ${SCRIPT_NAME} reports when the window was open and how completely it covered the installer's process tree; it never runs the installed tool itself to discover lazy writes.`,
   );
-  log(
+  info(
     `Linux capture uses unprivileged strace, or the packaged fanotify helper when already root; macOS uses a scoped heuristic snapshot. Capture records changes but does not sandbox the installer or scan for malware.`,
   );
-  log("");
-  log(`Commands`);
-  log(
+  info("");
+  info(`Commands`);
+  info(
     `\tinstall <url>     Run an installer inside a bounded capture window and record what it changes; paste the curl | bash line when no URL is given (alias: add)`,
   );
-  log(
+  info(
     `\tuninstall <tool>  Remove a tool by deleting what its install added, stripping its PATH lines, and dropping the record (aliases: remove, unadd)`,
   );
-  log(
+  info(
     `\tunclaim <tool> <path>  Drop one record's claim on a path another record also claims, resolving a shared-owner conflict without --force (changes no files)`,
   );
-  log(`\tlist              Show the tools Tret is tracking (alias: show)`);
-  log(`\tinspect <tool>    Show what Tret recorded for a tool without changing anything: capture confidence, owned paths, changed files, and what uninstall would do`);
-  log(`\tfind <tool>       Find the files and folders an already-installed command owns and record them for uninstall`);
-  log(`\ttrace <tool>      Run a tracked tool in a bounded observation window and append what it writes to the record (asks first; --yes when non-interactive)`);
-  log(`\tforget <tool>     Stop tracking a tool without touching its files (escape hatch for detect-only leftovers)`);
-  log(`\tupdate [tool]     Update Tret to the latest release; with a tool name, re-run that tool's recorded installer`);
-  log("");
-  log(`A <tool> argument is a display name or a record id; a name shared by several records fails and lists the ids.`);
-  log("");
-  log(`Options`);
-  log(`\t-h, --help    Show this help and exit`);
-  log(`\t--version     Print the running version and exit`);
-  log(
+  info(`\tlist              Show the tools Tret is tracking (alias: show)`);
+  info(`\tinspect <tool>    Show what Tret recorded for a tool without changing anything: capture confidence, owned paths, changed files, and what uninstall would do`);
+  info(`\tfind <tool>       Find the files and folders an already-installed command owns and record them for uninstall`);
+  info(`\ttrace <tool>      Run a tracked tool in a bounded observation window and append what it writes to the record (asks first; --yes when non-interactive)`);
+  info(`\tforget <tool>     Stop tracking a tool without touching its files (escape hatch for detect-only leftovers)`);
+  info(`\tupdate [tool]     Update Tret to the latest release; with a tool name, re-run that tool's recorded installer`);
+  info("");
+  info(`A <tool> argument is a display name or a record id; a name shared by several records fails and lists the ids.`);
+  info("");
+  info(`--version, help, and the human list table print to stdout even when it is piped.`);
+  info(`Command progress, prompts, and installer output stay off a piped stdout, so the pasted install command still pipes cleanly to bash.`);
+  info("");
+  info(`Options`);
+  info(`\t-h, --help    Show this help and exit`);
+  info(`\t--version     Print the running version and exit`);
+  info(
     `\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, forget, unclaim, uninstall, update)`,
   );
-  log(`\t              Human text and installer output go to the terminal or stderr, so a piped run stays valid JSON`);
-  log(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
-  log(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
-  log(`\t              unverified paths and state changes after planning still block removal`);
-  log(`\t              delegated-removal overlap always blocks, including with --force`);
-  log(`\t--no-capture  install: run the installer without attaching a capture window`);
-  log(
+  info(`\t              Human text and installer output go to the terminal or stderr, so a piped run stays valid JSON`);
+  info(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
+  info(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
+  info(`\t              unverified paths and state changes after planning still block removal`);
+  info(`\t              delegated-removal overlap always blocks, including with --force`);
+  info(`\t--no-capture  install: run the installer without attaching a capture window`);
+  info(
     `\t--backup      install: capture before-images of overwritten or deleted files so uninstall can restore them (off by default; eligible regular files only)`,
   );
-  log(
+  info(
     `\t--backup-size <bytes> install: set the per-file before-image size limit for this install (positive integer; requires --backup; default ${DEFAULT_BACKUP_SIZE_LIMIT_BYTES} bytes, 1 MiB)`,
   );
-  log(`\t--observe <path>          install: also observe this absolute path in the install's capture window (repeatable)`);
-  log(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);
-  log(`\t--name <name> install: record the tool under this display name instead of the installed command's basename`);
-  log(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
-  log(`\t--yes         install: skip the installer confirmation prompt`);
-  log(`\t              uninstall, trace, update <tool>: skip the confirmation prompt`);
-  log(`\t              uninstall and trace require --yes in JSON mode; install and update <tool> never prompt there`);
-  log(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);
-  log(`\t              a record with nothing actionable left is dropped, or remove it with tret forget <tool>`);
-  log(`\t--            install: every flag after this goes to the install script itself`);
-  log("");
-  log(`Exit codes (for automation; stable)`);
-  log(`\t0  the command succeeded`);
-  log(`\t1  the command failed`);
-  log(`\t2  the command line was wrong`);
-  log(`\t3  no tracked install matched the selector`);
-  log(`\t4  several tracked installs matched; select one by record id`);
-  log(`\t5  the command refused to proceed without explicit consent or force`);
-  log("");
-  log(`Examples`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} install curl -fsSL https://example.com/install.sh | bash`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --name opencode -- --skip-browser`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --backup --backup-size 524288`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --json`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode --json`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} trace opencode`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} trace opencode --yes --json`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} unclaim opencode ~/.local/bin/opencode`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --dry-run`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --yes`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} find opencode`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} forget opencode`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} list`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} update opencode`);
-  log(`\t${SCRIPT_NAME.toLowerCase()} update`);
+  info(`\t--observe <path>          install: also observe this absolute path in the install's capture window (repeatable)`);
+  info(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);
+  info(`\t--name <name> install: record the tool under this display name instead of the installed command's basename`);
+  info(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
+  info(`\t--yes         install: skip the installer confirmation prompt`);
+  info(`\t              uninstall, trace, update <tool>: skip the confirmation prompt`);
+  info(`\t              uninstall and trace require --yes in JSON mode; install and update <tool> never prompt there`);
+  info(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);
+  info(`\t              a record with nothing actionable left is dropped, or remove it with tret forget <tool>`);
+  info(`\t--            install: every flag after this goes to the install script itself`);
+  info("");
+  info(`Exit codes (for automation; stable)`);
+  info(`\t0  the command succeeded`);
+  info(`\t1  the command failed`);
+  info(`\t2  the command line was wrong`);
+  info(`\t3  no tracked install matched the selector`);
+  info(`\t4  several tracked installs matched; select one by record id`);
+  info(`\t5  the command refused to proceed without explicit consent or force`);
+  info("");
+  info(`Examples`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} install curl -fsSL https://example.com/install.sh | bash`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --name opencode -- --skip-browser`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --backup --backup-size 524288`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --json`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode --json`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} trace opencode`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} trace opencode --yes --json`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} unclaim opencode ~/.local/bin/opencode`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --dry-run`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} uninstall opencode --yes`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} find opencode`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} forget opencode`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} list`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} update opencode`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} update`);
 }

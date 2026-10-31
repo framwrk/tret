@@ -98,6 +98,8 @@ Run `tret list` to see which tools are currently installed with Tret. Then run t
 - `update --yes`: skip the confirmation prompt when re-running a tracked tool's installer.
 - `--json` (global): write one JSON document to stdout instead of human text; supported by `install`, `list`, `inspect`, `trace`, `forget`, `unclaim`, `uninstall`, and `update`.
 
+`--version`, `help`, and the human `list` table write to stdout even when it is piped, so `tret --help | less` and `tret list | grep mytool` work. Command progress, prompts, and installer output stay on the terminal or stderr, so the pasted `tret install curl ... | bash` form never feeds them to the shell.
+
 ### Install a tool
 
 ```bash
