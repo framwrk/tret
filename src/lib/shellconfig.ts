@@ -1,13 +1,52 @@
+import type { AbsolutePath, RecordV3 } from "../types";
 import type { Platform, ShellConfigEntry } from "./platform";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import type { AbsolutePath } from "../types";
 import { currentPlatform } from "./platform";
+import { inspectPath } from "./uninstall-planner";
 import { join } from "node:path";
 
 export type RcCleaning = {
   cleaned: { file: AbsolutePath; line: string }[];
   failed: AbsolutePath[];
 };
+
+/** The shell-config work a removal may do, kept separate from the file plan. */
+export type ShellCleanup = {
+  /** Owned paths whose mention in a config line the install is allowed to strip. */
+  dirs: AbsolutePath[];
+  /** Attributed config files with no before-image, still matching their installed state, safe to line-clean. */
+  files: AbsolutePath[];
+  /** Recorded installed hashes for the attributed files, so a shared PATH line is only cleaned while it still matches. */
+  hashes: Map<AbsolutePath, string>;
+};
+
+/**
+ * Selects the attributed shell-config mutations the narrow line cleaner should handle: those with
+ * no before-image (a before-image is restored by the planner like any other mutation) and whose
+ * bytes still match the recorded installed state. A config edited after install is left to the
+ * planner, which reports it as a conflict rather than risking a user's later edit. Shared by
+ * uninstall and the forced-reinstall path so both clean only files the install actually recorded.
+ */
+export function planShellCleanup(record: RecordV3, shellPaths: Set<AbsolutePath>): ShellCleanup {
+  const dirs = record.owned.map((entry) => entry.path);
+  const files: AbsolutePath[] = [];
+  const hashes = new Map<AbsolutePath, string>();
+
+  for (const entry of record.mutated) {
+    if (!shellPaths.has(entry.path)) continue;
+    if (entry.beforeBlob !== undefined) continue;
+    if (entry.installedHash !== undefined) {
+      const verification = inspectPath(entry.path);
+      if (verification.exists && verification.hash !== undefined && verification.hash !== entry.installedHash) {
+        continue;
+      }
+      hashes.set(entry.path, entry.installedHash);
+    }
+    files.push(entry.path);
+  }
+
+  return { dirs, files, hashes };
+}
 
 /**
  * Absolute paths of the shell config files the active platform may clean. A file entry is the file
@@ -68,6 +107,9 @@ export function removeRcLines(
   if (!home) throw new Error("HOME is not set");
 
   const shared = sharedDirs(platform, home);
+  // With no attributed file there is nothing to select, so do not even enumerate shared snippet
+  // directories such as `/etc/profile.d` (a forced reinstall may own a directory but no shell file).
+  if (wanted !== undefined && wanted.size === 0) return { cleaned, failed };
 
   for (const config of platform.shellConfigs) {
     for (const file of configFiles(config, home)) {
@@ -112,7 +154,7 @@ function cleanFile(
   // shared PATH entry stays detect-only even when the file is attributed.
   const sharedAllowed = attributed && installedHash !== undefined && sha256Hex(bytes) === installedHash;
   const kept: string[] = [];
-
+  const fileCleaned: RcCleaning["cleaned"] = [];
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
     if (line === undefined) {
@@ -134,12 +176,12 @@ function cleanFile(
       continue;
     }
 
-    cleaned.push({ file, line });
+    fileCleaned.push({ file, line });
 
     // The installer's comment naming the tool above the PATH line is only a label for it.
     if (adjacentToolComment && previous !== undefined) {
       kept.pop();
-      cleaned.push({ file, line: previous });
+      fileCleaned.push({ file, line: previous });
     }
   }
 
@@ -148,14 +190,19 @@ function cleanFile(
   }
 
   if (dryRun) {
+    cleaned.push(...fileCleaned);
     return;
   }
 
   try {
     writeFileSync(file, kept.join("\n"));
   } catch {
+    // Nothing was removed, so a failed write must not surface as a cleaned line.
     failed.push(file);
+    return;
   }
+
+  cleaned.push(...fileCleaned);
 }
 
 /** The platform's shared directories, as absolute paths, for the marked-line exception. */
