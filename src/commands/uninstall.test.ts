@@ -138,6 +138,70 @@ describe("uninstall record lifecycle", () => {
     expect(readRecords(home).records).toHaveLength(0);
   });
 
+  test("cleans a marked shared PATH line and drops the record", async () => {
+    const home = makeHome();
+    const zshrc = join(home, ".zshrc");
+    const binary = join(home, ".local", "bin", "mytool");
+    const content = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(binary, "installed");
+    writeFileSync(zshrc, content);
+
+    writeRecords(home, [
+      record({
+        executable: binary,
+        owned: [{ path: binary, kind: "file", installedHash: sha256("installed") }],
+        mutated: [{ path: zshrc, installedHash: sha256(content) }],
+      }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--yes"], home);
+    expect(result.code).toBe(0);
+    const output = result.stdout + result.stderr;
+    expect(output.match(/would clean .*\.zshrc/g)).toHaveLength(1);
+    expect(output.match(/cleaned .*\.zshrc/g)).toHaveLength(1);
+    expect(readFileSync(zshrc, "utf8")).toBe("");
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("reports an unmarked shared PATH line as detect-only once", async () => {
+    const home = makeHome();
+    const zshrc = join(home, ".zshrc");
+    const content = `export PATH="$HOME/.local/bin:$PATH"\n`;
+    writeFileSync(zshrc, content);
+
+    writeRecords(home, [record({ mutated: [{ path: zshrc, installedHash: sha256(content) }] })]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--yes"], home);
+    expect(result.code).toBe(0);
+    const output = result.stdout + result.stderr;
+    expect(output.split("\n").filter((line) => line.includes(`detected ${zshrc}`))).toHaveLength(1);
+    expect(readFileSync(zshrc, "utf8")).toBe(content);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("restores the whole shell config when a before-image exists", async () => {
+    const home = makeHome();
+    const zshrc = join(home, ".zshrc");
+    const before = `# user config\nexport PATH="$HOME/.local/bin:$PATH"\n`;
+    const installed = before + `export PATH="$HOME/.tool/bin:$PATH" # mytool\n`;
+    const blob = sha256(before);
+    mkdirSync(join(home, ".tret", "objects"), { recursive: true });
+    writeFileSync(join(home, ".tret", "objects", blob), before);
+    writeFileSync(zshrc, installed);
+
+    writeRecords(home, [
+      record({
+        mutated: [{ path: zshrc, beforeHash: blob, installedHash: sha256(installed), beforeBlob: blob }],
+      }),
+    ]);
+
+    const result = await runCliResult(["uninstall", "mytool", "--yes"], home);
+    expect(result.code).toBe(0);
+    expect(readFileSync(zshrc, "utf8")).toBe(before);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
   test("uninstall keeps a changed file unless --force is used", async () => {
     const home = makeHome();
     const file = join(home, "tool");
