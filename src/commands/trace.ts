@@ -9,19 +9,20 @@
 
 import type { AbsolutePath, CaptureSegment, DeletedEntry, MutatedEntry, OwnedEntry, RecordV3 } from "../types";
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
 import { claimedByOthers, sharedClaim } from "../lib/uninstall-planner";
 import { confirm, log } from "../lib/utilities";
 import { currentPlatform, processPrivilege } from "../lib/platform";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
+import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
+import type { CaptureBackend } from "../lib/capture/backend";
 import { DEFAULT_BACKUP_POLICY } from "../lib/store";
 import { FileStorage } from "../lib/store";
 import type { NormalizedEffects } from "../lib/capture/normalize";
-import { captureBackendFor } from "../lib/capture/current";
 import { fail } from "../lib/failure";
 import { installObservationRoots } from "../lib/platform/roots";
 import { normalizeJournal } from "../lib/journal/normalize";
-import { runBoundedSession } from "../lib/session";
 import { runProgram } from "../lib/installer";
 
 /** Why a path the trace saw was not merged into the record. */
@@ -117,7 +118,7 @@ export function mergeTraceEffects(
   };
 }
 
-/** Seams for tests: the record storage and the bounded session are both replaceable. */
+/** Seams for tests: the record storage, the bounded session, and both capture backends are replaceable. */
 export type TraceOptions = {
   storage?: FileStorage;
   /** Runs the observed work; tests replace the real child process. */
@@ -126,6 +127,10 @@ export type TraceOptions = {
   roots?: AbsolutePath[];
   /** Clock; injectable so tests can pin the window timestamps. */
   now?: () => number;
+  /** The primary capture backend; defaults to the platform's tracer. */
+  backend?: CaptureBackend;
+  /** The pre-run heuristic fallback; defaults to the platform's labeled scoped-snapshot backend. */
+  fallbackBackend?: CaptureBackend;
 };
 
 /** The command entry: resolve one record, ask, run the tool in a trace window, and merge what it wrote. */
@@ -188,21 +193,28 @@ export async function trace(
 
   // Capture starts before the tool runs and the tool is a descendant of this process, so the whole
   // invocation is inside the observed tree. A backend that cannot attach throws before `run`, so the
-  // tool is never run unwatched: the command fails instead.
-  let window;
-  try {
-    window = await runBoundedSession({
-      backend: captureBackendFor(platform, record.caseSensitive),
-      pid: process.pid,
-      privilege: processPrivilege(),
-      roots,
-      kind: "trace",
-      run,
-      ...(options.now === undefined ? {} : { now: options.now }),
-    });
-  } catch (error) {
-    fail("trace-capture", `could not attach a capture window; the tool was not run: ${message(error)}`);
+  // tool is never run unwatched: the command then tries the labeled heuristic window, and if that
+  // also cannot attach it fails rather than running the tool without coverage at all.
+  const attempt = await runCaptureFallback({
+    primary: options.backend ?? captureBackendFor(platform, record.caseSensitive),
+    fallback: options.fallbackBackend ?? heuristicCaptureBackendFor(platform, record.caseSensitive),
+    pid: process.pid,
+    privilege: processPrivilege(),
+    roots,
+    fallbackRoots: heuristicFallbackRoots(roots),
+    kind: "trace",
+    run,
+    ...(options.now === undefined ? {} : { now: options.now }),
+    onPrimaryFailure: (error) =>
+      log(`capture unavailable (${message(error)}); tracing the tool with a heuristic window`),
+  });
+  if (attempt.session === undefined) {
+    fail(
+      "trace-capture",
+      `could not attach a capture window; the tool was not run: ${message(attempt.primaryError)}; heuristic fallback failed: ${message(attempt.fallbackError)}`,
+    );
   }
+  const window = attempt.session;
 
   const effects = normalizeJournal({
     journal: window.journal,

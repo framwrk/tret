@@ -6,6 +6,10 @@ unprivileged macOS mechanism attributes filesystem changes to a process tree, so
 **labeled heuristic fallback** (`capture.backend: "macos-heuristic"`,
 `capture.completeness: "heuristic"`) behind the same `CaptureBackend` interface a tracer would use.
 
+The same scoped-snapshot engine is the pre-run fallback for the Linux tracer. There it records
+`capture.backend: "linux-heuristic"` while keeping the same `heuristic` completeness value; see
+[`linux-capture.md`](linux-capture.md#mechanisms).
+
 Nothing here requires root, an Apple-granted entitlement, SIP changes, or code injection.
 
 ## Why not a tracer

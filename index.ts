@@ -149,7 +149,7 @@ function help(): void {
     `Each install runs inside a bounded capture window. ${SCRIPT_NAME} reports when the window was open and how completely it covered the installer's process tree; it never runs the installed tool itself to discover lazy writes.`,
   );
   log(
-    `Linux capture uses unprivileged strace, or the packaged fanotify helper when already root; macOS uses a scoped heuristic snapshot. Capture records changes but does not sandbox the installer or scan for malware.`,
+    `Linux capture uses unprivileged strace, or the packaged fanotify helper when already root; macOS uses a scoped heuristic snapshot. If the tracer cannot attach before install or trace starts, Tret uses a labeled heuristic window (linux-heuristic on Linux, macos-heuristic on macOS); trace refuses to run the tool if neither backend can attach. Capture records changes but does not sandbox the installer or scan for malware.`,
   );
   log("");
   log(`Commands`);

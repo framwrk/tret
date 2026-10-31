@@ -43,12 +43,15 @@ built at packaging time and is not compiled by `bun test`. Its shipped directory
 currently incorrect (see "Fanotify-specific limits" below), so it must not be described as
 high-fidelity until that is repaired.
 
-**Production attach caveat.** Install passes `pid: process.pid`, so the tracer must attach to Tret
-while the installer runs as its child. Under the kernel-default Yama `ptrace_scope=1` (Ubuntu, Arch,
-openSUSE), an unprivileged child may not attach to its parent; `parentAttachRestricted()` detects it
-and `install` falls back to the labeled heuristic scanner (`capture.backend: "macos-heuristic"`).
+**Production attach caveat.** Install and trace pass `pid: process.pid`, so the tracer must attach to
+Tret while the installer or traced tool runs as its child. Under the kernel-default Yama
+`ptrace_scope=1` (Ubuntu, Arch, openSUSE), an unprivileged child may not attach to its parent;
+`parentAttachRestricted()` detects it and both commands fall back to the labeled heuristic scanner
+(`capture.backend: "linux-heuristic"`, completeness `heuristic`) before the observed work starts.
 The unprivileged `strace` backend therefore runs only when `ptrace_scope=0` or the process is root.
-The real-strace smoke test runs the installer _under_ strace (parent mode), so it does not cover
+If the heuristic window also fails to start, `trace` fails instead of running the tool unobserved,
+and `install` records through its legacy snapshot/diff path (still a single installer run). The
+real-strace smoke test runs the installer _under_ strace (parent mode), so it does not cover
 production attach.
 
 ## What is captured
@@ -196,8 +199,8 @@ with a `partialReason` joining every cause:
    liveness alone does not lower coverage.
 
 A record is never labelled `complete` when any of 1–5 fails, so the label is consistent with the
-tracer's own reporting. `heuristic` is reserved for the macOS fallback; the Linux backend never emits
-it.
+tracer's own reporting. `heuristic` is reserved for the scoped-snapshot fallback: the Linux backend
+never emits it, and a Linux fallback window records `linux-heuristic` as its backend name.
 
 **Caveat (2026-10-26):** rules 1–5 only cover what the tracer reports. The shipped fanotify helper
 does not report directory-entry paths correctly (F1), omits `FAN_ONDIR` (F2), and silently ignores
@@ -277,8 +280,8 @@ coverage contract.
   chown/xattr/timestamp changes, mmap writes and remote network-filesystem changes are not reported
   and do not lower completeness. Reparented descendants are filtered out by the `/proc` ancestry
   check; FIFO move pairing can mispair concurrent renames. F3–F4.
-- **Unprivileged production attach needs `ptrace_scope=0`.** With the kernel default `1`, install
-  falls back to the heuristic scanner. F5.
+- **Unprivileged production attach needs `ptrace_scope=0`.** With the kernel default `1`, `install`
+  and `trace` fall back to the labeled `linux-heuristic` scanner before the observed work starts. F5.
 - **The trace set is distro-sensitive.** `fchmodat2` requires strace 6.5+; older strace rejects the
   whole set. `msync`, `splice`, `lremovexattr`, `fremovexattr` and `utimensat` are recognized by the
   parser but not traced. F6.

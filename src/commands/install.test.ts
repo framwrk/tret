@@ -1,3 +1,4 @@
+import type { CaptureBackend, CaptureSession } from "../lib/capture/backend";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
@@ -12,8 +13,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { extractBackupSizeFlag, heuristicFallbackRoots, parseObserveFlags, recordDisplayName } from "./install";
+import { extractBackupSizeFlag, parseObserveFlags, recordDisplayName } from "./install";
 import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
+import { heuristicFallbackRoots } from "../lib/capture/fallback";
+import { install } from "./install";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -283,6 +286,15 @@ type StoredRecord = {
   managedBy?: { manager: string; package: string; globalRoot?: string };
   managedInstall?: { kind: string; layout: string; root: string };
 };
+
+/** A primary tracer that refuses to attach, like strace under Yama `ptrace_scope=1`. */
+class ThrowingStartBackend implements CaptureBackend {
+  readonly name = "linux-strace";
+  readonly completeness = "complete" as const;
+  async start(): Promise<CaptureSession> {
+    throw new Error("strace could not attach: Operation not permitted");
+  }
+}
 
 function sha256Text(text: string): string {
   return new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -1167,6 +1179,23 @@ describe("capture scope flags", () => {
 
   test("the heuristic fallback trims the unbounded trees and never re-adds $HOME", () => {
     expect(heuristicFallbackRoots(["/opt", "/usr/bin", "/usr/local/bin"])).toEqual(["/usr/local/bin"]);
+  });
+
+  test("an attach failure records the platform's named heuristic fallback", async () => {
+    const home = makeHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    const server = serve(INSTALL_SCRIPT);
+    try {
+      await install(server.url, false, [], { backend: new ThrowingStartBackend(), roots: [home] });
+
+      const record = readStore(home).records.find((entry) => entry.name === "mytool");
+      expect(record?.capture.completeness).toBe("heuristic");
+      expect(record?.capture.backend).toBe(process.platform === "linux" ? "linux-heuristic" : "macos-heuristic");
+    } finally {
+      process.env.HOME = previousHome;
+      await server.stop();
+    }
   });
 
   test("--observe adds a root so a write outside the defaults is owned", async () => {
