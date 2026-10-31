@@ -10,6 +10,14 @@ fanotify helper fixes #44/#45 and the final reconciliation #46. This record desc
 path only. The [final main CI run
 41222352681](https://github.com/framwrk/tret/actions/runs/41222352681) passed on all four targets.
 
+## Published release
+
+**v0.6.0** was tagged from `main` at `68c7d01` and published by the [release
+workflow](https://github.com/framwrk/tret/actions/runs/41241462965). The workflow built all four
+targets plus both `tret-fanotify` helpers, verified the merged assets and checksums, and attached
+them to [v0.6.0](https://github.com/framwrk/tret/releases/tag/v0.6.0) as a pre-release. V4 remains an
+explicitly reviewed skip for this release.
+
 ## Host
 
 | Item                            | Value                                                                           |
