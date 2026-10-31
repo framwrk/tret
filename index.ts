@@ -157,7 +157,7 @@ function help(): void {
     `\tinstall <url>     Run an installer inside a bounded capture window and record what it changes; paste the curl | bash line when no URL is given (alias: add)`,
   );
   log(
-    `\tuninstall <tool>  Remove a tool by deleting what its install added, stripping its PATH lines, and dropping the record (aliases: remove, unadd)`,
+    `\tuninstall <tool>  Remove a tool by deleting what its install added, cleaning the shell PATH lines it marked, and dropping the record (aliases: remove, unadd)`,
   );
   log(
     `\tunclaim <tool> <path>  Drop one record's claim on a path another record also claims, resolving a shared-owner conflict without --force (changes no files)`,
@@ -199,6 +199,9 @@ function help(): void {
   log(`\t              uninstall and trace require --yes in JSON mode; install and update <tool> never prompt there`);
   log(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);
   log(`\t              a record with nothing actionable left is dropped, or remove it with tret forget <tool>`);
+  log(`\t              Shell PATH lines are cleaned only in an attributed config; a shared entry such as ~/.local/bin`);
+  log(`\t              also needs the file to match its installed state and the line or its comment to name the tool.`);
+  log(`\t              Unmarked shared entries stay in place and are reported as detect-only`);
   log(`\t--            install: every flag after this goes to the install script itself`);
   log("");
   log(`Exit codes (for automation; stable)`);

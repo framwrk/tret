@@ -714,7 +714,7 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     log(`\t${describeOutcome(outcome)}`);
   }
 
-  const rc = removeRcLines(target.name, shell.dirs, false, shell.files, platform);
+  const rc = removeRcLines(target.name, shell.dirs, false, shell.files, platform, shell.hashes);
   for (const cleaned of rc.cleaned) {
     log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
   }

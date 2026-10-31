@@ -156,7 +156,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   for (const line of formatUninstallPlan(plan, "apply")) {
     log(`\t${line}`);
   }
-  printUnresolvedShell(name, shell.dirs, shell.files, true);
+  const previewedShell = printUnresolvedShell(name, shell.dirs, shell.files, true, shell.hashes);
 
   if (!yes) {
     // JSON mode never prompts; a script that needs the removal to happen must pass --yes.
@@ -224,12 +224,15 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     log(`\t${describeOutcome(outcome)}`, true);
   }
 
-  const rc = removeRcLines(name, shell.dirs, false, shell.files);
+  const rc = removeRcLines(name, shell.dirs, false, shell.files, undefined, shell.hashes);
   for (const cleaned of rc.cleaned) {
     log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
   }
   const cleanedShell = new Set(rc.cleaned.map((cleaned) => cleaned.file));
-  const unresolved = shell.files.filter((file) => !cleanedShell.has(file));
+  const failedShell = new Set(rc.failed);
+  const unresolved = shell.files.filter(
+    (file) => !cleanedShell.has(file) && !failedShell.has(file) && !previewedShell.has(file),
+  );
   for (const file of unresolved) {
     // A shell config with no before-image is detect-only: report it, but never let it block (D2).
     log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
@@ -309,7 +312,7 @@ function printDryRun(
   for (const line of lines) {
     log(`\t${line}`);
   }
-  printUnresolvedShell(name, shell.dirs, shell.files, true);
+  printUnresolvedShell(name, shell.dirs, shell.files, true, shell.hashes);
 
   if (plan.requiresSudo) {
     log("\tnote: some entries are root-owned; re-run with sudo to remove them");
@@ -319,19 +322,29 @@ function printDryRun(
 /**
  * Prints the shell-config lines the cleaner would strip, and reports any attributed config where no
  * line can be safely matched. A config without a before-image is detect-only: it is reported but
- * never keeps the record alive (D2).
+ * never keeps the record alive (D2). Returns the files already reported, so the apply pass does not
+ * repeat a detect-only line the preview already printed.
  */
-function printUnresolvedShell(name: string, dirs: AbsolutePath[], files: AbsolutePath[], dryRun: boolean): void {
-  const rc = removeRcLines(name, dirs, dryRun, files);
+function printUnresolvedShell(
+  name: string,
+  dirs: AbsolutePath[],
+  files: AbsolutePath[],
+  dryRun: boolean,
+  hashes: ReadonlyMap<AbsolutePath, string>,
+): Set<AbsolutePath> {
+  const rc = removeRcLines(name, dirs, dryRun, files, undefined, hashes);
   for (const cleaned of rc.cleaned) {
     log(`\t${dryRun ? "would clean" : "clean"} ${cleaned.file}: ${cleaned.line.trim()}`);
   }
   const cleanedFiles = new Set(rc.cleaned.map((cleaned) => cleaned.file));
+  const failedFiles = new Set(rc.failed);
+  const reported = new Set<AbsolutePath>();
   for (const file of files) {
-    if (!cleanedFiles.has(file)) {
-      log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
-    }
+    if (cleanedFiles.has(file) || failedFiles.has(file)) continue;
+    log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
+    reported.add(file);
   }
+  return reported;
 }
 
 /**

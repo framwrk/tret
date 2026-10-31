@@ -169,6 +169,90 @@ describe("shellconfig", () => {
     expect(readFileSync(fish, "utf8")).toBe("");
   });
 
+  test("cleans a marked shared PATH line and leaves the identical unmarked line alone", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const marked = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
+    const unmarked = `export PATH="$HOME/.local/bin:$PATH"\n`;
+    writeFileSync(file, marked + unmarked);
+
+    const rc = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM, new Map([[file, sha256(marked + unmarked)]]));
+
+    expect(rc.cleaned.map((cleaned) => cleaned.line)).toEqual([marked.trimEnd()]);
+    expect(rc.failed).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(unmarked);
+  });
+
+  test("uses the tool comment directly above a shared PATH line as the marker", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const content = `# mytool\nexport PATH="$HOME/.local/bin:$PATH"\n`;
+    writeFileSync(file, content);
+
+    const rc = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM, new Map([[file, sha256(content)]]));
+
+    expect(rc.cleaned).toHaveLength(2);
+    expect(rc.failed).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe("");
+  });
+
+  test("leaves another tool's marked line and a line pointing elsewhere alone", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const content =
+      `export PATH="$HOME/.local/bin:$PATH" # othertool\n` +
+      `export PATH="$HOME/.other/bin:$PATH" # mytool\n` +
+      `export PATH="/usr/local/go/bin:$PATH" # mytool\n`;
+    writeFileSync(file, content);
+
+    const rc = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM, new Map([[file, sha256(content)]]));
+
+    expect(rc.cleaned).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(content);
+  });
+
+  test("does not clean a shared PATH line in an unattributed config", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const content = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
+    writeFileSync(file, content);
+
+    const rc = removeRcLines("mytool", [], false, undefined, LINUX_PLATFORM, new Map([[file, sha256(content)]]));
+
+    expect(rc.cleaned).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(content);
+  });
+
+  test("does not clean a shared PATH line without the recorded installed hash", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const content = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
+    writeFileSync(file, content);
+
+    const rc = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM);
+
+    expect(rc.cleaned).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(content);
+  });
+
+  test("does not clean a shared PATH line after the config changes between preview and apply", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const installed = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
+    writeFileSync(file, installed);
+    const hashes = new Map([[file, sha256(installed)]]);
+
+    const preview = removeRcLines("mytool", [], true, [file], LINUX_PLATFORM, hashes);
+    expect(preview.cleaned).toHaveLength(1);
+
+    const edited = installed + "# edited by the user\n";
+    writeFileSync(file, edited);
+    const applied = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM, hashes);
+
+    expect(applied.cleaned).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(edited);
+  });
+
   test("expands a directory entry to its snippet files and never edits the directory as a file", () => {
     const home = testHome();
     const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
