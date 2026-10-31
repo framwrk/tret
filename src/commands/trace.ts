@@ -9,17 +9,17 @@
 
 import type { AbsolutePath, CaptureSegment, DeletedEntry, MutatedEntry, OwnedEntry, RecordV3 } from "../types";
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
 import { claimedByOthers, sharedClaim } from "../lib/uninstall-planner";
 import { confirm, log } from "../lib/utilities";
 import { currentPlatform, processPrivilege } from "../lib/platform";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
+import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
+import type { CaptureBackend } from "../lib/capture/backend";
 import { DEFAULT_BACKUP_POLICY } from "../lib/store";
 import { FileStorage } from "../lib/store";
 import type { NormalizedEffects } from "../lib/capture/normalize";
-import type { CaptureBackend } from "../lib/capture/backend";
-import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
-import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
 import { fail } from "../lib/failure";
 import { installObservationRoots } from "../lib/platform/roots";
 import { normalizeJournal } from "../lib/journal/normalize";

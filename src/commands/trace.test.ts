@@ -1,14 +1,14 @@
+import type { CaptureBackend, CaptureSession } from "../lib/capture/backend";
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mergeTraceEffects, trace } from "./trace";
-import { FileStorage } from "../lib/store";
 import { FakeCaptureBackend } from "../lib/capture/fake";
-import type { CaptureBackend, CaptureSession } from "../lib/capture/backend";
-import { parentAttachRestricted } from "../lib/capture/linux/backend";
+import { FileStorage } from "../lib/store";
 import type { NormalizedEffects } from "../lib/capture/normalize";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
+import { parentAttachRestricted } from "../lib/capture/linux/backend";
 import { tmpdir } from "node:os";
 
 // Cover for `tret trace` (plan 03 item 2). The merge is tested as a pure function: only what the
@@ -440,6 +440,7 @@ describe.skipIf(process.platform !== "linux")("trace CLI on the host tracer", ()
     const sentinel = join(home, "ran.log");
     const runner = join(home, "runner.sh");
     writeFileSync(runner, `#!/bin/sh\nprintf 'ran\\n' >> "${sentinel}"\n`);
+    chmodSync(runner, 0o755);
     writeRecords(home, [record({ name: "runner", executable: runner })]);
 
     const result = await runCliResult(["trace", "runner", "--yes", "--json"], home);

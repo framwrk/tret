@@ -1,6 +1,6 @@
+import { MACOS_HEURISTIC_BACKEND, MacosHeuristicCaptureBackend } from "./macos";
 import type { CaptureBackend } from "./backend";
 import { LinuxCaptureBackend } from "./linux";
-import { MACOS_HEURISTIC_BACKEND, MacosHeuristicCaptureBackend } from "./macos";
 import type { Platform } from "../platform";
 
 /** Identifier stored in `record.capture.backend` for the Linux heuristic fallback (F6.4). */

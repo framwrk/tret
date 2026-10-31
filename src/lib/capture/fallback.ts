@@ -1,5 +1,5 @@
-import type { AbsolutePath } from "../../types";
 import type { BoundedSessionOptions, BoundedSessionResult } from "../session";
+import type { AbsolutePath } from "../../types";
 import type { CaptureBackend } from "./backend";
 import { runBoundedSession } from "../session";
 

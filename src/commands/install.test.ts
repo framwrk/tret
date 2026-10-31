@@ -1,3 +1,4 @@
+import type { CaptureBackend, CaptureSession } from "../lib/capture/backend";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
@@ -11,10 +12,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { extractBackupSizeFlag, parseObserveFlags } from "./install";
-import { heuristicFallbackRoots } from "../lib/capture/fallback";
-import type { CaptureBackend, CaptureSession } from "../lib/capture/backend";
-import { install } from "./install";
 import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
+import { heuristicFallbackRoots } from "../lib/capture/fallback";
+import { install } from "./install";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 

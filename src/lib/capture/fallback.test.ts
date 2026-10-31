@@ -1,9 +1,9 @@
 import type { CaptureBackend, CaptureSession } from "./backend";
-import { FakeCaptureBackend } from "./fake";
-import { describe, expect, test } from "bun:test";
-import { heuristicCaptureBackendFor } from "./current";
-import { heuristicFallbackRoots, runCaptureFallback } from "./fallback";
 import { LINUX_PLATFORM, MACOS_PLATFORM } from "../platform";
+import { describe, expect, test } from "bun:test";
+import { heuristicFallbackRoots, runCaptureFallback } from "./fallback";
+import { FakeCaptureBackend } from "./fake";
+import { heuristicCaptureBackendFor } from "./current";
 
 /** A backend that refuses to attach, like a tracer blocked by Yama `ptrace_scope=1`. */
 class ThrowingStartBackend implements CaptureBackend {

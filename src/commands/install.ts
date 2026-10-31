@@ -1,10 +1,10 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, Diff, RecordV3 } from "../types";
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
-import type { SessionCoverage } from "../lib/session";
 import { DEFAULT_BACKUP_POLICY, FileStorage } from "../lib/store";
 import { EXIT_BLOCKED, EXIT_USAGE } from "../constants";
 import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
+import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
 import { caseSensitiveForPaths, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
 import { confirm, extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
 import {
@@ -22,15 +22,15 @@ import {
 } from "../lib/package-manager";
 import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
-import { formatCoverage } from "../lib/session";
+import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
-import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
 import type { ObservationRootsOptions } from "../lib/platform";
 import type { Platform } from "../lib/platform";
-import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
+import type { SessionCoverage } from "../lib/session";
 import { diff } from "../lib/diff";
 import { fail } from "../lib/failure";
+import { formatCoverage } from "../lib/session";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
