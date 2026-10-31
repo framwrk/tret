@@ -29,6 +29,7 @@ import type { Journal } from "../lib/capture/events";
 import { MacosHeuristicCaptureBackend } from "../lib/capture/macos";
 import type { ObservationRootsOptions } from "../lib/platform";
 import type { Platform } from "../lib/platform";
+import { adoptedEntries } from "../lib/adoption";
 import { captureBackendFor } from "../lib/capture/current";
 import { diff } from "../lib/diff";
 import { fail } from "../lib/failure";
@@ -263,7 +264,8 @@ export async function install(
 
   // The installer runs inside a bounded capture window. With capture on, the journal is the sole
   // effects source, so no global snapshot runs. `--no-capture` (or a backend that cannot attach)
-  // falls back to the legacy snapshot/diff, whose hash-less entries uninstall treats as unverified.
+  // falls back to the legacy snapshot/diff; its added paths are fingerprinted from disk at record
+  // time, while mutations and deletions stay detect-only without before-images.
   runLogPhase("run-installer");
   const window = await observeInstall(platform, script, scriptArgs, options, backups, roots, caseSensitive);
   log(
@@ -516,7 +518,13 @@ function finalUrlSegment(url: string): string | undefined {
   return name.length === 0 ? undefined : name;
 }
 
-/** Normalizes the captured journal into effects; a fallback diff maps to hash-less legacy entries. */
+/**
+ * Normalizes the captured journal into effects. A fallback diff has no journal, so its added paths
+ * are fingerprinted from their on-disk state at record time: that is the only evidence a later
+ * uninstall can verify, and it keeps `--no-capture` installs removable without relaxing the
+ * planner's rule for records that genuinely lack a fingerprint. Mutations and deletions stay
+ * detect-only because the legacy diff captured no before-image.
+ */
 function buildEffects(window: InstallWindow, caseSensitive: boolean, backups: BackupPolicy): NormalizedEffects {
   if (window.journal) {
     return normalizeJournal({
@@ -530,7 +538,7 @@ function buildEffects(window: InstallWindow, caseSensitive: boolean, backups: Ba
 
   const changes = window.fallback ?? { added: [], edited: [], deleted: [] };
   return {
-    owned: changes.added.map((path) => ({ path, kind: "unknown" as const })),
+    owned: adoptedEntries(changes.added),
     mutated: changes.edited.map((path) => ({ path })),
     deleted: changes.deleted.map((path) => ({ path })),
     diagnostics: [],

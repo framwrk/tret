@@ -49,7 +49,7 @@ Backend selection is `defaultTracerFactory` in `src/lib/capture/linux/backend.ts
 | Unprivileged, no `strace` on `PATH`                                             | `macos-heuristic` via the install fallback | `heuristic`                        | `selectDefaultTracer` throws before the installer runs                                                 |
 | Root and `tret-fanotify` beside the binary (release archive layout)             | `linux-fanotify`                           | may report `complete`              | Dirent attribution is wrong as shipped (F1–F3)                                                         |
 | Root, no helper found                                                           | `linux-strace`                             | as above                           | Root attach is permitted                                                                               |
-| `--no-capture`, or both backends fail to start                                  | legacy snapshot/diff                       | legacy/unknown                     | No journal                                                                                             |
+| `--no-capture`, or both backends fail to start                                  | legacy snapshot/diff                       | legacy/heuristic                   | No journal; added paths are fingerprinted at record time, while mutation/deletion stays detect-only |
 
 Two consequences worth stating plainly:
 
