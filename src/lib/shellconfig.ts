@@ -165,10 +165,13 @@ function sharedDirs(platform: Platform, home: AbsolutePath): AbsolutePath[] {
 
 /**
  * True when the line names one of the dirs, written expanded, as `$HOME/...`, `${HOME}/...`, or `~/...`.
- * A match must end at a path boundary, so `/x/.mytool` does not match a line that names `/x/.mytool-tools`.
+ * A match must start and end at a path boundary, so `/x/.mytool` does not match `/a/x/.mytool` or
+ * `/x/.mytool-tools`.
  */
 function mentionsDir(line: string, dirs: AbsolutePath[], home: AbsolutePath): boolean {
-  return dirs.some((dir) => formsOf(dir, home).some((form) => new RegExp(`${escapeRegex(form)}(?![\\w.-])`).test(line)));
+  return dirs.some((dir) =>
+    formsOf(dir, home).some((form) => new RegExp(`(?:^|[^\\w./-])${escapeRegex(form)}(?![\\w.-])`).test(line)),
+  );
 }
 
 /**
@@ -176,7 +179,9 @@ function mentionsDir(line: string, dirs: AbsolutePath[], home: AbsolutePath): bo
  * different entry and must not be mistaken for the shared dir itself.
  */
 function mentionsSharedDir(line: string, dirs: AbsolutePath[], home: AbsolutePath): boolean {
-  return dirs.some((dir) => formsOf(dir, home).some((form) => new RegExp(`${escapeRegex(form)}(?![\\w./-])`).test(line)));
+  return dirs.some((dir) =>
+    formsOf(dir, home).some((form) => new RegExp(`(?:^|[^\\w./-])${escapeRegex(form)}(?![\\w./-])`).test(line)),
+  );
 }
 
 /** The forms a dir can appear as in a shell config: expanded, `$HOME`, `${HOME}`, and `~`. */
