@@ -21,6 +21,10 @@
  * Coverage notes (also documented in docs/capture/linux-capture.md):
  * - The mark is FAN_MARK_FILESYSTEM, not FAN_MARK_MOUNT. FAN_CREATE/FAN_DELETE/FAN_MOVED_* require
  *   a filesystem mark; the kernel rejects them with EINVAL on a mount mark.
+ * - Observe roots are opened O_RDONLY, not O_PATH. fanotify_mark(2) requires read permission on the
+ *   marked object and its fd lookup rejects O_PATH descriptors with EBADF. The same read-capable
+ *   directory fd is also valid as the mount fd for open_by_handle_at(2), which only needs any
+ *   descriptor on the filesystem.
  * - The group is initialized with FAN_REPORT_FID | FAN_REPORT_DFID_NAME. Directory-entry events
  *   then carry the modified directory's FID plus the entry name, and the path is reconstructed as
  *   parent + name. Without FAN_REPORT_DFID_NAME the kernel reports only the parent directory, so
@@ -352,17 +356,31 @@ int main(int argc, char **argv) {
   }
 
   for (int i = 0; i < root_paths; i++) {
-    int root_fd = open(roots[i], O_PATH | O_DIRECTORY | O_CLOEXEC);
+    /*
+     * O_RDONLY, not O_PATH: fanotify_mark(2) requires read permission on the object and rejects
+     * O_PATH descriptors with EBADF. The same fd remains a valid mount fd for open_by_handle_at(2).
+     */
+    int root_fd = open(roots[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (root_fd < 0) {
-      emit_loss("could not open an observe root");
+      char reason[512];
+      snprintf(reason, sizeof(reason), "could not open observe root %s: %s", roots[i], strerror(errno));
+      emit_loss(reason);
       continue;
     }
     if (fanotify_mark(fd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM, mask, root_fd, NULL) != 0) {
-      char reason[512];
-      snprintf(reason, sizeof(reason), "fanotify_mark failed on %s: %s", roots[i], strerror(errno));
-      emit_loss(reason);
-      close(root_fd);
-      continue;
+      /*
+       * FAN_MARK_FILESYSTEM covers the whole filesystem, so several observe roots commonly share
+       * one mark. Repeated FAN_MARK_ADD normally updates the existing mark and succeeds; treat
+       * EEXIST as an already-marked filesystem rather than a capture failure. The root fd stays
+       * usable for handle resolution either way.
+       */
+      if (errno != EEXIST) {
+        char reason[512];
+        snprintf(reason, sizeof(reason), "fanotify_mark failed on %s: %s", roots[i], strerror(errno));
+        emit_loss(reason);
+        close(root_fd);
+        continue;
+      }
     }
     root_fds[root_count++] = root_fd;
   }
