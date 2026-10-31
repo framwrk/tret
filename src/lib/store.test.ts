@@ -1,12 +1,14 @@
 import {
   BlobCorruptionError,
   BlobTooLargeError,
+  COMMAND_GC_GRACE_MS,
   DEFAULT_BACKUP_POLICY,
   DEFAULT_BACKUP_SIZE_LIMIT_BYTES,
   FileStorage,
   InvalidRecordError,
   RecordsCorruptionError,
   RecordsLockedError,
+  collectUnreferencedBlobs,
 } from "./store";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
@@ -491,5 +493,32 @@ describe("FileStorage garbage collection", () => {
     expect(await storage.gc([])).toEqual([blob.id]);
     expect(await storage.getBlob(blob.id)).toBeUndefined();
     expect(existsSync(temp)).toBe(false);
+  });
+
+  test("command collection spares fresh blobs, reclaims aged ones, and is idempotent", async () => {
+    const home = makeHome();
+    const storage = new FileStorage({ homeDir: home, gcGraceMs: COMMAND_GC_GRACE_MS });
+    const blob = await storage.putBlob(bytes("fresh-orphan"));
+
+    expect(COMMAND_GC_GRACE_MS).toBe(60_000);
+    expect(await collectUnreferencedBlobs(storage)).toEqual([]);
+    expect(await storage.getBlob(blob.id)).toBeDefined();
+
+    const past = new Date(Date.now() - 3_600_000);
+    utimesSync(blobPath(home, blob.id), past, past);
+
+    expect(await collectUnreferencedBlobs(storage)).toEqual([blob.id]);
+    expect(await collectUnreferencedBlobs(storage)).toEqual([]);
+    expect(await storage.getBlob(blob.id)).toBeUndefined();
+  });
+
+  test("a failed command collection is swallowed instead of raised", async () => {
+    const failing = {
+      gcUnreferenced: async (): Promise<string[]> => {
+        throw new Error("objects directory is unreadable");
+      },
+    };
+
+    expect(await collectUnreferencedBlobs(failing)).toEqual([]);
   });
 });

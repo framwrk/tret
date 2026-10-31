@@ -126,6 +126,11 @@ migration) landed in Phase 6.
   only unreferenced blobs, D2).
 - `referencedBlobs(records)` collects the before-image addresses every record references, the `keep`
   input to `gc`.
+- `collectUnreferencedBlobs(storage?)` is the production sweep. It calls `gcUnreferenced` outside
+  the records lock, swallows failures, and defaults to a 60-second grace window so a concurrent
+  install that stored a blob but has not saved its record yet cannot lose it. Commands call it after
+  a successful `uninstall`/`forget`/`unclaim` or after a replacement record is saved, so an orphan
+  created just now may survive until a later record change ages past the window.
 
 With backups enabled, the install integration reads pre-existing file contents at the capture
 window's start (`Journal.beforeImages`, keyed by content address), stores them with

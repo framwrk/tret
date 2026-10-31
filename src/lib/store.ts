@@ -41,6 +41,13 @@ export const DEFAULT_BACKUP_POLICY: BackupPolicy = {
 /** Default GC grace window; see `FileStorageOptions.gcGraceMs`. */
 export const DEFAULT_GC_GRACE_MS = 0;
 
+/**
+ * Grace window `collectUnreferencedBlobs` uses after a completed command. It protects a concurrent
+ * install that has written a content-addressed blob but has not saved its record yet, so the blob
+ * cannot look unreferenced and be swept mid-install.
+ */
+export const COMMAND_GC_GRACE_MS = 60_000;
+
 /** Default bounded wait for the records lock; see `FileStorageOptions.lockTimeoutMs`. */
 export const DEFAULT_RECORDS_LOCK_TIMEOUT_MS = 5000;
 
@@ -387,6 +394,23 @@ export class FileStorage implements Storage {
       if (isErrno(error, "ENOENT")) return [];
       throw error;
     }
+  }
+}
+
+/**
+ * The best-effort production entry point: collects every blob no stored record references and
+ * returns the addresses removed. Runs outside the records lock and never raises, so a failed sweep
+ * leaves the blobs for the next run instead of turning a command that already succeeded into a
+ * failure. The default store uses the 60-second command grace window so a concurrent install's
+ * not-yet-recorded blob survives; cleanup is therefore eventually consistent for fresh orphans.
+ */
+export async function collectUnreferencedBlobs(
+  storage: Pick<FileStorage, "gcUnreferenced"> = new FileStorage({ gcGraceMs: COMMAND_GC_GRACE_MS }),
+): Promise<BlobId[]> {
+  try {
+    return await storage.gcUnreferenced();
+  } catch {
+    return [];
   }
 }
 
