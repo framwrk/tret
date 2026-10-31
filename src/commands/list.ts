@@ -3,7 +3,7 @@ import { emitJson, isJsonMode } from "../lib/json-output";
 import { FileStorage } from "../lib/store";
 import { existsSync } from "node:fs";
 import { fail } from "../lib/failure";
-import { log } from "../lib/utilities";
+import { info } from "../lib/utilities";
 
 /** Whether a record's tracked executable is still on disk, so `list` never advertises a stale path. */
 export type ListState = "installed" | "partial";
@@ -106,12 +106,12 @@ export async function list(): Promise<void> {
   }
 
   if (records.length === 0) {
-    log("No installs tracked.");
+    info("No installs tracked.");
     return;
   }
 
   for (const line of formatList(records)) {
-    log(line);
+    info(line);
   }
 }
 

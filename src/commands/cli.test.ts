@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { RecordV3 } from "../types";
+import { VERSION } from "../constants";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -307,5 +308,102 @@ describe("uninstall selector output", () => {
       removed: [binary],
     });
     expect(existsSync(binary)).toBe(false);
+  });
+});
+
+/** Seeds a record with an executable under ~/.local/bin, for informational-output tests. */
+function writeRecord(home: string): void {
+  const executable = join(home, ".local", "bin", "mytool");
+  mkdirSync(join(home, ".local", "bin"), { recursive: true });
+  writeFileSync(executable, "#!/bin/sh\necho mytool\n", { mode: 0o755 });
+  writeRecords(home, [
+    record({
+      executable,
+      caseSensitive: false,
+      capture: {
+        backend: "macos-heuristic",
+        completeness: "heuristic",
+        segments: [{ kind: "install", startedAt: "2026-10-09T00:00:00.000Z" }],
+      },
+      owned: [{ path: executable, kind: "file", installedHash: "b".repeat(64) }],
+    }),
+  ]);
+}
+
+describe("informational output streams", () => {
+  test("--version writes the version to a piped stdout without starting a run log", async () => {
+    const home = makeHome();
+    const result = await runCliResult(["--version"], home);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe(VERSION);
+    expect(result.stderr).toBe("");
+    // The fast path answers before logging or the daily update check: no ~/.tret tree appears.
+    expect(existsSync(join(home, ".tret"))).toBe(false);
+  });
+
+  test("--help and help write the usage text to a piped stdout", async () => {
+    for (const args of [["--help"], ["help"]]) {
+      const home = makeHome();
+      const result = await runCliResult(args, home);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Usage");
+      expect(result.stdout).toContain("Commands");
+      expect(result.stdout).toContain("tret list");
+      expect(result.stdout).toContain("print to stdout even when it is piped");
+      expect(result.stderr).toBe("");
+    }
+  });
+
+  test("human list writes its table to a piped stdout", async () => {
+    const home = makeHome();
+    writeRecord(home);
+    const result = await runCliResult(["list"], home);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Name");
+    expect(result.stdout).toContain("mytool");
+    expect(result.stdout).toContain("heuristic");
+    expect(result.stderr).toBe("");
+  });
+
+  test("human list writes its empty-state line to a piped stdout", async () => {
+    const result = await runCliResult(["list"], makeHome());
+
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe("No installs tracked.");
+    expect(result.stderr).toBe("");
+  });
+
+  test("list --json emits exactly one document and no human table on stdout", async () => {
+    const home = makeHome();
+    writeRecord(home);
+    const result = await runCliResult(["list", "--json"], home);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain("Name");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      command: "list",
+      tools: [{ name: "mytool", completeness: "heuristic" }],
+    });
+  });
+
+  test("the pasted install pipeline still receives no human text on stdout", async () => {
+    const home = makeHome();
+    const server = serve(
+      '#!/bin/bash\nset -e\nmkdir -p "$HOME/.local/bin"\nprintf \'#!/bin/sh\\necho myshellpiped\\n\' > "$HOME/.local/bin/myshellpiped"\nchmod +x "$HOME/.local/bin/myshellpiped"\n',
+    );
+    try {
+      const result = await runCliResult(["install", server.url, "--no-capture", "--yes"], home);
+
+      expect(result.code).toBe(0);
+      // Any line here would have been executed by the `| bash` half of the pasted command.
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("installed myshellpiped");
+    } finally {
+      await server.stop();
+    }
   });
 });

@@ -705,7 +705,7 @@ describe("install -> list -> uninstall", () => {
       // `list` shows it as a partial record with no binary; `inspect` can read it.
       const listed = await runCliResult(["list"], home);
       expect(listed.code).toBe(0);
-      const row = listed.stderr.split("\n").find((line) => line.startsWith("install "));
+      const row = listed.stdout.split("\n").find((line) => line.startsWith("install "));
       expect(row).toMatch(/\bpartial\s+-\s/);
 
       const inspected = await runCliResult(["inspect", "install", "--json"], home);
