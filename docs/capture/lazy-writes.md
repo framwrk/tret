@@ -67,8 +67,16 @@ observed the install with macos-heuristic: heuristic attribution, no process tre
 ```
 
 `--no-capture` skips attaching a backend entirely; the installer still runs and the CLI says no window
-was recorded. Capture is **best-effort but never silent**: if a backend cannot attach, the install
-proceeds without a window and says so. The installer runs once either way.
+was recorded. Capture is **best-effort but never silent**: if the platform tracer cannot attach
+before the work starts, `install` and `trace` try the labeled heuristic backend (`linux-heuristic` on
+Linux, `macos-heuristic` on macOS); an install whose fallback also cannot start still runs once
+through the legacy snapshot/diff path. The observed work runs at most once either way. The fallback
+snapshot/diff records what the install added but has no journal, so it fingerprints each added path
+from disk when the record is written: regular files keep their installed hash, symlinks their target,
+and a newly added folder is inventoried with its contents, with directories keeping kind-only
+evidence. Changes to pre-existing paths have no before-image and stay detect-only. Records written
+before this fingerprinting (and migrated v2 records) remain unverified and are never made removable
+by the new behavior.
 
 ### Boundary guarantees
 

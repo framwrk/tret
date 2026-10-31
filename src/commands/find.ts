@@ -1,9 +1,11 @@
 import { caseSensitiveForPaths, currentPlatform, processPrivilege } from "../lib/platform";
 import { detectManagedInstall, withoutManagedInstallPaths } from "../lib/managed-install";
+import { EXIT_USAGE } from "../constants";
 import { FileStorage } from "../lib/store";
 import type { RecordV3 } from "../types";
 import { adoptedEntries } from "../lib/adoption";
 import { detectManagedPackage } from "../lib/package-manager";
+import { fail } from "../lib/failure";
 import { findRelated } from "../lib/related";
 import { log } from "../lib/utilities";
 import { randomUUID } from "node:crypto";
@@ -16,9 +18,7 @@ import { resolveCommand } from "../lib/executable";
  */
 export async function find(name: string | undefined): Promise<void> {
   if (!name || name.startsWith("--") || name.includes("/")) {
-    log("Error");
-    log("\tfind requires a command name: tret find <name>");
-    process.exit(1);
+    fail("find-usage", "find requires a command name: tret find <name>", EXIT_USAGE);
   }
 
   // A find record stands in for a real install, so the command has to exist first.

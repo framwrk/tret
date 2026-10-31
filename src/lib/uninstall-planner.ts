@@ -17,7 +17,7 @@ export type UninstallVerification = {
 };
 
 /** Why a path is skipped without changing it. */
-export type UninstallSkipReason = "absent" | "not-owned" | "already-empty";
+export type UninstallSkipReason = "absent" | "not-owned" | "already-empty" | "not-empty";
 
 /** Why a path needs the user's attention instead of being changed. */
 export type UninstallConflictReason =
@@ -102,6 +102,13 @@ export type UninstallPlanContext = {
    * `not-empty` against payload the record deliberately does not own.
    */
   delegatedRoots?: AbsolutePath[];
+  /**
+   * Treat a non-empty owned directory as a safe leftover instead of a `not-empty` conflict. Only
+   * forced replacement sets this: the old tool's own files are removed, while another tool's or the
+   * user's files keep the shared directory alive. The directory and its surviving contents are
+   * never touched, and ordinary uninstall keeps the blocking `not-empty` conflict.
+   */
+  skipNonEmptyOwnedDirectories?: boolean;
 };
 
 /**
@@ -294,6 +301,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     const inspect = context.inspect ?? this.inspect;
     const list = context.list ?? this.list;
     const force = context.force ?? false;
+    const skipNonEmptyOwnedDirectories = context.skipNonEmptyOwnedDirectories ?? false;
     const claims = claimedByOthers(context.otherRecords ?? [], record.id);
     const isShared = (path: AbsolutePath): boolean => sharedClaim(claims, path, record.caseSensitive);
     const actions: UninstallAction[] = [];
@@ -335,7 +343,16 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
       }
 
       if (entry.kind === "directory") {
-        this.planDirectory(entry, verification, list, gone, actions, sudoNeeded, () => (requiresSudo = true));
+        this.planDirectory(
+          entry,
+          verification,
+          list,
+          gone,
+          actions,
+          skipNonEmptyOwnedDirectories,
+          sudoNeeded,
+          () => (requiresSudo = true),
+        );
         continue;
       }
 
@@ -391,6 +408,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     list: (path: AbsolutePath) => AbsolutePath[],
     gone: Set<AbsolutePath>,
     actions: UninstallAction[],
+    skipNonEmptyOwnedDirectories: boolean,
     sudoNeeded: (verification: UninstallVerification) => boolean,
     markSudo: () => void,
   ): void {
@@ -401,8 +419,13 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
 
     const remaining = list(entry.path).filter((child) => !gone.has(child));
     if (remaining.length > 0) {
-      // User files (or another record's) survive; the directory is never recursively deleted.
-      actions.push({ action: "conflict", path: entry.path, reason: "not-empty" });
+      // User files (or another record's) survive. Forced replacement may leave the directory as a
+      // non-blocking leftover, but it is never recursively deleted either way.
+      actions.push(
+        skipNonEmptyOwnedDirectories
+          ? { action: "skip", path: entry.path, reason: "not-empty" }
+          : { action: "conflict", path: entry.path, reason: "not-empty" },
+      );
       return;
     }
 

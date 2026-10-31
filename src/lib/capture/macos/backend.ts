@@ -12,6 +12,12 @@ import { macosHomeRootBounds } from "./homeScope";
 export const MACOS_HEURISTIC_BACKEND = "macos-heuristic";
 
 export type MacosHeuristicOptions = {
+  /**
+   * Identifier stored in `record.capture.backend`; defaults to `macos-heuristic`. The Linux fallback
+   * passes `linux-heuristic` so records name the platform that produced them, without changing the
+   * `heuristic` completeness value.
+   */
+  name?: string;
   /** Path comparison case sensitivity; defaults to the macOS platform table (D10). */
   caseSensitive?: boolean;
   /** Scope roots used when `start` is called with none; mainly for tests. */
@@ -37,7 +43,7 @@ export type MacosHeuristicOptions = {
  * a future opt-in tracer would. See `docs/capture/macos-capture.md` for the coverage limits.
  */
 export class MacosHeuristicCaptureBackend implements CaptureBackend {
-  readonly name = MACOS_HEURISTIC_BACKEND;
+  readonly name: string;
   readonly completeness: CaptureCompleteness = "heuristic";
   /** Exposed so callers and tests can see which case behavior the fallback compares with (D10). */
   readonly caseSensitive: boolean;
@@ -47,6 +53,7 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
   private readonly home?: string;
 
   constructor(options: MacosHeuristicOptions = {}) {
+    this.name = options.name ?? MACOS_HEURISTIC_BACKEND;
     this.caseSensitive = options.caseSensitive ?? MACOS_PLATFORM.case.defaultCaseSensitive;
     this.roots = options.roots;
     this.hash = options.hash ?? hashFile;

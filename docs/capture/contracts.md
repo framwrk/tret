@@ -126,6 +126,11 @@ migration) landed in Phase 6.
   only unreferenced blobs, D2).
 - `referencedBlobs(records)` collects the before-image addresses every record references, the `keep`
   input to `gc`.
+- `collectUnreferencedBlobs(storage?)` is the production sweep. It calls `gcUnreferenced` outside
+  the records lock, swallows failures, and defaults to a 60-second grace window so a concurrent
+  install that stored a blob but has not saved its record yet cannot lose it. Commands call it after
+  a successful `uninstall`/`forget`/`unclaim` or after a replacement record is saved, so an orphan
+  created just now may survive until a later record change ages past the window.
 
 With backups enabled, the install integration reads pre-existing file contents at the capture
 window's start (`Journal.beforeImages`, keyed by content address), stores them with
@@ -145,6 +150,10 @@ context can carry other records that claim the same paths (D4 shared ownership),
 subtree a recursive removal will clear (see `managedInstall` above). The planner treats each
 delegated root as already gone, so an owned ancestor directory that only held the root is still
 planned for removal instead of being reported `not-empty` against payload the record never owns.
+`skipNonEmptyOwnedDirectories` is set only by forced replacement: a non-empty owned directory
+becomes a non-blocking `skip` (`not-empty`) instead of a conflict, and the directory and its
+surviving files are never recursed into. Ordinary `uninstall` leaves the option off, so the same
+state remains a blocking `not-empty` conflict.
 Each `remove` and `restore` action carries the filesystem state inspected when the plan was made.
 `force` may bypass a known file-hash or symlink-target mismatch already present at that point, as
 well as shared ownership; it does not make a missing/unreadable fingerprint or kind change

@@ -8,9 +8,9 @@
 // claimant, because that would stop tracking a path rather than resolve a conflict.
 
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
-import { FileStorage } from "../lib/store";
 import type { RecordV3 } from "../types";
 import { fail } from "../lib/failure";
 import { log } from "../lib/utilities";
@@ -56,6 +56,9 @@ export async function unclaim(selector: string | undefined, rawPath: string | un
   }
 
   await storage.saveRecord(result.record);
+  // Dropping a claim can leave a record without its last reference to a before-image; sweep after
+  // the save, best-effort, so this successful unclaim is never reported as failed for cleanup.
+  await collectUnreferencedBlobs();
 
   if (isJsonMode()) {
     emitJson({

@@ -16,16 +16,20 @@ import { uninstall } from "./src/commands/uninstall";
 import { update } from "./src/commands/update";
 
 // Everything after `--` belongs to the install script, never to Tret's own flags. `--time` is a
-// dev-only flag: timing a compiled binary is meaningless, so built runs ignore it.
+// dev-only flag: timing a compiled binary is meaningless, so built runs ignore it. `--json` is
+// global, so it is removed here — before the command is chosen — rather than read as a command or a
+// selector; installer arguments after `--` are left untouched.
 const argv = process.argv.slice(2);
 const separator = argv.indexOf("--");
-const ownArgs = (separator === -1 ? argv : argv.slice(0, separator)).filter((arg) => arg !== "--time");
+const preSeparator = separator === -1 ? argv : argv.slice(0, separator);
+const jsonMode = preSeparator.includes("--json");
+const ownArgs = preSeparator.filter((arg) => arg !== "--time" && arg !== "--json");
 const scriptArgs = separator === -1 ? [] : argv.slice(separator + 1);
 
 const command = ownArgs[0];
 
 // JSON mode is decided before anything prints, so a human line can never reach stdout in a `--json` run.
-if (ownArgs.includes("--json")) enableJsonMode();
+if (jsonMode) enableJsonMode();
 
 const timed = IS_DEV && process.argv.includes("--time");
 
@@ -112,8 +116,9 @@ switch (command) {
 
   case "update":
     // `tret update <tool>` updates one tracked tool by re-running its recorded installer; a bare
-    // `tret update` updates Tret itself, so the argument selects which workflow runs.
-    await update(ownArgs[1], ownArgs.includes("--yes"));
+    // `tret update` updates Tret itself, so the argument selects which workflow runs. The selector
+    // is the first non-flag argument, so `update --yes` never names a tool called `--yes`.
+    await update(ownArgs.slice(1).find((arg) => arg !== "--yes"), ownArgs.includes("--yes"));
     break;
 
   case "help":
@@ -149,7 +154,7 @@ function help(): void {
     `Each install runs inside a bounded capture window. ${SCRIPT_NAME} reports when the window was open and how completely it covered the installer's process tree; it never runs the installed tool itself to discover lazy writes.`,
   );
   info(
-    `Linux capture uses unprivileged strace, or the packaged fanotify helper when already root; macOS uses a scoped heuristic snapshot. Capture records changes but does not sandbox the installer or scan for malware.`,
+    `Linux capture uses unprivileged strace, or the packaged fanotify helper when already root; macOS uses a scoped heuristic snapshot. If the tracer cannot attach before install or trace starts, Tret uses a labeled heuristic window (linux-heuristic on Linux, macos-heuristic on macOS); trace refuses to run the tool if neither backend can attach. Capture records changes but does not sandbox the installer or scan for malware.`,
   );
   info("");
   info(`Commands`);
@@ -157,7 +162,7 @@ function help(): void {
     `\tinstall <url>     Run an installer inside a bounded capture window and record what it changes; paste the curl | bash line when no URL is given (alias: add)`,
   );
   info(
-    `\tuninstall <tool>  Remove a tool by deleting what its install added, stripping its PATH lines, and dropping the record (aliases: remove, unadd)`,
+    `\tuninstall <tool>  Remove a tool by deleting what its install added, cleaning the shell PATH lines it marked, and dropping the record (aliases: remove, unadd)`,
   );
   info(
     `\tunclaim <tool> <path>  Drop one record's claim on a path another record also claims, resolving a shared-owner conflict without --force (changes no files)`,
@@ -180,8 +185,10 @@ function help(): void {
   info(
     `\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, forget, unclaim, uninstall, update)`,
   );
+  info(`\t              --json works before or after the command; after -- it is passed to the install script`);
   info(`\t              Human text and installer output go to the terminal or stderr, so a piped run stays valid JSON`);
   info(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
+  info(`\t              shell cleanup edits only config files the old record attributes to the tool; a write failure keeps the old record`);
   info(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
   info(`\t              unverified paths and state changes after planning still block removal`);
   info(`\t              delegated-removal overlap always blocks, including with --force`);
@@ -201,6 +208,9 @@ function help(): void {
   info(`\t              uninstall and trace require --yes in JSON mode; install and update <tool> never prompt there`);
   info(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);
   info(`\t              a record with nothing actionable left is dropped, or remove it with tret forget <tool>`);
+  info(`\t              Shell PATH lines are cleaned only in an attributed config; a shared entry such as ~/.local/bin`);
+  info(`\t              also needs the file to match its installed state and the line or its comment to name the tool.`);
+  info(`\t              Unmarked shared entries stay in place and are reported as detect-only`);
   info(`\t--            install: every flag after this goes to the install script itself`);
   info("");
   info(`Exit codes (for automation; stable)`);
