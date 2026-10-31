@@ -1,6 +1,7 @@
 import { DEFAULT_BACKUP_POLICY, DEFAULT_BACKUP_SIZE_LIMIT_BYTES } from "./src/lib/store";
 import { EXIT_USAGE, IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
 import { extractBackupSizeFlag, extractNameFlag, install, parseObserveFlags } from "./src/commands/install";
+import { info, log } from "./src/lib/utilities";
 import { openRunLog, watchRunLog } from "./src/lib/runlog";
 import { checkForUpdate } from "./src/lib/updatecheck";
 import { enableJsonMode } from "./src/lib/json-output";
@@ -9,7 +10,6 @@ import { find } from "./src/commands/find";
 import { forget } from "./src/commands/forget";
 import { inspect } from "./src/commands/inspect";
 import { list } from "./src/commands/list";
-import { info, log } from "./src/lib/utilities";
 import { trace } from "./src/commands/trace";
 import { unclaim } from "./src/commands/unclaim";
 import { uninstall } from "./src/commands/uninstall";

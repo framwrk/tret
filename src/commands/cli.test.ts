@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { VERSION } from "../constants";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 // Pipe-capture coverage for read-only informational output. `--version`, help, and the human
 // `list` table must reach a piped stdout so shell pipelines can consume them, while JSON mode still
