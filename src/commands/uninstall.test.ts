@@ -108,6 +108,50 @@ function record(overrides: Partial<RecordV3> = {}): RecordV3 {
 }
 
 describe("uninstall record lifecycle", () => {
+  test.skipIf(process.getuid?.() === 0)("keeps an inaccessible owned path tracked instead of treating it as absent", async () => {
+    const home = makeHome();
+    const dir = join(home, "private");
+    const file = join(dir, "tool");
+    mkdirSync(dir);
+    writeFileSync(file, "installed");
+    writeRecords(home, [record({ owned: [{ path: file, kind: "file", installedHash: sha256("installed") }] })]);
+    chmodSync(dir, 0o000);
+    try {
+      const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
+      expect(result.code).toBe(EXIT_ERROR);
+      expect(readRecords(home).records[0]?.owned).toEqual([
+        { path: file, kind: "file", installedHash: sha256("installed") },
+      ]);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    expect(readFileSync(file, "utf8")).toBe("installed");
+  });
+
+  test("shared shell config claims block cleanup until explicitly forced", async () => {
+    const home = makeHome();
+    const file = join(home, ".zshrc");
+    const content = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
+    writeFileSync(file, content);
+    const other = record({ id: "rec-2", name: "other", mutated: [{ path: file }] });
+    writeRecords(home, [record({ mutated: [{ path: file, installedHash: sha256(content) }] }), other]);
+
+    const preview = await runCliResult(["uninstall", "mytool", "--dry-run", "--json"], home);
+    expect(preview.code).toBe(0);
+    expect(JSON.parse(preview.stdout).actions).toContainEqual({
+      action: "conflict", path: file, reason: "shared-owner",
+    });
+
+    const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(readFileSync(file, "utf8")).toBe(content);
+    expect(readRecords(home).records).toHaveLength(2);
+
+    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("");
+    expect(readRecords(home).records).toEqual([other]);
+  });
+
   test("detect-only churn is reported but does not block; owned paths go and the record drops", async () => {
     const home = makeHome();
     const binary = join(home, ".local", "bin", "mytool");

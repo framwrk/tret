@@ -253,6 +253,28 @@ describe("shellconfig", () => {
     expect(readFileSync(file, "utf8")).toBe(edited);
   });
 
+  test("does not clean an owned PATH line after the config changes between preview and apply", () => {
+    const home = testHome();
+    const file = join(home, ".zshrc");
+    const installed = `export PATH="$HOME/.mytool/bin:$PATH"\n`;
+    writeFileSync(file, installed);
+    const shell = planShellCleanup(
+      record(home, {
+        owned: [{ path: join(home, ".mytool"), kind: "directory" }],
+        mutated: [{ path: file, installedHash: sha256(installed) }],
+      }),
+      new Set([file]),
+    );
+    expect(removeRcLines("mytool", shell.dirs, true, shell.files, undefined, shell.hashes).cleaned).toHaveLength(1);
+
+    const edited = installed + "# edited by the user\n";
+    writeFileSync(file, edited);
+    const applied = removeRcLines("mytool", shell.dirs, false, shell.files, undefined, shell.hashes);
+
+    expect(applied.cleaned).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(edited);
+  });
+
   test("expands a directory entry to its snippet files and never edits the directory as a file", () => {
     const home = testHome();
     const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));

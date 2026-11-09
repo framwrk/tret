@@ -1,5 +1,5 @@
+import { lstatSync, statSync } from "node:fs";
 import type { AbsolutePath } from "../types";
-import { lstatSync } from "node:fs";
 import { scanDir } from "./scan";
 
 /** Resolves a command name to its path on PATH, or undefined when no such command exists. */
@@ -28,11 +28,11 @@ function executablesUnder(dir: AbsolutePath): AbsolutePath[] {
   return found;
 }
 
-/** True for a non-directory entry with any execute bit set. */
+/** True for a regular file (or a symlink to one) with any execute bit set. */
 function isExecutable(path: AbsolutePath): boolean {
   try {
-    const stat = lstatSync(path);
-    return !stat.isDirectory() && (stat.mode & 0o111) !== 0;
+    const stat = statSync(path);
+    return stat.isFile() && (stat.mode & 0o111) !== 0;
   } catch {
     return false;
   }

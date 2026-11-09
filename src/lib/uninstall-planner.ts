@@ -136,8 +136,11 @@ export function inspectPath(path: AbsolutePath): UninstallVerification {
   let stats;
   try {
     stats = lstatSync(path);
-  } catch {
-    return { exists: false };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // Only a missing path proves absence. Permission and I/O errors must keep the path
+    // unverified so uninstall retains its record instead of silently forgetting it.
+    return { exists: code !== "ENOENT" && code !== "ENOTDIR" };
   }
 
   if (stats.isSymbolicLink()) {

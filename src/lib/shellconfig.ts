@@ -1,8 +1,9 @@
 import type { AbsolutePath, RecordV3 } from "../types";
 import type { Platform, ShellConfigEntry } from "./platform";
+import { claimedByOthers, inspectPath, sharedClaim } from "./uninstall-planner";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import type { UninstallPlanContext } from "./uninstall-planner";
 import { currentPlatform } from "./platform";
-import { inspectPath } from "./uninstall-planner";
 import { join } from "node:path";
 
 export type RcCleaning = {
@@ -27,14 +28,21 @@ export type ShellCleanup = {
  * planner, which reports it as a conflict rather than risking a user's later edit. Shared by
  * uninstall and the forced-reinstall path so both clean only files the install actually recorded.
  */
-export function planShellCleanup(record: RecordV3, shellPaths: Set<AbsolutePath>): ShellCleanup {
+export function planShellCleanup(
+  record: RecordV3,
+  shellPaths: Set<AbsolutePath>,
+  context: Pick<UninstallPlanContext, "otherRecords" | "force"> = {},
+): ShellCleanup {
   const dirs = record.owned.map((entry) => entry.path);
   const files: AbsolutePath[] = [];
   const hashes = new Map<AbsolutePath, string>();
+  const claims = claimedByOthers(context.otherRecords ?? [], record.id);
 
   for (const entry of record.mutated) {
     if (!shellPaths.has(entry.path)) continue;
     if (entry.beforeBlob !== undefined) continue;
+    // Shared configs stay in the file planner, which reports the ownership conflict.
+    if (!context.force && sharedClaim(claims, entry.path, record.caseSensitive)) continue;
     if (entry.installedHash !== undefined) {
       const verification = inspectPath(entry.path);
       if (verification.exists && verification.hash !== undefined && verification.hash !== entry.installedHash) {
@@ -148,6 +156,9 @@ function cleanFile(
     failed.push(file);
     return;
   }
+
+  // Re-check every attributed config after confirmation, including lines naming owned dirs.
+  if (installedHash !== undefined && sha256Hex(bytes) !== installedHash) return;
 
   const lines = Buffer.from(bytes).toString("utf8").split("\n");
   // Without the recorded installed hash there is no before-image to prove the line is ours, so a

@@ -34,7 +34,7 @@ if [ -n "$TO_REMOVE" ]; then
       y|Y|yes|Yes|YES)
         [ -f "$DEST" ] && rm "$DEST" && echo "Removed $DEST"
         [ -f "$HELPER" ] && rm "$HELPER" && echo "Removed $HELPER"
-        if [ -L "$LINK" ]; then
+        if [ -L "$LINK" ] && [ "$(readlink "$LINK" || true)" = "$DEST" ]; then
           rm "$LINK"
           echo "Removed $LINK"
         fi
