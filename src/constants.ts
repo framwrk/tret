@@ -161,3 +161,33 @@ export const EXCLUDED_DIR_NAME_PATTERN = /cache/i;
 export function isExcludedDirName(name: string): boolean {
   return EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name);
 }
+
+/**
+ * Directory names whose contents are never read into a before-image, at any depth: private key
+ * material and cloud/credential stores. These paths stay in the existence baseline so an installer's
+ * change is still reported; only `--backup` content capture skips their bytes.
+ */
+export const SENSITIVE_BACKUP_DIR_NAMES = new Set([
+  ".aws",
+  ".azure",
+  ".gnupg",
+  ".kube",
+  ".password-store",
+  ".ssh",
+  "Keychains",
+]);
+
+/** File names whose bytes are never read into a before-image, at any depth. */
+export const SENSITIVE_BACKUP_FILE_NAMES = new Set([".git-credentials", ".netrc", ".pgpass"]);
+
+/**
+ * Whether `path` names a sensitive backup location. The check is name-based, so a secret is skipped
+ * wherever a capture root places it, not only directly under `$HOME`. A sensitive directory stays
+ * tracked by the baseline; only its content is excluded from before-images.
+ */
+export function isSensitiveBackupPath(path: string): boolean {
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+  const name = segments[segments.length - 1];
+  if (name !== undefined && SENSITIVE_BACKUP_FILE_NAMES.has(name)) return true;
+  return segments.some((segment) => SENSITIVE_BACKUP_DIR_NAMES.has(segment));
+}

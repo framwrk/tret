@@ -1,10 +1,10 @@
 import type { AbsolutePath, OwnedKind } from "../../../types";
+import { EXCLUDED_PATHS, isExcludedDirName, isSensitiveBackupPath } from "../../../constants";
 import { basename, dirname, join } from "node:path";
 import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
 import type { BackupPolicy } from "../normalize";
 import type { BlobId } from "../../storage";
 import { createHash } from "node:crypto";
-import { isExcludedDirName } from "../../../constants";
 import { normalizeAbsolutePath } from "./paths";
 
 /**
@@ -213,8 +213,9 @@ export type CapturedBaseline = {
  * existence-only — a `readdir` per directory and no file bytes read — so it cannot become the global
  * content diff the rewrite is replacing. When backups are enabled (D2), each eligible regular file is
  * also read once, for its before-image. Either way the walk is bounded by the roots the platform
- * hands in, and it skips the same churn directories the snapshot walk does (see `EXCLUDED_DIR_NAMES`),
- * so a multi-GB cache such as a runner's `/opt/hostedtoolcache` is recorded as one entry, never walked.
+ * hands in, and it skips the same churn directories the snapshot walk does (see `EXCLUDED_DIR_NAMES`)
+ * and the home-relative `EXCLUDED_PATHS` list (`Documents`, `Downloads`, `.npm`, …), so a multi-GB
+ * cache such as a runner's `/opt/hostedtoolcache` is recorded as one entry, never walked.
  * Overlapping roots share a visited-path set, so the same file is never read twice for backups.
  */
 export async function captureBaseline(roots: AbsolutePath[], options: BaselineOptions = {}): Promise<CapturedBaseline> {
@@ -222,6 +223,7 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
   const baseline = new MemoryBaseline();
   const beforeImages = new Map<BlobId, Uint8Array>();
   const visited = new Set<AbsolutePath>();
+  const excluded = excludedPathsUnderRoots(roots);
   const backups = options.backups;
   const backup: BackupCapture | undefined =
     backups?.enabled === true
@@ -238,10 +240,23 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
     } else {
       baseline.set(root, kindOf(info));
     }
-    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited);
+    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited, excluded);
     else visited.add(root);
   }
   return { baseline, beforeImages };
+}
+
+/**
+ * The absolute home-relative skip paths (`EXCLUDED_PATHS`) under every observe root. Applying them
+ * per root keeps an explicitly observed root (`--observe ~/Documents/project`) walkable while the
+ * default home root still prunes the user-content folders it contains.
+ */
+function excludedPathsUnderRoots(roots: AbsolutePath[]): Set<AbsolutePath> {
+  const excluded = new Set<AbsolutePath>();
+  for (const root of roots) {
+    for (const relative of EXCLUDED_PATHS) excluded.add(join(root, relative));
+  }
+  return excluded;
 }
 
 /** What a backups-enabled walk uses to turn pre-existing files into before-images. */
@@ -257,6 +272,7 @@ async function walk(
   inspector: FsInspector,
   backup: BackupCapture | undefined,
   visited: Set<AbsolutePath>,
+  excluded: ReadonlySet<AbsolutePath>,
 ): Promise<void> {
   if (visited.has(dir)) return;
   visited.add(dir);
@@ -269,12 +285,12 @@ async function walk(
   }
   for (const entry of entries) {
     const path = join(dir, entry.name);
-    if (visited.has(path)) continue;
+    if (visited.has(path) || excluded.has(path)) continue;
     if (entry.isDirectory()) {
       baseline.set(path, "directory");
       // Record excluded directories but never descend, so shared churn trees cost one entry and no
       // before-image reads. An explicit root nested below this directory can still be walked separately.
-      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited);
+      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited, excluded);
       else visited.add(path);
     } else {
       visited.add(path);
@@ -292,10 +308,16 @@ async function walk(
  * Records one existing regular file. With backups enabled the file is read once: within the size
  * limit its bytes become a before-image under their sha256 content address, and the pre-window hash,
  * size, mode, and mtime travel in the baseline so a later overwrite or deletion can be restored. An
- * over-limit or unreadable file stays kind-only: the change is still recorded, just not restorable.
+ * over-limit, unreadable, or sensitive file (key material, credential stores) stays kind-only: the
+ * change is still recorded, just not restorable.
  */
 async function recordFile(path: AbsolutePath, info: NodeInfo, baseline: MemoryBaseline, backup: BackupCapture): Promise<void> {
-  if (info.kind !== "file" || info.size === undefined || info.size > backup.sizeLimitBytes) {
+  if (
+    info.kind !== "file" ||
+    info.size === undefined ||
+    info.size > backup.sizeLimitBytes ||
+    isSensitiveBackupPath(path)
+  ) {
     baseline.set(path, kindOf(info));
     return;
   }
