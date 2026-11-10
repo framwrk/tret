@@ -96,6 +96,15 @@ describe("detectManagedInstall", () => {
     expect(detectManagedInstall(normal)).toBeUndefined();
     expect(detectManagedInstall("")).toBeUndefined();
   });
+
+  test("ignores a marker in a home or shared directory that is not the layout's root", () => {
+    const home = testHome();
+    const launcher = join(home, "pi");
+    writeFileSync(join(home, "managed-install.json"), JSON.stringify(piMarker()));
+    writeFileSync(launcher, "#!/bin/sh\nexec pi\n");
+
+    expect(detectManagedInstall(launcher)).toBeUndefined();
+  });
 });
 
 describe("managed install paths", () => {
@@ -195,6 +204,39 @@ describe("removeManagedInstall", () => {
     const removal = await removeManagedInstall({ kind: "unknown-managed-install", layout: "x", root });
     expect(removal.ok).toBe(false);
     expect(removal.detail).toContain("not a supported managed-install layout");
+  });
+
+  test("refuses a marker-bearing home directory instead of recursively removing it", async () => {
+    const home = testHome();
+    writeFileSync(join(home, "managed-install.json"), JSON.stringify(piMarker()));
+    let called = false;
+    const runner: ManagedInstallRunner = async () => {
+      called = true;
+      return { code: 0, stdout: "", stderr: "" };
+    };
+
+    const removal = await removeManagedInstall({ ...managed, root: home }, { runner });
+    expect(removal.ok).toBe(false);
+    expect(removal.detail).toContain("root shape");
+    expect(called).toBe(false);
+  });
+
+  test("refuses a shaped root that contains the home directory", async () => {
+    const base = testHome();
+    const root = join(base, "agent", "install");
+    const home = join(root, "home");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(root, "managed-install.json"), JSON.stringify(piMarker()));
+    let called = false;
+    const runner: ManagedInstallRunner = async () => {
+      called = true;
+      return { code: 0, stdout: "", stderr: "" };
+    };
+
+    const removal = await removeManagedInstall({ ...managed, root }, { runner, home });
+    expect(removal.ok).toBe(false);
+    expect(removal.detail).toContain("home or shared directory");
+    expect(called).toBe(false);
   });
 });
 
