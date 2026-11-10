@@ -27,6 +27,12 @@ type ManagedInstallLayout = {
   marker: string;
   /** Candidate roots to probe, given the fully symlink-resolved command path. */
   rootCandidates: (resolved: AbsolutePath) => AbsolutePath[];
+  /**
+   * Structural check for a real root of this layout. A matching marker alone is not enough: without
+   * this, a stray marker in a home or shared directory would make that whole directory a removal
+   * target.
+   */
+  hasRootShape: (root: AbsolutePath) => boolean;
 };
 
 const PI_MARKER = "managed-install.json";
@@ -49,6 +55,7 @@ const LAYOUTS: ManagedInstallLayout[] = [
       if (basename(dir) === "bin") candidates.push(join(dirname(dir), "install"));
       return candidates;
     },
+    hasRootShape: (root) => basename(root) === "install" && basename(dirname(root)) === "agent",
   },
 ];
 
@@ -66,7 +73,7 @@ export function detectManagedInstall(executable: AbsolutePath, owned: readonly O
   const resolved = resolveCommandPath(executable, owned);
   for (const layout of LAYOUTS) {
     for (const candidate of layout.rootCandidates(resolved)) {
-      if (markerMatches(candidate, layout)) {
+      if (layout.hasRootShape(candidate) && markerMatches(candidate, layout)) {
         return { kind: layout.kind, layout: layout.layout, root: candidate };
       }
     }
@@ -119,10 +126,14 @@ export type ManagedInstallRemoval = {
  */
 export async function removeManagedInstall(
   managed: ManagedInstall,
-  options: { runner?: ManagedInstallRunner } = {},
+  options: { runner?: ManagedInstallRunner; home?: AbsolutePath } = {},
 ): Promise<ManagedInstallRemoval> {
-  if (!existsSync(managed.root)) {
-    return { ok: true, skipped: true, detail: `${managed.root} is already absent` };
+  if (managed.root === "" || !isAbsolute(managed.root)) {
+    return { ok: false, skipped: false, detail: `${managed.root || "(empty)"} is not an absolute managed root` };
+  }
+  const root = resolve(managed.root);
+  if (!existsSync(root)) {
+    return { ok: true, skipped: true, detail: `${root} is already absent` };
   }
 
   const layout = LAYOUTS.find((candidate) => candidate.kind === managed.kind && candidate.layout === managed.layout);
@@ -133,28 +144,53 @@ export async function removeManagedInstall(
       detail: `${managed.kind} (${managed.layout}) is not a supported managed-install layout`,
     };
   }
-  if (!markerMatches(managed.root, layout)) {
+  if (!layout.hasRootShape(root)) {
     return {
       ok: false,
       skipped: false,
-      detail: `marker ${join(managed.root, layout.marker)} is missing or no longer valid`,
+      detail: `${root} does not have the ${layout.layout} root shape`,
+    };
+  }
+  if (isUnsafeRemovalRoot(root, options.home ?? Bun.env.HOME)) {
+    return {
+      ok: false,
+      skipped: false,
+      detail: `${root} is a home or shared directory, not a managed root`,
+    };
+  }
+  if (!markerMatches(root, layout)) {
+    return {
+      ok: false,
+      skipped: false,
+      detail: `marker ${join(root, layout.marker)} is missing or no longer valid`,
     };
   }
 
   const runner = options.runner ?? spawnRunner;
   let result: ManagedInstallCommandResult;
   try {
-    result = await runner("rm", ["-rf", managed.root]);
+    result = await runner("rm", ["-rf", root]);
   } catch (error) {
     return { ok: false, skipped: false, detail: message(error) };
   }
 
-  if (!existsSync(managed.root)) return { ok: true, skipped: false, detail: `removed ${managed.root}` };
+  if (!existsSync(root)) return { ok: true, skipped: false, detail: `removed ${root}` };
   return {
     ok: false,
     skipped: false,
     detail: `rm exited ${result.code}: ${firstLine(result.stderr) || firstLine(result.stdout)}`,
   };
+}
+
+/**
+ * Recursive removal must never target a home directory or one of its ancestors: no marker makes a
+ * whole shared tree disposable, even when the path happens to end in the expected layout segments.
+ */
+function isUnsafeRemovalRoot(root: AbsolutePath, home: AbsolutePath | undefined): boolean {
+  if (root === "/") return true;
+  if (home === undefined || home === "") return false;
+  const normalizedHome = resolve(home);
+  return root === normalizedHome || normalizedHome.startsWith(`${root}/`);
 }
 
 /** The real runner: spawn `rm`, inherit the environment (and PATH), capture output. */
