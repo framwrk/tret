@@ -22,8 +22,9 @@ import { reconstruct } from "./reconstruct";
  * Completeness is never assumed complete: the journal is downgraded to `partial` when the tracer
  * lost a tracee (a uid transition), was denied attach, saw a syscall whose effect the journal cannot
  * represent (`mmap` writes, kernel copies, ownership changes), could not resolve a path, or was still
- * attached to a live descendant when the window closed (daemonization). A record only ever carries
- * `complete` when the tracer observed the whole tree through its natural exit.
+ * attached to a live descendant when the window closed (daemonization). Fanotify is always partial
+ * while its helper omits directory events and real-kernel tests have not established full coverage.
+ * A record only ever carries `complete` when the tracer observed the whole tree through its natural exit.
  */
 export type LinuxCaptureBackendOptions = {
   /** Builds the attached tracer; defaults to the strace (unprivileged ptrace) tracer. */
@@ -100,6 +101,11 @@ export class LinuxCaptureBackend implements CaptureBackend {
     });
 
     const reasons = new Set<string>([...beforeStopLosses, ...tracer.losses()]);
+    if (tracer.name === "linux-fanotify") {
+      reasons.add(
+        "fanotify helper omits directory events (including mkdir/rmdir); full coverage has not been established by real-kernel tests",
+      );
+    }
     for (const diagnostic of traced.diagnostics) reasons.add(diagnostic);
     for (const diagnostic of result.diagnostics) reasons.add(diagnostic);
     if (traced.unsupported.length > 0) {

@@ -9,6 +9,7 @@ import { attachFanotify } from "./tracer";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { normalizeJournal } from "../../journal/normalize";
+import { ownershipConfidence } from "../../ownership";
 import { tmpdir } from "node:os";
 
 const FAKE_FANOTIFY = join(fileURLToPath(new URL("./fixtures/", import.meta.url)), "fake-fanotify.sh");
@@ -17,7 +18,8 @@ const NO_BACKUPS: BackupPolicy = { enabled: false, sizeLimitBytes: 1024 };
 /**
  * One shared tracer-record stream, used to prove that the unprivileged strace-style tracer and the
  * privileged fanotify helper produce the same normalized effects. This is the phase 4 conformance
- * requirement: backends are interchangeable behind the journal shape.
+ * requirement: backends are interchangeable behind the journal shape. This synthetic stream cannot
+ * establish real-kernel coverage, so fanotify still reports partial confidence.
  */
 const SHARED_STREAM: TracerRecord[] = [
   { op: "mkdir", at: 1, pid: 42, path: "/h/.local" },
@@ -43,7 +45,7 @@ function normalize(journal: Awaited<ReturnType<Awaited<ReturnType<LinuxCaptureBa
 }
 
 describe("linux backend conformance against a shared event stream", () => {
-  test("the unprivileged and privileged backends normalize the same stream identically", async () => {
+  test("the backends normalize the same effects while fanotify retains partial coverage", async () => {
     const tracer = new FakeLinuxTracer({ name: "linux-strace" });
     for (const record of SHARED_STREAM) tracer.push(record);
     const straceBackend = new LinuxCaptureBackend({
@@ -68,14 +70,20 @@ describe("linux backend conformance against a shared event stream", () => {
       const fanotifyJournal = await (await fanotifyBackend.start({ pid: 42, privilege: "root", roots: ["/h"] })).stop();
 
       expect(fanotifyJournal.backend).toBe("linux-fanotify");
-      expect(fanotifyJournal.completeness).toBe("complete");
-      expect(normalize(fanotifyJournal)).toEqual(normalize(straceJournal));
+      expect(fanotifyJournal.completeness).toBe("partial");
+      expect(fanotifyJournal.partialReason).toContain("directory events");
+      expect(ownershipConfidence(fanotifyJournal.completeness)).toBe("observed");
+      expect(straceJournal.completeness).toBe("complete");
+      expect(normalize(fanotifyJournal)).toEqual({
+        ...normalize(straceJournal),
+        diagnostics: [expect.objectContaining({ code: "coverage", message: expect.stringContaining("directory events") })],
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  test("a fanotify helper loss line downgrades the journal to partial", async () => {
+  test("a fanotify helper loss line is preserved alongside the known coverage gap", async () => {
     const dir = await mkdtemp(join(tmpdir(), "tret-fan-loss-"));
     try {
       const eventsFile = join(dir, "events.ndjson");
@@ -93,6 +101,7 @@ describe("linux backend conformance against a shared event stream", () => {
       const journal = await (await backend.start({ pid: 42, privilege: "root", roots: ["/h"] })).stop();
 
       expect(journal.completeness).toBe("partial");
+      expect(journal.partialReason).toContain("directory events");
       expect(journal.partialReason).toContain("queue overflowed");
     } finally {
       await rm(dir, { recursive: true, force: true });

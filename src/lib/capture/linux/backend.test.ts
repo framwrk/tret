@@ -7,6 +7,7 @@ import { FakeLinuxTracer } from "./fake";
 import type { TracerAttachOptions } from "./tracer";
 import { join } from "node:path";
 import { normalizeJournal } from "../../journal/normalize";
+import { ownershipConfidence } from "../../ownership";
 import { tmpdir } from "node:os";
 
 const DEFAULT_TRACER_PREFLIGHT_TEST_ENABLED =
@@ -68,7 +69,7 @@ describe("linux capture backend", () => {
   );
 
   test("delegates attach options and reports a complete journal for a clean window", async () => {
-    const tracer = new FakeLinuxTracer({ name: "linux-fanotify" });
+    const tracer = new FakeLinuxTracer({ name: "linux-strace" });
     tracer.push({ op: "mkdir", at: 1, pid: 42, path: "/h/d" });
     const { backend, seen } = backendWith(tracer);
 
@@ -76,11 +77,30 @@ describe("linux capture backend", () => {
     const journal = await session.stop();
 
     expect(seen).toEqual([{ pid: 42, roots: ["/h"] }]);
-    expect(session.backend).toBe("linux-fanotify");
-    expect(journal.backend).toBe("linux-fanotify");
+    expect(session.backend).toBe("linux-strace");
+    expect(journal.backend).toBe("linux-strace");
     expect(journal.completeness).toBe("complete");
+    expect(ownershipConfidence(journal.completeness)).toBe("proven");
     expect(journal.partialReason).toBeUndefined();
     expect(journal.events.map((event) => event.type)).toEqual(["mkdir"]);
+  });
+
+  test("fanotify stays partial without reported losses, even for an empty window", async () => {
+    for (const hasEvents of [false, true]) {
+      const tracer = new FakeLinuxTracer({ name: "linux-fanotify" });
+      if (hasEvents) tracer.push({ op: "mkdir", at: 1, pid: 42, path: "/h/d" });
+      const { backend } = backendWith(tracer);
+      const session = await backend.start({ pid: 42, privilege: "root", roots: ["/h"] });
+      const journal = await session.stop();
+
+      expect(tracer.losses()).toEqual([]);
+      expect(session.backend).toBe("linux-fanotify");
+      expect(journal.backend).toBe("linux-fanotify");
+      expect(journal.completeness).toBe("partial");
+      expect(journal.partialReason).toContain("directory events");
+      expect(ownershipConfidence(journal.completeness)).toBe("observed");
+      expect(journal.events.map((event) => event.type)).toEqual(hasEvents ? ["mkdir"] : []);
+    }
   });
 
   test("a tracer loss reason downgrades the journal to partial", async () => {
