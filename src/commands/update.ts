@@ -51,7 +51,7 @@ export async function updateTret(): Promise<void> {
 
 /**
  * Updates one tracked tool in place. The record is resolved first, then `install` re-runs the
- * recorded URL and arguments with the same stable id and display name. `install` fetches and
+ * recorded URL, arguments, and capture settings with the same stable id and display name. `install`
  * validates the replacement before it removes anything, so a download or validation failure leaves
  * the working install untouched; a failure during removal keeps a reduced record to retry.
  */
@@ -89,6 +89,9 @@ export async function updateTrackedTool(selector: string, yes: boolean): Promise
     name: record.name,
     commandName: "update",
     yes,
+    capture: record.captureSettings?.enabled,
+    backups: record.captureSettings?.backups,
+    observe: record.captureSettings?.observe,
   });
 }
 

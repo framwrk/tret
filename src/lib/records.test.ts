@@ -194,6 +194,59 @@ describe("deep v3 record validation", () => {
     expect(isV3Record(v3Record({ executable: "", scriptSha256: "" }))).toBe(true);
   });
 
+  test("accepts saved capture settings and preserves them when loading v3 records", () => {
+    const saved = v3Record({
+      captureSettings: {
+        enabled: true,
+        backups: { enabled: true, sizeLimitBytes: 4096 },
+        observe: { include: ["/extra"], exclude: ["/home"] },
+      },
+    });
+    expect(isV3Record(saved)).toBe(true);
+    expect(migrateRecordFileV2ToV3({ version: 3, records: [saved] }).records).toEqual([saved]);
+    expect(isV3Record(v3Record({ captureSettings: { enabled: false, backups: { enabled: false, sizeLimitBytes: 1 } } }))).toBe(
+      true,
+    );
+  });
+
+  test("rejects malformed capture preferences, backup limits, and observation paths", () => {
+    const settings = { enabled: true, backups: { enabled: true, sizeLimitBytes: 4096 } };
+    for (const captureSettings of [
+      null,
+      [],
+      { ...settings, enabled: "true" },
+      { enabled: true },
+      { ...settings, backups: null },
+      { ...settings, backups: { enabled: "true", sizeLimitBytes: 4096 } },
+      ...[undefined, "4096", 0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1].map((sizeLimitBytes) => ({
+        ...settings,
+        backups: { enabled: true, sizeLimitBytes },
+      })),
+      { ...settings, observe: null },
+      { ...settings, observe: [] },
+      { ...settings, observe: { include: "/extra" } },
+      { ...settings, observe: { include: ["relative"] } },
+      { ...settings, observe: { exclude: [42] } },
+    ]) {
+      expect(isV3Record(corrupt({ captureSettings }))).toBe(false);
+    }
+  });
+
+  test("invalid saved capture settings name the field at fault", () => {
+    try {
+      migrateRecordFileV2ToV3({
+        version: 3,
+        records: [corrupt({ captureSettings: { enabled: true, backups: { enabled: true, sizeLimitBytes: 0 } } })],
+      });
+      throw new Error("expected validation to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RecordMigrationError);
+      expect((error as RecordMigrationError).issues).toContain(
+        "records[0].captureSettings.backups.sizeLimitBytes must be a positive safe integer",
+      );
+    }
+  });
+
   test("rejects owned entries with a relative path, an unknown kind, or a foreign link target", () => {
     expect(isV3Record(corrupt({ owned: [{ path: "bin/mytool", kind: "file" }] }))).toBe(false);
     expect(isV3Record(corrupt({ owned: [{ path: "/x", kind: "socket" }] }))).toBe(false);

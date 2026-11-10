@@ -95,6 +95,19 @@ export type CaptureInfo = {
   segments: CaptureSegment[];
 };
 
+/** Install capture preferences reused by tracked-tool updates, separate from capture evidence. */
+export type CaptureSettings = {
+  enabled: boolean;
+  backups: {
+    enabled: boolean;
+    sizeLimitBytes: number;
+  };
+  observe?: {
+    include?: AbsolutePath[];
+    exclude?: AbsolutePath[];
+  };
+};
+
 /**
  * The kind of node an install owns. Symlinks are recorded by target, never followed.
  * `"unknown"` is reserved for migrated v2 records, which stored paths without a kind; it is never
@@ -190,6 +203,8 @@ export type RecordV3 = {
    * tracked-tool update can re-run the same installer invocation; absent when the install took none.
    */
   scriptArgs?: string[];
+  /** Absent on older records and adopted tools; updates then use the install defaults. */
+  captureSettings?: CaptureSettings;
   capture: CaptureInfo;
   privilege: Privilege;
   /** Case sensitivity of the record's filesystem at install time (D10). */

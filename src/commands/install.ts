@@ -1,4 +1,4 @@
-import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, Diff, RecordV3 } from "../types";
+import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, CaptureSettings, Diff, RecordV3 } from "../types";
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
 import { DEFAULT_BACKUP_POLICY, FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { EXIT_BLOCKED, EXIT_USAGE } from "../constants";
@@ -26,7 +26,6 @@ import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallb
 import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
-import type { ObservationRootsOptions } from "../lib/platform";
 import type { Platform } from "../lib/platform";
 import type { SessionCoverage } from "../lib/session";
 import { adoptedEntries } from "../lib/adoption";
@@ -53,7 +52,7 @@ export type InstallOptions = {
    * Capture-scope additions/exclusions from `--observe`/`--observe-exclude` (D3); applied on top of
    * the platform's roots so one install can cover an unusual installer without widening the defaults.
    */
-  observe?: Pick<ObservationRootsOptions, "include" | "exclude">;
+  observe?: CaptureSettings["observe"];
   /**
    * Before-image backup policy (D2); off by default. When enabled, pre-existing file contents are
    * captured (within the size limit) and stored so uninstall can restore them.
@@ -330,6 +329,11 @@ export async function install(
     executable: executable ?? "",
     scriptSha256,
     ...(scriptArgs.length === 0 ? {} : { scriptArgs }),
+    captureSettings: {
+      enabled: options.capture ?? true,
+      backups,
+      ...(options.observe === undefined ? {} : { observe: options.observe }),
+    },
     capture: buildCapture(window, failed, clock, failureReason),
     privilege: processPrivilege(),
     caseSensitive,
