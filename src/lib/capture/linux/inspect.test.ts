@@ -54,6 +54,70 @@ describe("linux capture baseline", () => {
     expect(baseline.existed(join(root, "cache", "blobs"))).toBe(false);
     expect(baseline.existed(join(root, "cache", "blobs", "junk"))).toBe(false);
   });
+
+  test("prunes home-relative excluded paths without descending", async () => {
+    const root = await makeRoot();
+    await mkdir(join(root, "Documents"), { recursive: true });
+    await writeFile(join(root, "Documents", "secret.txt"), "secret\n");
+    await mkdir(join(root, ".config"), { recursive: true });
+    await writeFile(join(root, ".config", "tool.conf"), "tool\n");
+
+    const { baseline } = await captureBaseline([root]);
+
+    // `Documents` is on the shared `EXCLUDED_PATHS` list, so it is neither recorded nor descended.
+    expect(baseline.existed(join(root, "Documents"))).toBe(false);
+    expect(baseline.existed(join(root, "Documents", "secret.txt"))).toBe(false);
+    // A real install surface beside it is still walked.
+    expect(baseline.existed(join(root, ".config", "tool.conf"))).toBe(true);
+  });
+});
+
+describe("linux capture baseline: backup exclusions", () => {
+  test("does not read excluded or sensitive paths into before-images", async () => {
+    const home = await makeRoot();
+    const documents = join(home, "Documents");
+    const ssh = join(home, ".ssh");
+    const config = join(home, ".config");
+    await mkdir(documents, { recursive: true });
+    await writeFile(join(documents, "secret.txt"), "secret\n");
+    await mkdir(ssh, { recursive: true });
+    await writeFile(join(ssh, "id_test"), "private-key\n");
+    await mkdir(config, { recursive: true });
+    await writeFile(join(config, "tool.conf"), "tool\n");
+
+    const reads: string[] = [];
+    const { baseline, beforeImages } = await captureBaseline([home], {
+      backups: { enabled: true, sizeLimitBytes: 1024 },
+      read: async (path) => {
+        reads.push(path);
+        return new Uint8Array(await readFile(path));
+      },
+    });
+
+    // Only the install surface is read; user content and key material are not.
+    expect(reads).toEqual([join(config, "tool.conf")]);
+    expect([...beforeImages.keys()]).toEqual([sha256("tool\n")]);
+    // `Documents` is pruned like the shared skip list, while `.ssh` stays tracked kind-only so an
+    // installer's change is still reportable without copying the secret.
+    expect(baseline.existed(documents)).toBe(false);
+    expect(baseline.kind(join(ssh, "id_test"))).toBe("file");
+    expect(baseline.metadata(join(ssh, "id_test"))).toBeUndefined();
+  });
+
+  test("an explicitly observed root inside an excluded path is still captured", async () => {
+    const home = await makeRoot();
+    const documents = join(home, "Documents");
+    const file = join(documents, "project.conf");
+    await mkdir(documents, { recursive: true });
+    await writeFile(file, "project\n");
+
+    const { baseline, beforeImages } = await captureBaseline([documents], {
+      backups: { enabled: true, sizeLimitBytes: 1024 },
+    });
+
+    expect(beforeImages.has(sha256("project\n"))).toBe(true);
+    expect(baseline.metadata(file)).toMatchObject({ kind: "file", hash: sha256("project\n") });
+  });
 });
 
 describe("linux capture baseline: before-images", () => {
