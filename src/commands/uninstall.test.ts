@@ -224,6 +224,42 @@ describe("uninstall record lifecycle", () => {
     expect(readRecords(home).records).toHaveLength(0);
   });
 
+  test("removes the complete Codex installer block without backups and preserves unrelated lines", async () => {
+    const home = makeHome();
+    const profile = join(home, ".bash_profile");
+    const binary = join(home, ".local", "bin", "codex");
+    const block = readFileSync(join(import.meta.dir, "../lib/fixtures/codex.bash_profile"), "utf8").replaceAll("$HOME", home);
+    const before = '# black-box sentinel bash profile\n\nexport PATH="$HOME/.local/bin:$PATH"\n';
+    const after = "# Codex notes: keep this unrelated comment\nexport PROFILE_SENTINEL=keep\n";
+    const content = before + block + after;
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(binary, "installed");
+    writeFileSync(profile, content);
+    writeRecords(home, [
+      record({
+        name: "codex",
+        executable: binary,
+        owned: [{ path: binary, kind: "file", installedHash: sha256("installed") }],
+        mutated: [{ path: profile, installedHash: sha256(content) }],
+      }),
+    ]);
+
+    const preview = await runCliResult(["uninstall", "codex", "--dry-run"], home);
+    expect(preview.code).toBe(0);
+    const output = preview.stdout + preview.stderr;
+    for (const line of block.trimEnd().split("\n")) expect(output).toContain(`would clean ${profile}: ${line}`);
+    expect(readFileSync(profile, "utf8")).toBe(content);
+    expect(readFileSync(binary, "utf8")).toBe("installed");
+    expect(readRecords(home).records).toHaveLength(1);
+
+    const result = await runCliResult(["uninstall", "codex", "--yes", "--json"], home);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).ok).toBe(true);
+    expect(readFileSync(profile, "utf8")).toBe(before + after);
+    expect(existsSync(binary)).toBe(false);
+    expect(readRecords(home).records).toHaveLength(0);
+  });
+
   test("restores the whole shell config when a before-image exists", async () => {
     const home = makeHome();
     const zshrc = join(home, ".zshrc");

@@ -196,6 +196,40 @@ describe("shellconfig", () => {
     expect(readFileSync(file, "utf8")).toBe("");
   });
 
+  test.each([true, false])("cleans the complete Codex installer block (dryRun=%s)", (dryRun) => {
+    const home = testHome();
+    const file = join(home, ".bash_profile");
+    // Upstream block from the 2026-11-09 black-box report, with its absolute HOME normalized.
+    const block = readFileSync(join(import.meta.dir, "fixtures/codex.bash_profile"), "utf8").replaceAll("$HOME", home);
+    const before = '# black-box sentinel bash profile\n\nexport PATH="$HOME/.local/bin:$PATH"\n';
+    const after = "# Codex notes: keep this unrelated comment\nexport PROFILE_SENTINEL=keep\n";
+    const content = before + block + after;
+    writeFileSync(file, content);
+
+    const rc = removeRcLines("codex", [], dryRun, [file], LINUX_PLATFORM, new Map([[file, sha256(content)]]));
+
+    expect(rc.cleaned.map((cleaned) => cleaned.line).sort()).toEqual(block.trimEnd().split("\n").sort());
+    expect(rc.failed).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(dryRun ? content : before + after);
+  });
+
+  test.each([
+    ["# >>> Codex installer >>>", "# <<< other installer <<<"],
+    ["# >>> Codex installer >>>", "# Codex notes: keep this unrelated comment"],
+    ["# Codex", "# <<< Codex installer <<<"],
+  ])("keeps an unmatched comment after a removed PATH line (%s / %s)", (opening, closing) => {
+    const home = testHome();
+    const file = join(home, ".bash_profile");
+    const content = `${opening}\nexport PATH="$HOME/.local/bin:$PATH"\n${closing}\n`;
+    writeFileSync(file, content);
+
+    const rc = removeRcLines("codex", [], false, [file], LINUX_PLATFORM, new Map([[file, sha256(content)]]));
+
+    expect(rc.cleaned).toHaveLength(2);
+    expect(rc.failed).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(`${closing}\n`);
+  });
+
   test("leaves another tool's marked line and a line pointing elsewhere alone", () => {
     const home = testHome();
     const file = join(home, ".zshrc");
