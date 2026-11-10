@@ -26,7 +26,7 @@ curl -fsSL https://tret.framwrk.com/scripts/install.sh | bash
 ### Update
 
 - `tret update` — update Tret itself.
-- `tret update <tool>` — re-run that tool's recorded installer.
+- `tret update <tool>` — re-run that tool's recorded installer with its saved capture settings.
 - Reinstalling Tret uses the same install command above.
 
 ### Platform
@@ -133,6 +133,7 @@ rm -rf ~/.tret
 | Linux    | `linux-strace`, then `linux-heuristic` fallback, root `linux-fanotify` | `ptrace_scope=1` forces the heuristic fallback for unprivileged runs |
 
 - Capture covers bounded observation roots under `$HOME`; `--observe` and `--observe-exclude` adjust them.
+- Tool updates preserve capture enablement, backup policy and size limit, and observation additions/exclusions. Older records without saved settings use the install defaults.
 - Backups store only files at or below the per-file limit.
 - With backups off, mutations and deletions are detect-only.
 - `complete` means the tracer observed the full process tree with no known blind spot; otherwise the window is `partial`.

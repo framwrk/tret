@@ -261,6 +261,7 @@ function recordV3Issues(value: Record<string, unknown>): string[] {
       issues.push("scriptArgs must be an array of strings when present");
     }
   }
+  if (value.captureSettings !== undefined) captureSettingsIssues(value.captureSettings, issues);
   if (value.privilege !== "user" && value.privilege !== "root") issues.push(`privilege must be "user" or "root"`);
   if (typeof value.caseSensitive !== "boolean") issues.push("caseSensitive must be a boolean");
   if (value.managedBy !== undefined) managedPackageIssues(value.managedBy, "managedBy", issues);
@@ -272,6 +273,40 @@ function recordV3Issues(value: Record<string, unknown>): string[] {
   deletedIssues(value.deleted, issues);
 
   return issues;
+}
+
+/** Validates saved install preferences before an update can reuse them. */
+function captureSettingsIssues(value: unknown, issues: string[]): void {
+  if (!isObject(value)) {
+    issues.push("captureSettings must be an object");
+    return;
+  }
+  if (typeof value.enabled !== "boolean") issues.push("captureSettings.enabled must be a boolean");
+  if (!isObject(value.backups)) {
+    issues.push("captureSettings.backups must be an object");
+  } else {
+    if (typeof value.backups.enabled !== "boolean") issues.push("captureSettings.backups.enabled must be a boolean");
+    const limit = value.backups.sizeLimitBytes;
+    if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit <= 0) {
+      issues.push("captureSettings.backups.sizeLimitBytes must be a positive safe integer");
+    }
+  }
+  if (value.observe !== undefined) {
+    if (!isObject(value.observe)) {
+      issues.push("captureSettings.observe must be an object");
+    } else {
+      for (const key of ["include", "exclude"] as const) {
+        const paths = value.observe[key];
+        if (paths === undefined) continue;
+        const where = `captureSettings.observe.${key}`;
+        if (!Array.isArray(paths)) {
+          issues.push(`${where} must be an array of absolute paths`);
+        } else {
+          paths.forEach((path, index) => requireAbsolutePath(path, `${where}[${index}]`, issues));
+        }
+      }
+    }
+  }
 }
 
 /** Validates `capture`: a backend, a completeness label, and at least one well-formed segment. */

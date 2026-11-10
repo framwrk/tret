@@ -239,7 +239,115 @@ chmod +x "$HOME/.local/bin/updatetool"
         expect(saved.records).toHaveLength(1);
         expect(saved.records[0]?.id).toBe("rec-update");
         expect(saved.records[0]?.executable).toBe(join(home, ".local", "bin", "updatetool"));
+        expect(saved.records[0]?.capture.backend).not.toBe("none");
+        expect(saved.records[0]).toMatchObject({
+          captureSettings: { enabled: true, backups: { enabled: false, sizeLimitBytes: 1024 * 1024 } },
+        });
       }
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("successive updates retain backups, size limits, and observation additions and exclusions", async () => {
+    const home = makeHome();
+    const extra = makeDir("tret-update-observe-");
+    const small = join(extra, "small.conf");
+    const large = join(extra, "large.conf");
+    const deleted = join(extra, "deleted.conf");
+    const owned = join(extra, "owned.conf");
+    const excluded = join(home, ".capture-excluded");
+    writeFileSync(small, "before\n");
+    writeFileSync(large, "oversized-before\n");
+    writeFileSync(deleted, "gone\n");
+    const server = serve(`#!/bin/bash
+set -e
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\\necho "%s"\\n' "$*" > "$HOME/.local/bin/capturetool"
+chmod +x "$HOME/.local/bin/capturetool"
+printf 'changed\\n' > "$TRET_TEST_OBSERVE_ROOT/small.conf"
+printf 'more\\n' >> "$TRET_TEST_OBSERVE_ROOT/large.conf"
+rm -f "$TRET_TEST_OBSERVE_ROOT/deleted.conf"
+printf 'owned\\n' > "$TRET_TEST_OBSERVE_ROOT/owned.conf"
+printf 'excluded\\n' >> "$HOME/.capture-excluded"
+`);
+    const options = { extraEnv: { TRET_TEST_OBSERVE_ROOT: extra } };
+    try {
+      const installed = await runCliResult(
+        [
+          "install",
+          server.url,
+          "--json",
+          "--backup",
+          "--backup-size",
+          "8",
+          "--observe",
+          extra,
+          "--observe-exclude",
+          home,
+          "--name",
+          "capture tool",
+          "--",
+          "--flavor",
+          "strict",
+        ],
+        home,
+        options,
+      );
+      expect(installed.code).toBe(0);
+      const original = readRecords(home).records[0]!;
+
+      for (let iteration = 0; iteration < 2; iteration++) {
+        const updated = await runCliResult(["update", original.id, "--json", "--yes"], home, options);
+        expect(updated.code).toBe(0);
+        expect(JSON.parse(updated.stdout)).toMatchObject({ ok: true, command: "update", id: original.id });
+        const records = readRecords(home).records;
+        expect(records).toHaveLength(1);
+        const saved = records[0]!;
+        expect(saved.mutated.find((entry) => entry.path === small)?.beforeBlob).toBe(sha256("before\n"));
+        expect(saved.deleted.find((entry) => entry.path === deleted)?.beforeBlob).toBe(sha256("gone\n"));
+        const oversized = saved.mutated.find((entry) => entry.path === large);
+        expect(oversized).toBeDefined();
+        expect(oversized?.beforeBlob).toBeUndefined();
+        expect(saved.owned.some((entry) => entry.path === owned)).toBe(true);
+        expect([...saved.owned, ...saved.mutated, ...saved.deleted].some((entry) => entry.path === excluded)).toBe(false);
+        expect(saved).toMatchObject({
+          id: original.id,
+          name: "capture tool",
+          url: server.url,
+          scriptArgs: ["--flavor", "strict"],
+          captureSettings: {
+            enabled: true,
+            backups: { enabled: true, sizeLimitBytes: 8 },
+            observe: { include: [extra], exclude: [home] },
+          },
+        });
+        expect(readFileSync(saved.executable, "utf8")).toContain("--flavor strict");
+      }
+
+      const removed = await runCliResult(["uninstall", original.id, "--json", "--yes"], home);
+      expect(removed.code).toBe(0);
+      expect(readFileSync(small, "utf8")).toBe("before\n");
+      expect(readFileSync(deleted, "utf8")).toBe("gone\n");
+      expect(existsSync(owned)).toBe(false);
+      expect(existsSync(excluded)).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("update retains an explicit --no-capture setting", async () => {
+    const home = makeHome();
+    const server = serve(INSTALL_SCRIPT);
+    try {
+      expect((await runCliResult(["install", server.url, "--no-capture", "--json"], home)).code).toBe(0);
+      const original = readRecords(home).records[0]!;
+      expect(original.capture.backend).toBe("none");
+
+      expect((await runCliResult(["update", original.id, "--json", "--yes"], home)).code).toBe(0);
+      const saved = readRecords(home).records[0]!;
+      expect(saved.capture.backend).toBe("none");
+      expect(saved).toMatchObject({ captureSettings: { enabled: false } });
     } finally {
       await server.stop();
     }
