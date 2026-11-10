@@ -137,7 +137,7 @@ rm -rf ~/.tret
 - With backups off, mutations and deletions are detect-only.
 - `complete` means the tracer observed the full process tree with no known blind spot; otherwise the window is `partial`.
 - Known Linux gaps: cross-root renames, `openat2` creates, mmap writes, xattr/ownership changes, and hard links.
-- Root fanotify records are not proof of ownership while its directory-entry capture is under repair.
+- Fanotify captures always report `partial` (observed ownership): the helper omits directory events, and full coverage has not been established by real-kernel tests.
 - macOS change detection is stamp-based and can miss edits that preserve size, mtime, and inode.
 
 ### Trust boundary

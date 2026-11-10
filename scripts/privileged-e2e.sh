@@ -13,8 +13,8 @@
 #
 #   fanotify  `sudo tret install <url>` runs the same fixture from a staged copy of the packaged
 #             binary with the packaged `tret-fanotify` helper staged beside it. The record must
-#             report `capture.backend: "linux-fanotify"` and privilege "root". This run proves the
-#             *selection* only: the shipped helper's documented F1-F4 fidelity gaps (see
+#             report `capture.backend: "linux-fanotify"`, completeness "partial", and privilege "root".
+#             This run proves the *selection* only: the shipped helper's documented F1-F4 fidelity gaps (see
 #             docs/capture/linux-fidelity.md and docs/capture/linux-capture.md) mean it does not
 #             attribute the fixture file correctly, so its record is not claimed as proven and no
 #             ownership or uninstall assertion is made for it. A helper that cannot attach at all is
@@ -286,7 +286,7 @@ FANOTIFY_NAME="$(sudo -n env HOME="$HOME_FANOTIFY" "$BIN" list --json | "$BUN" "
   fi
   fail "the fanotify root install did not record exactly one tool"
 }
-inspect_capture fanotify "$HOME_FANOTIFY" "$FANOTIFY_NAME" "$FANOTIFY_ENTRY" linux-fanotify
+inspect_capture fanotify "$HOME_FANOTIFY" "$FANOTIFY_NAME" "$FANOTIFY_ENTRY" linux-fanotify partial
 echo "privileged-e2e.sh: note: linux-fanotify was selected; the shipped helper's documented F1-F4"
 echo "privileged-e2e.sh:       fidelity gaps mean this proves backend selection, not capture accuracy"
 
