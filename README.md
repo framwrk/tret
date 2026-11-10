@@ -95,6 +95,7 @@ tret uninstall opencode --dry-run
 ## Uninstall
 
 - `tret uninstall <tool>` removes only files whose fingerprints still match.
+- Without backups, unchanged recorded shell profiles have attributed PATH lines and their matching installer markers removed; unrelated lines are kept.
 - `tret uninstall <tool> --dry-run` prints the plan.
 - `tret uninstall <tool> --yes` skips confirmation.
 - `tret unclaim <tool> <path>` resolves a `shared-owner` conflict without `--force`.

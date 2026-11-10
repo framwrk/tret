@@ -97,7 +97,8 @@ function snippetFiles(dir: AbsolutePath): AbsolutePath[] {
  * adds a shared directory such as `~/.local/bin` to PATH. A shared line is only touched when the
  * caller supplies the file as attributed (`only`), the file still matches its recorded installed
  * hash, and the line itself or the comment directly above it names the tool. Without that
- * evidence an unmarked shared PATH entry is never removed. With `dryRun` nothing is written.
+ * evidence an unmarked shared PATH entry is never removed. Matching installer markers immediately
+ * around a removed line are cleaned together. With `dryRun` nothing is written.
  */
 export function removeRcLines(
   name: string,
@@ -193,6 +194,14 @@ function cleanFile(
     if (adjacentToolComment && previous !== undefined) {
       kept.pop();
       fileCleaned.push({ file, line: previous });
+
+      // A paired installer marker belongs to the same line; leave other following comments alone.
+      const marker = previous.trim().match(/^# >>> (.+) >>>$/)?.[1];
+      const next = lines[index + 1];
+      if (marker !== undefined && next?.trim() === `# <<< ${marker} <<<`) {
+        fileCleaned.push({ file, line: next });
+        index++;
+      }
     }
   }
 
