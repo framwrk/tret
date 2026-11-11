@@ -90,10 +90,10 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
       case "open": {
         const existed = existedBefore(target.path, baseline, live);
         const after = await fileAfter(inspector, target.path);
-        if (target.created && !existed) {
+        if (target.created && target.exclusive && !existed) {
           live.set(target.path, "created");
           push({ type: "create", path: target.path, after, pid: target.pid, at: target.at });
-        } else if (target.truncated) {
+        } else if (target.truncated || target.created) {
           live.set(target.path, "existing");
           const before = existed ? baselineFile(baseline, target.path) : undefined;
           push({ type: "write", path: target.path, before, after, pid: target.pid, at: target.at });
@@ -125,7 +125,23 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
         const wasCreated = live.get(target.from) === "created";
         live.delete(target.from);
         live.set(target.to, wasCreated ? "created" : "existing");
-        push({ type: "rename", from: target.from, to: target.to, before, after, pid: target.pid, at: target.at });
+        const destination = baseline.metadata(target.to);
+        const destinationBefore =
+          destination === undefined
+            ? baseline.kind(target.to) === undefined
+              ? undefined
+              : kindOnly(baseline.kind(target.to)!)
+            : nodeMetadata(destination);
+        push({
+          type: "rename",
+          from: target.from,
+          to: target.to,
+          before,
+          after,
+          destinationBefore,
+          pid: target.pid,
+          at: target.at,
+        });
         break;
       }
       case "unlink": {

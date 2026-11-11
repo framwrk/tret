@@ -280,6 +280,7 @@ class StraceParser {
       pid,
       path,
       created: flags.includes("O_CREAT") || syscall === "creat",
+      ...(flags.includes("O_CREAT") && flags.includes("O_EXCL") ? { exclusive: true } : {}),
       truncated: flags.includes("O_TRUNC"),
       mode: parseMode(args[args.length - 1]),
     });

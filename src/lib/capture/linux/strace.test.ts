@@ -8,6 +8,18 @@ function line(pid: number, offset: number, body: string): string {
 }
 
 describe("strace parsing: journal-relevant syscalls", () => {
+  test("only O_CREAT with O_EXCL carries exclusive creation evidence", () => {
+    const result = parseStraceOutput(
+      [
+        line(1000, 1, 'openat(AT_FDCWD, "/home/new", O_WRONLY|O_CREAT|O_EXCL, 0600) = 3</home/new>'),
+        line(1000, 2, 'openat(AT_FDCWD, "/home/existing", O_WRONLY|O_CREAT|O_TRUNC, 0600) = 4</home/existing>'),
+      ].join("\n"),
+      { roots: ["/home"] },
+    );
+    expect(result.records[0]).toMatchObject({ op: "open", created: true, exclusive: true });
+    expect(result.records[1]).not.toHaveProperty("exclusive");
+  });
+
   test("a plausible install sequence parses into ordered records", () => {
     const text = [
       line(1000, 1, 'mkdir("/home/.mytool", 0755) = 0'),

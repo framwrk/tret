@@ -35,14 +35,14 @@ type PathState = {
  * no OS calls and reads no files: every hash and size comes from the events themselves.
  *
  * Rules the sequence is collapsed by:
- * - A temporary file created (or written) and renamed over a destination becomes a change to the
- *   destination; the transient source leaves no entry and is reported as a `temp-rename` diagnostic.
+ * - A created temporary file renamed over a destination leaves no source entry and is reported
+ *   as a `temp-rename` diagnostic. A lone write cannot prove that the source was temporary.
  * - A path created and then removed before the install ends cancels out (`create-delete`).
  * - An overwrite or deletion keeps the prior hash, the prior permission bits, and — when backups
  *   allow and the bytes were actually captured — the prior content address as `beforeBlob`, only
  *   when the events carried them.
- * - A rename is a source removal plus a destination creation/replacement; the relationship is
- *   retained in a `rename` diagnostic.
+ * - A rename retains the source removal and destination's prior state. An unknown destination
+ *   stays a mutation; the relationship is retained in a `rename` diagnostic.
  * - Content equality is decided by hash first; mtime/size are only a fast path used when no hash is
  *   available, so a hash change with an unchanged mtime is still a mutation and unchanged content
  *   with noisy metadata is not.
@@ -77,15 +77,19 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
 
   const handleRename = (event: RenameEvent): void => {
     const from = stateFor(event.from);
-    if (from.initial === undefined) from.initial = event.before ? nodeFrom(event.before) : null;
+    if (keyFor(event.from) === keyFor(event.to)) return;
+    if (from.initial === undefined && event.before) from.initial = nodeFrom(event.before);
     const sourceNode = event.before ? nodeFrom(event.before) : from.current;
     from.current = null;
 
     const to = stateFor(event.to);
     const destNode = event.after ? nodeFrom(event.after) : sourceNode;
-    // The events do not say whether the destination pre-existed. Per the plan a rename is a
-    // destination creation/replacement, so an unknown destination is treated as created.
-    if (to.initial === undefined) to.initial = null;
+    if (to.initial === undefined && event.destinationBefore !== undefined) {
+      to.initial = event.destinationBefore === null ? null : nodeFrom(event.destinationBefore);
+    }
+    if (to.initial === undefined) {
+      diagnostics.push({ code: "unsupported", message: "rename destination prior state is unknown", paths: [event.to] });
+    }
     to.current = destNode ?? { kind: "unknown" };
 
     if (from.initial === null) {
@@ -167,10 +171,8 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
       }
       case "unlink": {
         const state = stateFor(event.path);
-        // A path we saw appear without proof it pre-existed (a lone write) is treated as created,
-        // so write-then-delete cancels like create-then-delete; an unrecorded path is a deletion.
         if (state.initial === undefined) {
-          state.initial = state.current === null ? nodeFrom(event.before) : null;
+          state.initial = nodeFrom(event.before);
         } else if (state.initial !== null) {
           state.initial = enrichInitial(state.initial, nodeFrom(event.before));
         }

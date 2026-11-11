@@ -58,7 +58,7 @@ curl -fsSL https://tret.framwrk.com/scripts/install.sh | bash
 | -------------------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
 | `--json`                   | all commands except `find`                | One JSON document on stdout                                               |
 | `--yes`                    | `install`, `uninstall`, `trace`, `update` | Skip the confirmation prompt                                              |
-| `--force`                  | `install`, `uninstall`                    | Allow known fingerprint mismatches; uninstall also bypasses shared owners |
+| `--force`                  | `install`, `uninstall`                    | Allow known fingerprint mismatches; shared claims still block cleanup |
 | `--dry-run`                | `uninstall`                               | Preview without changing anything                                         |
 | `--backup`                 | `install`                                 | Store before-images for restore                                           |
 | `--backup-size <bytes>`    | `install`                                 | Per-file before-image limit; requires `--backup`; default 1 MiB           |
@@ -107,6 +107,7 @@ tret uninstall opencode --dry-run
 - `unclaim` changes no files and leaves the remaining record untouched.
 - `unclaim` refuses paths the record does not claim or paths only that record claims.
 - Delegated-removal overlaps always block, even with `--force`.
+- Ordinary file and shell-config shared claims also block with `--force`.
 
 ```bash
 tret unclaim opencode ~/.local/bin/opencode
@@ -148,6 +149,8 @@ rm -rf ~/.tret
 - Tret observes and records changes; it does not sandbox or prevent malware.
 - Tret never escalates to `sudo` on its own.
 - Use HTTPS sources you trust.
+- See [capture and removal safety](docs/safety-contract.md) for classification,
+  filesystem revalidation, backup exclusions, and remaining limits.
 
 ## JSON and exit codes
 

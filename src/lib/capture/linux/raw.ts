@@ -11,7 +11,16 @@ import type { AbsolutePath } from "../../../types";
  */
 export type TracerRecord =
   /** An `open`/`openat` that succeeded. `created` is true when `O_CREAT` was requested. */
-  | { op: "open"; at: number; pid?: number; path: AbsolutePath; created: boolean; truncated: boolean; mode?: number }
+  | {
+      op: "open";
+      at: number;
+      pid?: number;
+      path: AbsolutePath;
+      created: boolean;
+      exclusive?: boolean;
+      truncated: boolean;
+      mode?: number;
+    }
   /** A `write`/`truncate`-style content change on an already-resolved path. */
   | { op: "write"; at: number; pid?: number; path: AbsolutePath }
   /** A rename/move; `from` is gone and `to` now exists. */

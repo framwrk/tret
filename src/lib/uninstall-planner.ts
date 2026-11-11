@@ -2,6 +2,8 @@ import type { AbsolutePath, DeletedEntry, MutatedEntry, OwnedEntry, OwnedKind, O
 import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { ownershipConfidence, ownershipMarker, ownershipNote } from "./ownership";
 import type { BlobId } from "./storage";
+import type { FilesystemIdentity } from "./filesystem-identity";
+import { filesystemIdentity } from "./filesystem-identity";
 import { join } from "node:path";
 
 /** Current on-disk state of one path, used to verify before removing or restoring it. */
@@ -14,6 +16,8 @@ export type UninstallVerification = {
   linkTarget?: AbsolutePath;
   /** Numeric owner id, when the platform exposes one; drives sudo-aware planning (D8). */
   uid?: number;
+  /** Object and ancestor identity; absent only for injected inspectors. */
+  identity?: FilesystemIdentity;
 };
 
 /** Why a path is skipped without changing it. */
@@ -86,9 +90,8 @@ export type UninstallPlanContext = {
   /** Other records that also claim paths, for shared-ownership detection (D4); paths are compared under each record's case behavior (D10). */
   otherRecords?: RecordV3[];
   /**
-   * Explicit user force past known fingerprint mismatches and shared-owner conflicts (D4). A
-   * missing/unreadable fingerprint remains unverified, and force never overrides a later state
-   * change between planning and applying.
+   * Explicit user force past known fingerprint mismatches. Shared claims and missing/unreadable
+   * fingerprints still block, and force never overrides a later state change.
    */
   force?: boolean;
   /** Reads the current state of a path; defaults to disk once the planner is implemented. */
@@ -133,6 +136,8 @@ function sha256Hex(bytes: Uint8Array): string {
  * node exists, so every planner treats it as unverifiable and never removable.
  */
 export function inspectPath(path: AbsolutePath): UninstallVerification {
+  const identity = filesystemIdentity(path);
+  if (identity === undefined) return { exists: true };
   let stats;
   try {
     stats = lstatSync(path);
@@ -140,7 +145,7 @@ export function inspectPath(path: AbsolutePath): UninstallVerification {
     const code = (error as NodeJS.ErrnoException).code;
     // Only a missing path proves absence. Permission and I/O errors must keep the path
     // unverified so uninstall retains its record instead of silently forgetting it.
-    return { exists: code !== "ENOENT" && code !== "ENOTDIR" };
+    return { exists: code !== "ENOENT" && code !== "ENOTDIR", identity };
   }
 
   if (stats.isSymbolicLink()) {
@@ -150,21 +155,21 @@ export function inspectPath(path: AbsolutePath): UninstallVerification {
     } catch {
       // Keep the entry but leave the target unknown; the planner treats it as unverified.
     }
-    return { exists: true, kind: "symlink", linkTarget, uid: stats.uid };
+    return { exists: true, kind: "symlink", linkTarget, uid: stats.uid, identity };
   }
 
   if (stats.isDirectory()) {
-    return { exists: true, kind: "directory", uid: stats.uid };
+    return { exists: true, kind: "directory", uid: stats.uid, identity };
   }
 
   if (!stats.isFile()) {
-    return { exists: true, uid: stats.uid };
+    return { exists: true, uid: stats.uid, identity };
   }
 
   try {
-    return { exists: true, kind: "file", hash: sha256Hex(readFileSync(path)), uid: stats.uid };
+    return { exists: true, kind: "file", hash: sha256Hex(readFileSync(path)), uid: stats.uid, identity };
   } catch {
-    return { exists: true, kind: "file", uid: stats.uid };
+    return { exists: true, kind: "file", uid: stats.uid, identity };
   }
 }
 
@@ -289,7 +294,7 @@ function recordClaimsPath(record: RecordV3, path: AbsolutePath, plannedCaseSensi
 
 /**
  * The real planner: it verifies every owned, mutated, and deleted path against current disk state
- * before emitting anything, keeps diverged or shared paths unless `force` says otherwise, removes
+ * before emitting anything, keeps shared paths and, unless forced, diverged paths, removes
  * an owned directory only when this record's own removals leave it empty, and restores only from a
  * before-image that still matches the recorded installed state. Destructive actions retain the
  * inspected state so the applier can reject changes made after this plan. It never touches disk.
@@ -340,7 +345,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
       }
 
       const shared = isShared(entry.path);
-      if (shared && !force) {
+      if (shared) {
         actions.push({ action: "conflict", path: entry.path, reason: "shared-owner" });
         continue;
       }
@@ -381,7 +386,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     // Without a before-image the change is detect-only: report it, never block on it (D2).
     for (const entry of record.mutated) {
       const verification = inspect(entry.path);
-      const action = planMutation(entry, verification, isShared, force);
+      const action = planMutation(entry, verification, isShared);
       actions.push(action);
       if (action.action === "restore" && sudoNeeded(verification)) requiresSudo = true;
     }
@@ -390,7 +395,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     // deletion with no before-image is likewise detect-only.
     for (const entry of record.deleted) {
       const verification = inspect(entry.path);
-      actions.push(planDeletion(entry, verification, isShared, force));
+      actions.push(planDeletion(entry, verification, isShared));
     }
 
     return {
@@ -476,10 +481,9 @@ function planMutation(
   entry: MutatedEntry,
   verification: UninstallVerification,
   isShared: (path: AbsolutePath) => boolean,
-  force: boolean,
 ): UninstallAction {
   const { path } = entry;
-  if (isShared(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
+  if (isShared(path)) return { action: "conflict", path, reason: "shared-owner" };
   // No before-image: nothing to restore from, so the install's edit is detectable but not
   // reversible. Report it as informational instead of a permanent `missing-blob` conflict (D2).
   if (entry.beforeBlob === undefined) return { action: "detected", path, kind: "mutated" };
@@ -503,10 +507,9 @@ function planDeletion(
   entry: DeletedEntry,
   verification: UninstallVerification,
   isShared: (path: AbsolutePath) => boolean,
-  force: boolean,
 ): UninstallAction {
   const { path } = entry;
-  if (isShared(path) && !force) return { action: "conflict", path, reason: "shared-owner" };
+  if (isShared(path)) return { action: "conflict", path, reason: "shared-owner" };
   // As with a mutation, a deletion without a before-image cannot be reversed; report it, don't block.
   if (entry.beforeBlob === undefined) return { action: "detected", path, kind: "deleted" };
   if (verification.exists) return { action: "conflict", path, reason: "diverged" };

@@ -4,6 +4,7 @@ import type { UninstallAction, UninstallDetectedKind, UninstallPlan, UninstallVe
 import { dirname, join } from "node:path";
 import { existsSync, lstatSync, readdirSync, rmSync, rmdirSync } from "node:fs";
 import { inspectPath, listChildren } from "./uninstall-planner";
+import { rememberCreatedParents, sameFilesystemIdentity } from "./filesystem-identity";
 import type { Storage } from "./storage";
 import { currentPlatform } from "./platform";
 
@@ -90,6 +91,7 @@ export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUnin
   const detected: AbsolutePath[] = [];
   const conflicts: AbsolutePath[] = [];
   const failed: AbsolutePath[] = [];
+  const createdParents = new Map<string, string>();
 
   for (const action of plan.actions) {
     switch (action.action) {
@@ -114,7 +116,7 @@ export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUnin
         break;
 
       case "restore":
-        await applyRestore(action, options.storage, inspect, fs, outcomes, restored, conflicts, failed);
+        await applyRestore(action, options.storage, inspect, fs, outcomes, restored, conflicts, failed, createdParents);
         break;
     }
   }
@@ -197,6 +199,7 @@ async function applyRestore(
   restored: AbsolutePath[],
   conflicts: AbsolutePath[],
   failed: AbsolutePath[],
+  createdParents: Map<string, string>,
 ): Promise<void> {
   let bytes: Uint8Array | undefined;
   try {
@@ -216,7 +219,7 @@ async function applyRestore(
   // Loading the before-image may take time; check the plan snapshot immediately before writing so
   // a change made after confirmation is preserved.
   const verification = inspect(action.path);
-  if (!sameVerification(action.plannedState, verification)) {
+  if (!sameVerification(action.plannedState, verification, createdParents)) {
     outcomes.push({ path: action.path, outcome: "conflict", reason: "changed-after-plan" });
     conflicts.push(action.path);
     return;
@@ -224,6 +227,7 @@ async function applyRestore(
 
   try {
     fs.writeFile(action.path, bytes, action.mode);
+    rememberCreatedParents(action.path, action.plannedState.identity, createdParents);
   } catch (error) {
     outcomes.push({ path: action.path, outcome: "failed", reason: message(error) });
     failed.push(action.path);
@@ -235,13 +239,18 @@ async function applyRestore(
 }
 
 /** Compares every state component used by planning, including file hashes and symlink targets. */
-function sameVerification(expected: UninstallVerification, actual: UninstallVerification): boolean {
+function sameVerification(
+  expected: UninstallVerification,
+  actual: UninstallVerification,
+  createdParents: ReadonlyMap<string, string> = new Map(),
+): boolean {
   return (
     expected.exists === actual.exists &&
     expected.kind === actual.kind &&
     expected.hash === actual.hash &&
     expected.linkTarget === actual.linkTarget &&
-    expected.uid === actual.uid
+    expected.uid === actual.uid &&
+    sameFilesystemIdentity(expected.identity, actual.identity, createdParents)
   );
 }
 

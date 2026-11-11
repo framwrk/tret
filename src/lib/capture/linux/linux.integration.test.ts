@@ -76,16 +76,21 @@ describe("linux capture backend integration", () => {
         join(home, ".local", "bin"),
         link,
         join(home, ".mytool", "bin"),
-        tool,
       ]);
-      expect(effects.owned.find((entry) => entry.path === tool)?.installedHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(effects.mutated.find((entry) => entry.path === tool)?.installedHash).toMatch(/^[0-9a-f]{64}$/);
       expect(effects.owned.find((entry) => entry.path === link)?.linkTarget).toBe(tool);
-      expect(effects.mutated.map((entry) => entry.path)).toEqual([join(home, ".mytool", "config")]);
+      expect(effects.mutated.map((entry) => entry.path)).toEqual([tool, join(home, ".mytool", "config")]);
       expect(effects.mutated[0]?.installedHash).toMatch(/^[0-9a-f]{64}$/);
-      expect(effects.deleted.map((entry) => entry.path)).toEqual([join(home, ".mytool", "old")]);
+      expect(effects.deleted.map((entry) => entry.path)).toEqual([
+        join(home, ".mytool", "old"),
+        join(home, ".mytool", "scratch"),
+        join(scratch, "stage.tool"),
+      ]);
 
       const codes = effects.diagnostics.map((diagnostic) => diagnostic.code);
-      expect(codes).toContain("temp-rename");
+      expect(codes).toContain("rename");
+      // The cache directory's successful mkdir/rmdir proves a transient create. Plain O_CREAT
+      // file opens above do not, so those missing paths remain detect-only deletions.
       expect(codes).toContain("create-delete");
 
       // The transient temp file, the scratch file and the cache directory leave no ownership.
