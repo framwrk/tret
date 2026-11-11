@@ -92,7 +92,7 @@ describe("install capture roots", () => {
 
     try {
       const url = `http://127.0.0.1:${server.port}/install.sh`;
-      await install(url, false, [], { backend: new ReconstructingBackend(home), roots: [home] });
+      await install(url, false, [], { yes: true, backend: new ReconstructingBackend(home), roots: [home] });
 
       const file = JSON.parse(readFileSync(join(home, ".tret", "records.json"), "utf8")) as {
         records: {

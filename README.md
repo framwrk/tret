@@ -86,7 +86,7 @@ tret uninstall opencode --dry-run
 ```
 
 - `install` names the tool from the executable it adds.
-- `install` prints the URL, script hash, preview, and asks for consent unless `--yes` or `--json`.
+- `install` prints the URL, script hash, preview, and asks for consent unless `--yes`. Noninteractive and JSON installs require `--yes`.
 - A failed installer keeps a partial record of observed changes.
 - A no-executable install keeps a partial record and exits non-zero.
 - `trace` runs the real tool, so it also asks for consent.
@@ -157,7 +157,11 @@ rm -rf ~/.tret
 - `--json` emits exactly one JSON document on stdout.
 - Human text, warnings, and installer output go to the terminal or stderr.
 - No command prompts in JSON mode.
-- `uninstall` and `trace` require `--yes` or exit `5`.
+- `install`, `uninstall`, `trace`, and tracked `update <tool>` require `--yes` in JSON mode or exit `5`.
+- Noninteractive install and tracked update also require `--yes` outside JSON mode. Bare `tret update` explicitly requests self-update.
+- Ordinary URL/selector invocations reject unknown commands/options and extra selectors with exit `2` before external execution or cleanup. Flags may precede or follow a selector.
+- Curl/wget pastes keep downloader options and pipe text as data; known Tret options still apply. Put Tret options before the paste to keep the boundary clear.
+- `help --json` and `--version --json` emit one document; help does not check for updates.
 
 ```bash
 tret list --json | jq -r '.tools[].name'

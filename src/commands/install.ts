@@ -66,8 +66,6 @@ export type InstallOptions = {
   replaceId?: string;
   /** Pre-fetched installer text and its sha256; a tracked-tool update validates before running. */
   script?: { text: string; sha256: string };
-  /** Skip the interactive confirmation; a tracked-tool update asks before calling install. */
-  skipConsent?: boolean;
   /** Run the installer without the interactive confirmation prompt. */
   yes?: boolean;
   /**
@@ -193,6 +191,10 @@ export async function install(
   const urlError = validateUrl(url);
   if (urlError) fail("install-url", urlError, EXIT_USAGE);
 
+  if (!options.yes && (isJsonMode() || !process.stdin.isTTY)) {
+    fail("install-consent", "pass --yes to run an installer without an interactive confirmation", EXIT_BLOCKED);
+  }
+
   const storage = new FileStorage({ backups });
   let records: RecordV3[];
   try {
@@ -234,9 +236,8 @@ export async function install(
     "\tTret observes and records what this installer changes so you can remove it later; it does not sandbox the installer or prevent malware.",
   );
 
-  // Ask before running when a person is watching and has not already said yes (plan 03 item 6).
-  // JSON mode and non-interactive runs skip the prompt and run, matching the previous behavior.
-  if (!options.skipConsent && !options.yes && !isJsonMode() && process.stdin.isTTY) {
+  // Noninteractive execution already required --yes above; interactive runs still confirm the script.
+  if (!options.yes && !isJsonMode() && process.stdin.isTTY) {
     const answer = confirm("run this installer? [y/N]");
     if (answer === undefined) {
       fail("install-consent", "could not read a confirmation; pass --yes to run the installer", EXIT_BLOCKED);

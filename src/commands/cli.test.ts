@@ -158,13 +158,13 @@ describe("global --json position", () => {
     const server = serve(INSTALL_SCRIPT);
     try {
       const flagFirstHome = makeHome();
-      const flagFirst = await runCliResult(["--json", "install", server.url, "--", "--json"], flagFirstHome);
+      const flagFirst = await runCliResult(["--json", "install", "--yes", server.url, "--", "--json"], flagFirstHome);
       expect(flagFirst.code).toBe(0);
       expect(JSON.parse(flagFirst.stdout)).toMatchObject({ ok: true, command: "install", tool: "jsonflag" });
       expect(readFileSync(join(flagFirstHome, "script-args.txt"), "utf8")).toBe("--json");
 
       const flagLastHome = makeHome();
-      const flagLast = await runCliResult(["install", server.url, "--json"], flagLastHome);
+      const flagLast = await runCliResult(["install", "--yes", server.url, "--json"], flagLastHome);
       expect(flagLast.code).toBe(0);
       expect(JSON.parse(flagLast.stdout)).toMatchObject({ ok: true, command: "install", tool: "jsonflag" });
       expect(readFileSync(join(flagLastHome, "script-args.txt"), "utf8")).toBe("");
@@ -276,6 +276,7 @@ printf 'excluded\\n' >> "$HOME/.capture-excluded"
       const installed = await runCliResult(
         [
           "install",
+          "--yes",
           server.url,
           "--json",
           "--backup",
@@ -340,7 +341,7 @@ printf 'excluded\\n' >> "$HOME/.capture-excluded"
     const home = makeHome();
     const server = serve(INSTALL_SCRIPT);
     try {
-      expect((await runCliResult(["install", server.url, "--no-capture", "--json"], home)).code).toBe(0);
+      expect((await runCliResult(["install", "--yes", server.url, "--no-capture", "--json"], home)).code).toBe(0);
       const original = readRecords(home).records[0]!;
       expect(original.capture.backend).toBe("none");
 

@@ -229,7 +229,7 @@ printf 'second\\n' > "$HOME/.config/newtool.conf"
       ]);
       ageBlob(home, oldBlob);
 
-      const result = await runCliResult(["install", server.url, "--force", "--backup"], home);
+      const result = await runCliResult(["install", "--yes", server.url, "--force", "--backup"], home);
 
       expect(result.code).toBe(0);
       // The old install was restored before removal, and its now-unreferenced blob was collected.

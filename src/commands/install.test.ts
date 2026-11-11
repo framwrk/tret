@@ -309,7 +309,7 @@ describe("install -> list -> uninstall", () => {
     const home = makeHome();
     const server = serve(INSTALL_SCRIPT);
     try {
-      const installed = await runCli(["install", server.url], home);
+      const installed = await runCli(["install", "--yes", server.url], home);
       expect(installed).toBe(0);
 
       const file = readStore(home);
@@ -344,7 +344,7 @@ describe("install -> list -> uninstall", () => {
     const humanHome = makeHome();
     const humanServer = serve(INSTALL_SCRIPT);
     try {
-      const human = await runCliResult(["install", humanServer.url], humanHome);
+      const human = await runCliResult(["install", "--yes", humanServer.url], humanHome);
       expect(human.code).toBe(0);
       // JSON mode owns stdout; a human run must not leave a document there.
       expect(human.stdout).toBe("");
@@ -356,7 +356,7 @@ describe("install -> list -> uninstall", () => {
     const jsonHome = makeHome();
     const jsonServer = serve(INSTALL_SCRIPT);
     try {
-      const json = await runCliResult(["install", jsonServer.url, "--json"], jsonHome);
+      const json = await runCliResult(["install", "--yes", jsonServer.url, "--json"], jsonHome);
       expect(json.code).toBe(0);
       expect(JSON.parse(json.stdout)).toMatchObject({ ok: true, command: "install", tool: "mytool" });
       // Human lines stay off the data stream.
@@ -375,7 +375,7 @@ describe("install -> list -> uninstall", () => {
     const config = join(configDir, "config");
     const stateDir = join(home, ".nct-state");
     try {
-      expect(await runCli(["install", server.url, "--no-capture"], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--no-capture"], home)).toBe(0);
 
       const file = readStore(home);
       expect(file.version).toBe(3);
@@ -415,7 +415,7 @@ describe("install -> list -> uninstall", () => {
     const executable = join(home, ".local", "bin", "nct");
     const link = join(home, ".local", "bin", "nct-link");
     try {
-      expect(await runCli(["install", server.url, "--no-capture"], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--no-capture"], home)).toBe(0);
       writeFileSync(executable, "changed by the user\n");
       rmSync(link);
       symlinkSync("elsewhere", link);
@@ -478,7 +478,7 @@ describe("install -> list -> uninstall", () => {
     const home = makeHome();
     const server = serve(FAIL_SCRIPT);
     try {
-      expect(await runCli(["install", server.url], home)).not.toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).not.toBe(0);
 
       const file = readStore(home);
       expect(file.version).toBe(3);
@@ -502,10 +502,10 @@ describe("install -> list -> uninstall", () => {
     const config = join(home, ".config", "mytool", "config");
     const recordsPath = join(home, ".tret", "records.json");
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
       const previousRecords = readFileSync(recordsPath, "utf8");
 
-      expect(await runCli(["install", server.url, "--force"], home)).not.toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--force"], home)).not.toBe(0);
 
       expect(existsSync(executable)).toBe(true);
       expect(readFileSync(executable, "utf8")).toContain("echo mytool");
@@ -521,9 +521,9 @@ describe("install -> list -> uninstall", () => {
     const server = serveResponses({ body: INSTALL_SCRIPT }, { body: FORCE_FAIL_SCRIPT });
     const executable = join(home, ".local", "bin", "mytool");
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
-      expect(await runCli(["install", server.url, "--force"], home)).not.toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--force"], home)).not.toBe(0);
 
       expect(readFileSync(executable, "utf8")).toContain("echo replacement");
       const records = readStore(home).records;
@@ -574,7 +574,7 @@ describe("install -> list -> uninstall", () => {
       ]);
 
       try {
-        const result = await runCliResult(["install", server.url, "--force", "--no-capture"], home);
+        const result = await runCliResult(["install", "--yes", server.url, "--force", "--no-capture"], home);
 
         expect(result.code).not.toBe(0);
         const output = `${result.stdout}\n${result.stderr}\n${runLogText(home)}`;
@@ -601,9 +601,9 @@ describe("install -> list -> uninstall", () => {
     const executable = join(home, ".local", "bin", "mytool");
     const recoveryPath = join(home, ".config", "mytool", "recovery.txt");
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
-      expect(await runCli(["install", server.url, "--force"], home)).not.toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--force"], home)).not.toBe(0);
 
       expect(existsSync(executable)).toBe(false);
       expect(readFileSync(recoveryPath, "utf8")).toBe("recovery data\n");
@@ -631,15 +631,15 @@ describe("install -> list -> uninstall", () => {
     const aFile = join(sharedParent, "a.conf");
     const bFile = join(sharedParent, "b.conf");
     try {
-      expect(await runCli(["install", serverA.url], home)).toBe(0);
-      expect(await runCli(["install", serverB.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", serverA.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", serverB.url], home)).toBe(0);
 
       const before = readStore(home).records;
       const previousA = before.find((entry) => entry.name === "shared-a");
       expect(previousA).toBeDefined();
       expect(previousA?.owned.some((entry) => entry.path === sharedParent)).toBe(true);
 
-      expect(await runCli(["install", serverA.url, "--force"], home)).toBe(0);
+      expect(await runCli(["install", "--yes", serverA.url, "--force"], home)).toBe(0);
 
       // The replacement removed A's own files, but the shared directory and B's file survive.
       expect(readFileSync(aFile, "utf8")).toBe("a\n");
@@ -666,7 +666,7 @@ describe("install -> list -> uninstall", () => {
     const config = join(home, ".config", "mytool", "config");
     const recordsPath = join(home, ".tret", "records.json");
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
       const previousRecords = readFileSync(recordsPath, "utf8");
       const previousExecutable = readFileSync(executable, "utf8");
 
@@ -674,7 +674,7 @@ describe("install -> list -> uninstall", () => {
       rmSync(config);
       mkdirSync(config);
 
-      const result = await runCliResult(["install", server.url, "--force"], home);
+      const result = await runCliResult(["install", "--yes", server.url, "--force"], home);
 
       expect(result.code).not.toBe(0);
       expect(runLogText(home)).toContain("previous install is unchanged");
@@ -692,7 +692,7 @@ describe("install -> list -> uninstall", () => {
     const server = serve(NO_EXECUTABLE_SCRIPT);
     const config = join(home, ".config", "noexec", "config");
     try {
-      expect(await runCli(["install", server.url], home)).not.toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).not.toBe(0);
 
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
@@ -730,7 +730,7 @@ describe("install -> list -> uninstall", () => {
     const server = serve(NO_EXECUTABLE_FAIL_SCRIPT);
     const config = join(home, ".config", "noexec", "config");
     try {
-      expect(await runCli(["install", server.url, "--name", "noexec-tool"], home)).not.toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--name", "noexec-tool"], home)).not.toBe(0);
 
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
@@ -752,7 +752,7 @@ describe("install -> list -> uninstall", () => {
     const home = makeHome();
     const server = serve(ZERO_EFFECT_SCRIPT);
     try {
-      expect(await runCli(["install", server.url], home)).not.toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).not.toBe(0);
       expect(existsSync(join(home, ".tret", "records.json"))).toBe(false);
     } finally {
       await server.stop();
@@ -763,7 +763,7 @@ describe("install -> list -> uninstall", () => {
     const home = makeHome();
     const server = serve(HOME_ROOT_SCRIPT);
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
       const file = readStore(home);
       const record = file.records.find((entry) => entry.name === "hometool");
@@ -788,7 +788,7 @@ describe("install -> list -> uninstall", () => {
     mkdirSync(join(home, ".bun", "install"), { recursive: true });
     const server = serve(BUN_GLOBAL_SCRIPT);
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
       const record = readStore(home).records.find((entry) => entry.name === "acmetool");
       expect(record).toBeDefined();
@@ -810,7 +810,7 @@ describe("install -> list -> uninstall", () => {
     mkdirSync(join(home, ".local", "lib"), { recursive: true });
     const server = serve(NPM_GLOBAL_SCRIPT);
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
       const record = readStore(home).records.find((entry) => entry.name === "acmetool");
       expect(record).toBeDefined();
@@ -878,7 +878,7 @@ describe("install -> list -> uninstall", () => {
 
     try {
       const path = `${fakebin}:${process.env.PATH ?? ""}`;
-      expect(await runCli(["install", server.url, "--force"], home, { PATH: path })).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--force"], home, { PATH: path })).toBe(0);
 
       const record = readStore(home).records.find((entry) => entry.name === "acmetool");
       expect(record).toBeDefined();
@@ -959,7 +959,7 @@ describe("install -> list -> uninstall", () => {
 
     try {
       const path = `${fakebin}:${process.env.PATH ?? ""}`;
-      expect(await runCli(["install", server.url, "--force"], home, { PATH: path })).not.toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--force"], home, { PATH: path })).not.toBe(0);
 
       expect(existsSync(join(home, "fake-npm-called"))).toBe(false);
       expect(existsSync(packageDir)).toBe(true);
@@ -976,7 +976,7 @@ describe("install -> list -> uninstall", () => {
     const server = serve(PI_MANAGED_SCRIPT);
     const root = join(home, ".pi", "agent", "install");
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
       const record = readStore(home).records.find((entry) => entry.name === "pi");
       expect(record).toBeDefined();
@@ -1006,11 +1006,11 @@ describe("install -> list -> uninstall", () => {
     const server = serve(PI_MANAGED_SCRIPT);
     const stale = join(home, ".pi", "agent", "install", "releases", "1.0.0", "stale.txt");
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
       // A file inside the old root the installer will not recreate: only the delegated removal clears it.
       writeFileSync(stale, "stale");
 
-      expect(await runCli(["install", server.url, "--force"], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--force"], home)).toBe(0);
       expect(existsSync(stale)).toBe(false);
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
@@ -1051,9 +1051,9 @@ describe("install -> list -> uninstall", () => {
     const home = makeHome();
     const server = serveResponses({ body: INSTALL_SCRIPT }, { body: INSTALL_SCRIPT });
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
-      const result = await runCliResult(["install", server.url, "--force"], home);
+      const result = await runCliResult(["install", "--yes", server.url, "--force"], home);
 
       expect(result.code).toBe(0);
       const output = `${result.stdout}\n${result.stderr}`;
@@ -1104,7 +1104,7 @@ describe("managed install removal failure", () => {
     writeFileSync(fakeRm, `#!/bin/sh\necho 'rm denied' >&2\nexit 1\n`);
     chmodSync(fakeRm, 0o755);
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
       const path = `${fakebin}:${process.env.PATH ?? ""}`;
       expect(await runCli(["uninstall", "pi", "--yes"], home, { PATH: path })).not.toBe(0);
@@ -1160,13 +1160,13 @@ describe("backup size flag", () => {
   test("invalid sizes and use without --backup fail as usage errors", async () => {
     for (const value of ["abc", "0", "-1"]) {
       const home = makeHome();
-      const result = await runCliResult(["install", "--backup-size", value], home);
+      const result = await runCliResult(["install", "--yes", "--backup-size", value], home);
       expect(result.code).toBe(2);
       expect(runLogText(home)).toContain("--backup-size requires a positive integer number of bytes");
     }
 
     const home = makeHome();
-    const result = await runCliResult(["install", "--backup-size", "4096"], home);
+    const result = await runCliResult(["install", "--yes", "--backup-size", "4096"], home);
     expect(result.code).toBe(2);
     expect(runLogText(home)).toContain("--backup-size requires --backup");
   });
@@ -1210,7 +1210,7 @@ describe("capture scope flags", () => {
     process.env.HOME = home;
     const server = serve(INSTALL_SCRIPT);
     try {
-      await install(server.url, false, [], { backend: new ThrowingStartBackend(), roots: [home] });
+      await install(server.url, false, [], { yes: true, backend: new ThrowingStartBackend(), roots: [home] });
 
       const record = readStore(home).records.find((entry) => entry.name === "mytool");
       expect(record?.capture.completeness).toBe("heuristic");
@@ -1227,7 +1227,7 @@ describe("capture scope flags", () => {
     homes.push(extra);
     const server = serve(outsideScopeScript(extra));
     try {
-      expect(await runCli(["install", server.url, "--observe", extra], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--observe", extra], home)).toBe(0);
 
       const record = readStore(home).records.find((entry) => entry.name === "observetool");
       expect(record).toBeDefined();
@@ -1243,7 +1243,7 @@ describe("capture scope flags", () => {
     homes.push(extra);
     const server = serve(outsideScopeScript(extra));
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
       const record = readStore(home).records.find((entry) => entry.name === "observetool");
       expect(record).toBeDefined();
@@ -1257,7 +1257,7 @@ describe("capture scope flags", () => {
     const home = makeHome();
     const server = serve(HOME_TOP_LEVEL_SCRIPT);
     try {
-      expect(await runCli(["install", server.url, "--observe-exclude", home], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--observe-exclude", home], home)).toBe(0);
 
       const record = readStore(home).records.find((entry) => entry.name === "observetool");
       expect(record).toBeDefined();
@@ -1274,7 +1274,7 @@ describe("capture scope flags", () => {
     const home = makeHome();
     const server = serve(INSTALL_SCRIPT);
     try {
-      const result = await runCliResult(["install", server.url, "--observe", "state"], home);
+      const result = await runCliResult(["install", "--yes", server.url, "--observe", "state"], home);
 
       expect(result.code).not.toBe(0);
       expect(`${result.stdout}\n${result.stderr}`).toContain("--observe requires an absolute path: state");
