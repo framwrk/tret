@@ -2,15 +2,12 @@ import type { Baseline, CapturedBaseline, FsInspector } from "./inspect";
 import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../backend";
 import type { LinuxTracer, LinuxTracerFactory, TracerAttachOptions } from "./tracer";
 import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
-import { accessSync, existsSync, readFileSync, statSync } from "node:fs";
-import { attachFanotify, attachStrace } from "./tracer";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import type { AbsolutePath } from "../../../types";
 import type { BlobId } from "../../storage";
-import { FANOTIFY_HELPER } from "../../../constants";
 import type { Journal } from "../events";
 import type { TracerResult } from "./raw";
-import { X_OK } from "node:constants";
+import { attachStrace } from "./tracer";
 import { reconstruct } from "./reconstruct";
 
 /**
@@ -147,10 +144,8 @@ export class LinuxCaptureBackend implements CaptureBackend {
 }
 
 /**
- * Default tracer selection (D7, D8): when the process already holds root (the user ran tret under
- * sudo, not an escalation tret performs itself) and the fanotify helper is present, use the
- * privileged fanotify tracer; otherwise use the unprivileged strace/ptrace tracer. Tret never
- * escalates on the user's behalf.
+ * The CLI always attempts strace, including when already root. Fanotify has not established
+ * capture fidelity and is available only through explicit development tracer injection.
  */
 export async function defaultTracerFactory(attach: TracerAttachOptions): Promise<LinuxTracer> {
   return defaultTracerFactoryForCurrentHost()(attach);
@@ -161,12 +156,10 @@ function defaultTracerFactoryForCurrentHost(): LinuxTracerFactory {
   return (attach) => attachDefaultTracer(attach, selection);
 }
 
-type DefaultTracerSelection = { kind: "fanotify"; helperPath: string } | { kind: "strace"; stracePath: string };
+type DefaultTracerSelection = { stracePath: string };
 
 /** Selects a tracer only when the host can plausibly attach it; this runs before the baseline scan. */
 function selectDefaultTracer(): DefaultTracerSelection {
-  const helper = fanotifyHelperPath();
-  if (isRoot() && helper !== undefined) return { kind: "fanotify", helperPath: helper };
   if (parentAttachRestricted()) {
     throw new Error(
       "strace cannot attach to this process: yama ptrace_scope restricts an unprivileged tracer from tracing its parent",
@@ -176,12 +169,11 @@ function selectDefaultTracer(): DefaultTracerSelection {
   if (stracePath === null) {
     throw new Error('strace could not start: Executable not found in $PATH: "strace"');
   }
-  return { kind: "strace", stracePath };
+  return { stracePath };
 }
 
 /** Attaches the previously selected tracer only after the baseline has been captured. */
 async function attachDefaultTracer(attach: TracerAttachOptions, selection: DefaultTracerSelection): Promise<LinuxTracer> {
-  if (selection.kind === "fanotify") return attachFanotify(attach, { helperPath: selection.helperPath });
   const tracer = await attachStrace(attach, { cwd: process.cwd(), stracePath: selection.stracePath });
   await requireAttached(tracer);
   return tracer;
@@ -233,38 +225,7 @@ function isAttachFailure(reason: string): boolean {
   return /could not (?:start|attach)|Operation not permitted/i.test(reason);
 }
 
-/**
- * Locates the privileged fanotify helper (plan 02 item 3). An explicit `$TRET_FANOTIFY` override
- * wins; otherwise the helper shipped next to the running binary is used — a release archive places
- * `tret-fanotify` beside `tret`, so a root run does not have to discover and configure a private
- * path. `$HOME/.tret/bin/tret-fanotify` is the fallback for a dev run driving an installed release.
- * Returns undefined when no executable candidate exists; the caller then stays on strace.
- */
-export function fanotifyHelperPath(
-  env: NodeJS.ProcessEnv = process.env,
-  execPath: string = process.execPath,
-  home: string | undefined = Bun.env.HOME,
-): string | undefined {
-  const candidates: string[] = [];
-  const configured = env.TRET_FANOTIFY;
-  if (configured !== undefined && configured.length > 0) candidates.push(configured);
-  candidates.push(join(dirname(execPath), FANOTIFY_HELPER));
-  if (home !== undefined) candidates.push(join(home, ".tret", "bin", FANOTIFY_HELPER));
-  return candidates.find(isExecutableFile);
-}
-
-/** True when `path` is a regular file this user can execute. */
-function isExecutableFile(path: string): boolean {
-  try {
-    if (!statSync(path).isFile()) return false;
-    accessSync(path, X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Convenience predicate used by install integration to decide whether a privileged tracer is viable. */
+/** Reads caller privilege without escalation; used by the Yama preflight. */
 export function isRoot(): boolean {
   return typeof process.getuid === "function" && process.getuid() === 0;
 }

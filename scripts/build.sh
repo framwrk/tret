@@ -68,8 +68,8 @@ for target in "${TARGETS[@]}"; do
 
   archive=(tret)
   if [ "$os" = "linux" ]; then
-    # The fanotify helper is Linux-only and is discovered beside the `tret`
-    # binary at runtime; it needs Linux headers, so it is only built natively.
+    # The Linux-only helper is retained for explicit development experiments; the CLI never
+    # selects it automatically. It needs Linux headers, so it is only built natively.
     if [ "$(uname -s)" = "Linux" ]; then
       echo "building tret-fanotify-linux-$arch"
       ${CC:-cc} -O2 -o "$stage/tret-fanotify" "$HELPER_SOURCE"

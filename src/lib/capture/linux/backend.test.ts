@@ -1,6 +1,6 @@
 import { FakeFsInspector, RealFsInspector } from "./inspect";
-import { LinuxCaptureBackend, fanotifyHelperPath, isRoot, parentAttachRestricted } from "./backend";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { LinuxCaptureBackend, parentAttachRestricted } from "./backend";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import type { CaptureSession } from "../backend";
 import { FakeLinuxTracer } from "./fake";
@@ -11,9 +11,7 @@ import { ownershipConfidence } from "../../ownership";
 import { tmpdir } from "node:os";
 
 const DEFAULT_TRACER_PREFLIGHT_TEST_ENABLED =
-  process.platform === "linux" &&
-  !(isRoot() && fanotifyHelperPath() !== undefined) &&
-  (parentAttachRestricted() || Bun.which("strace") === null);
+  process.platform === "linux" && (parentAttachRestricted() || Bun.which("strace") === null);
 
 class CountingFsInspector extends RealFsInspector {
   inspected = 0;
@@ -277,49 +275,5 @@ describe("linux capture backend: before-images", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
-});
-
-describe("fanotify helper discovery", () => {
-  function executableHelper(dir: string): string {
-    const helper = join(dir, "tret-fanotify");
-    writeFileSync(helper, "");
-    chmodSync(helper, 0o755);
-    return helper;
-  }
-
-  test("finds the helper shipped next to the running binary", () => {
-    const dir = mkdtempSync(join(tmpdir(), "tret-helper-"));
-    const helper = executableHelper(dir);
-
-    expect(fanotifyHelperPath({}, join(dir, "tret"), undefined)).toBe(helper);
-  });
-
-  test("prefers an explicit TRET_FANOTIFY override", () => {
-    const dir = mkdtempSync(join(tmpdir(), "tret-helper-"));
-    const helper = executableHelper(dir);
-
-    expect(fanotifyHelperPath({ TRET_FANOTIFY: helper }, "/nope/tret", undefined)).toBe(helper);
-  });
-
-  test("falls back to the installed-binary directory for a dev run", () => {
-    const home = mkdtempSync(join(tmpdir(), "tret-helper-"));
-    const bin = join(home, ".tret/bin");
-    mkdirSync(bin, { recursive: true });
-    const helper = join(bin, "tret-fanotify");
-    writeFileSync(helper, "");
-    chmodSync(helper, 0o755);
-
-    expect(fanotifyHelperPath({}, "/nope/tret", home)).toBe(helper);
-  });
-
-  test("returns undefined for a missing or non-executable helper", () => {
-    const dir = mkdtempSync(join(tmpdir(), "tret-helper-"));
-    const plain = join(dir, "tret-fanotify");
-    writeFileSync(plain, "");
-    chmodSync(plain, 0o644);
-
-    expect(fanotifyHelperPath({}, "/nope/tret", undefined)).toBeUndefined();
-    expect(fanotifyHelperPath({ TRET_FANOTIFY: plain }, "/nope/tret", undefined)).toBeUndefined();
   });
 });

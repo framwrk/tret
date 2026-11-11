@@ -255,8 +255,9 @@ export type FanotifyTracerOptions = {
  * Privileged fanotify tracer. It spawns the `tret-fanotify` helper (see `helper/tret-fanotify.c`),
  * which takes `FAN_CLASS_NOTIF` marks on `--roots`, reports PID/pidfd per event, pairs
  * `FAN_MOVED_FROM`/`FAN_MOVED_TO`, and emits newline-delimited `TracerRecord` JSON. This path
- * requires `CAP_SYS_ADMIN` (or root) for PID reporting; the backend only selects it when the process
- * already has that privilege, and it never escalates (D8). Coverage gaps it reports: queue overflow,
+ * requires `CAP_SYS_ADMIN` (or root) for PID reporting. The CLI never selects it; development code
+ * must inject it explicitly and must not treat its observations as removal authority. It never
+ * escalates (D8). Coverage gaps it reports: queue overflow,
  * network filesystems, and mounts it could not mark.
  */
 export class FanotifyTracer implements LinuxTracer {

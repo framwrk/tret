@@ -32,6 +32,18 @@ open implementation work.
 
 ## Classification
 
+The Linux CLI attempts strace, including when already root. It does not discover
+or select a fanotify helper from the executable directory, HOME or `TRET_FANOTIFY`.
+The existing labeled heuristic fallback remains when strace cannot attach; this
+change does not add separate weaker-capture consent or fix strace readiness.
+
+Fanotify is available only to development code that explicitly injects
+`attachFanotify` into `LinuxCaptureBackend` with a chosen helper path. Its journal
+always reports partial coverage. Its event fidelity is unverified, and the partial
+label currently does not block ordinary fingerprint-based cleanup of its records.
+The packaged helper remains for experiments. Full per-effect gating of
+legacy records, child-launch tracing and real-kernel fidelity tests remain open.
+
 On Linux, requesting `O_CREAT` does not establish that a file was created: it may
 open an existing file. Only a successful exclusive-create observation can produce
 a new file from that open. A missing entry in a pruned baseline is unknown, not

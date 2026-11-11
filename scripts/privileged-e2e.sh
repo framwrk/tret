@@ -1,24 +1,12 @@
 #!/usr/bin/env bash
 # Privileged end-to-end check for Tret (capture plan D8, verification item V5).
 #
-# It drives the *shipped* `tret` binary through the privileged flow on Linux, in two separate runs
-# that select the two privileged capture backends explicitly:
-#
-#   strace    `sudo tret install <url>` runs a local fixture installer as root with no fanotify
-#             helper discoverable. The record must report `capture.backend: "linux-strace"`, carry
-#             privilege "root", and own the root-owned fixture file. Then `tret uninstall <tool>
-#             --dry-run` as the non-root user must report that sudo is required and leave the
-#             root-owned file in place, and `sudo tret uninstall <tool> --yes` must remove it and
-#             drop the record.
-#
-#   fanotify  `sudo tret install <url>` runs the same fixture from a staged copy of the packaged
-#             binary with the packaged `tret-fanotify` helper staged beside it. The record must
-#             report `capture.backend: "linux-fanotify"`, completeness "partial", and privilege "root".
-#             This run proves the *selection* only: the shipped helper's documented F1-F4 fidelity gaps (see
-#             docs/capture/linux-fidelity.md and docs/capture/linux-capture.md) mean it does not
-#             attribute the fixture file correctly, so its record is not claimed as proven and no
-#             ownership or uninstall assertion is made for it. A helper that cannot attach at all is
-#             a hard failure that reports the kernel's loss reason, never a skipped assertion.
+# It drives the shipped binary through root installs with and without the packaged experimental
+# fanotify helper present. Both must select linux-strace, carry privilege root and own the fixture.
+# The first run also verifies an unprivileged dry-run preserves root-owned files and reports sudo,
+# then checks an explicitly root uninstall removes the fixture and record. The second puts a
+# launch-detecting wrapper around the packaged helper and verifies it is never invoked, even with
+# TRET_FANOTIFY set. This does not test or claim fanotify event fidelity.
 #
 # The fixture installer is served over loopback HTTP and every `tret` run gets its own temporary
 # HOME, so no real user state is touched. Each run uses its own unique fixture path under /opt, and
@@ -69,10 +57,8 @@ else
 fi
 [ -x "$BIN" ] || fail "missing $BIN; run 'bash scripts/build.sh linux-$ARCH' first"
 
-# The fanotify half needs the packaged C helper. Accept an explicit TRET_FANOTIFY override, a
-# helper already beside TRET_BIN (the release archive layout), or the raw artifact scripts/build.sh
-# writes for a native Linux build. The helper is then staged beside a staged copy of the binary, so
-# the run exercises the same beside-the-binary discovery release users get.
+# Stage the packaged development helper for the default-selection regression. A script-level
+# TRET_FANOTIFY override may locate the input artifact, but the product must ignore it.
 HELPER_SOURCE="${TRET_FANOTIFY:-}"
 if [ -z "$HELPER_SOURCE" ] && [ -x "$(dirname "$BIN")/tret-fanotify" ]; then
   HELPER_SOURCE="$(dirname "$BIN")/tret-fanotify"
@@ -112,8 +98,7 @@ trap cleanup EXIT
 
 mkdir -p "$HOME_STRACE" "$HOME_FANOTIFY"
 
-# A copy of the packaged binary with no helper beside it: root has no fanotify helper discoverable,
-# so the strace backend must be selected even when the original dist/ directory has one.
+# First run: no adjacent helper. The CLI must choose strace independent of packaged helpers.
 STRACE_BIN_DIR="$WORK/strace-bin"
 mkdir -p "$STRACE_BIN_DIR"
 cp -- "$BIN" "$STRACE_BIN_DIR/tret"
@@ -124,8 +109,13 @@ STRACE_BIN="$STRACE_BIN_DIR/tret"
 FANOTIFY_BIN_DIR="$WORK/fanotify-bin"
 mkdir -p "$FANOTIFY_BIN_DIR"
 cp -- "$BIN" "$FANOTIFY_BIN_DIR/tret"
-cp -- "$HELPER_SOURCE" "$FANOTIFY_BIN_DIR/tret-fanotify"
-chmod 755 "$FANOTIFY_BIN_DIR/tret" "$FANOTIFY_BIN_DIR/tret-fanotify"
+cp -- "$HELPER_SOURCE" "$FANOTIFY_BIN_DIR/tret-fanotify-real"
+cat >"$FANOTIFY_BIN_DIR/tret-fanotify" <<'EOF'
+#!/usr/bin/env bash
+printf called > "$TRET_HELPER_SENTINEL"
+exec "$(dirname "$0")/tret-fanotify-real" "$@"
+EOF
+chmod 755 "$FANOTIFY_BIN_DIR/tret" "$FANOTIFY_BIN_DIR/tret-fanotify" "$FANOTIFY_BIN_DIR/tret-fanotify-real"
 FANOTIFY_BIN="$FANOTIFY_BIN_DIR/tret"
 
 # The fixture installer. It runs as root (the whole install runs as root), so the file it writes is
@@ -173,12 +163,11 @@ REAL_RECORDS_BEFORE="absent"
 if [ -f "$REAL_RECORDS" ]; then REAL_RECORDS_BEFORE="$(sha256sum "$REAL_RECORDS" | cut -d' ' -f1)"; fi
 
 # Runs the fixture install as root with a temporary HOME and the run's own fixture root. The
-# `--observe` root is created first so the fanotify helper can mark an existing directory; it stays
-# empty until the installer runs.
+# observe root exists for a deterministic pre-install baseline and stays empty until the installer.
 install_fixture() {
   local label="$1" home="$2" root="$3" bin="$4"
   sudo -n mkdir -p -- "$root" || return 1
-  sudo -n env -u TRET_FANOTIFY HOME="$home" PATH="$PATH" E2E_FIXTURE_ROOT="$root" \
+  sudo -n env HOME="$home" PATH="$PATH" E2E_FIXTURE_ROOT="$root" TRET_FANOTIFY="$FANOTIFY_BIN_DIR/tret-fanotify" TRET_HELPER_SENTINEL="$WORK/helper-called" \
     "$bin" install "$URL" --yes --observe "$root" >"$WORK/$label-install.log" 2>&1
 }
 
@@ -190,8 +179,8 @@ inspect_capture() {
     fail "the $label run did not select capture.backend $backend"
 }
 
-# The strace run must have no fanotify helper discoverable: its staged binary has no adjacent
-# helper, its HOME is empty, and TRET_FANOTIFY is unset for every install below.
+# The first binary has no adjacent helper and its HOME is empty. The explicit helper override
+# still points at the instrumented helper and must be ignored, just as in the helper-present run.
 [ ! -e "$STRACE_BIN_DIR/tret-fanotify" ] || fail "$STRACE_BIN_DIR unexpectedly contains a helper"
 [ ! -e "$HOME_STRACE/.tret/bin/tret-fanotify" ] || fail "the strace HOME unexpectedly contains a helper"
 
@@ -260,36 +249,25 @@ sudo -n env HOME="$HOME_STRACE" "$BIN" list --json >"$WORK/list.json" ||
 "$BUN" "$CHECK" dropped "$STRACE_NAME" "$STRACE_ENTRY" <"$WORK/list.json" ||
   fail "the root uninstall left the record tracked"
 
-echo "privileged-e2e.sh: [fanotify] installing the fixture as root with the packaged helper beside the binary"
+echo "privileged-e2e.sh: [helper-present] root must still use strace with a packaged helper adjacent"
 set +e
-install_fixture fanotify "$HOME_FANOTIFY" "$FIXTURE_FANOTIFY" "$FANOTIFY_BIN"
-FANOTIFY_INSTALL_STATUS=$?
+install_fixture helper-present "$HOME_FANOTIFY" "$FIXTURE_FANOTIFY" "$FANOTIFY_BIN"
+HELPER_INSTALL_STATUS=$?
 set -e
-# The shipped helper is documented as not attributing directory entries correctly (F1-F4), so this
-# install may legitimately exit non-zero after saving a partial record. Accept either outcome as
-# long as the record exists and reports the fanotify backend; never claim its capture is proven.
-case "$FANOTIFY_INSTALL_STATUS" in
-  0 | 1) ;;
-  *)
-    cat "$WORK/fanotify-install.log" >&2
-    fail "the fanotify root install exited $FANOTIFY_INSTALL_STATUS"
-    ;;
-esac
+[ "$HELPER_INSTALL_STATUS" -eq 0 ] || {
+  cat "$WORK/helper-present-install.log" >&2
+  fail "the helper-present root install exited $HELPER_INSTALL_STATUS"
+}
+[ ! -e "$WORK/helper-called" ] || fail "the CLI executed the unverified fanotify helper by default"
 FANOTIFY_ENTRY="$FIXTURE_FANOTIFY/bin/$TOOL"
 FANOTIFY_NAME="$(sudo -n env HOME="$HOME_FANOTIFY" "$BIN" list --json | "$BUN" "$CHECK" name)" || {
-  cat "$WORK/fanotify-install.log" >&2
-  # The shipped helper requests FAN_CREATE, FAN_ATTRIB and FAN_MOVED_* together with
-  # FAN_MARK_MOUNT. The kernel rejects that combination with EINVAL (mount marks may only request
-  # events that can be reported with an fd), so the helper can never attach. Keep the backend
-  # assertion strict and name the reproduction instead of accepting the empty record.
-  if grep -q "fanotify_mark failed" "$WORK/fanotify-install.log"; then
-    fail "linux-fanotify was selected but the packaged helper could not mark an observe root: fanotify_mark rejected its mask (FAN_MARK_MOUNT with FAN_CREATE/FAN_ATTRIB/FAN_MOVED_*) with EINVAL, so it captured no events and saved no record. This is a product bug in src/lib/capture/linux/helper/tret-fanotify.c; the assertion is intentionally not weakened."
-  fi
-  fail "the fanotify root install did not record exactly one tool"
+  cat "$WORK/helper-present-install.log" >&2
+  fail "the helper-present root install did not record exactly one tool"
 }
-inspect_capture fanotify "$HOME_FANOTIFY" "$FANOTIFY_NAME" "$FANOTIFY_ENTRY" linux-fanotify partial
-echo "privileged-e2e.sh: note: linux-fanotify was selected; the shipped helper's documented F1-F4"
-echo "privileged-e2e.sh:       fidelity gaps mean this proves backend selection, not capture accuracy"
+inspect_capture helper-present "$HOME_FANOTIFY" "$FANOTIFY_NAME" "$FANOTIFY_ENTRY" linux-strace
+"$BUN" "$CHECK" installed "$FANOTIFY_NAME" "$FANOTIFY_ENTRY" <"$WORK/helper-present-inspect.json" ||
+  fail "the helper-present root install did not retain a root-privileged strace fixture"
+echo "privileged-e2e.sh: helper presence and TRET_FANOTIFY did not change the strace default"
 
 if [ "$REAL_RECORDS_BEFORE" = "absent" ]; then
   [ ! -e "$REAL_RECORDS" ] || fail "the run wrote $REAL_RECORDS outside the temporary HOME"
