@@ -133,7 +133,7 @@ rm -rf ~/.tret
 | Platform | Backend                                                                | Notes                                                                |
 | -------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | macOS    | `macos-heuristic`                                                      | Scoped before/after snapshot; no process attribution                 |
-| Linux    | `linux-strace`, then `linux-heuristic` fallback, root `linux-fanotify` | `ptrace_scope=1` forces the heuristic fallback for unprivileged runs |
+| Linux    | `linux-strace`, then `linux-heuristic` fallback (also when root) | `ptrace_scope=1` forces the heuristic fallback for unprivileged runs |
 
 - Capture covers bounded observation roots under `$HOME`; `--observe` and `--observe-exclude` adjust them.
 - Tool updates preserve capture enablement, backup policy and size limit, and observation additions/exclusions. Older records without saved settings use the install defaults.
@@ -141,7 +141,7 @@ rm -rf ~/.tret
 - With backups off, non-shell mutations and deletions are detect-only; declared shell changes instead block cleanup with exit `5` as described under Uninstall.
 - `complete` means the tracer observed the full process tree with no known blind spot; otherwise the window is `partial`.
 - Known Linux gaps: cross-root renames, `openat2` creates, mmap writes, xattr/ownership changes, and hard links.
-- Fanotify captures always report `partial` (observed ownership): the helper omits directory events, and full coverage has not been established by real-kernel tests.
+- The CLI never selects fanotify automatically, even as root or with an adjacent helper / `TRET_FANOTIFY`. Development code must inject it explicitly; it always reports `partial`. Its records still use existing fingerprint-based cleanup: the partial label does not block removal. Per-effect authority gating and native event fidelity remain unfinished.
 - macOS change detection is stamp-based and can miss edits that preserve size, mtime, and inode.
 
 ### Trust boundary
@@ -198,7 +198,7 @@ tret inspect opencode --json | jq '.tool.actions'
 | `bun run format`    | Format with Prettier                    |
 
 - `bun run build` compiles `{darwin,linux}-{arm64,x64}`, packages archives, and writes `dist/checksums.txt`.
-- Linux builds also compile the privileged `tret-fanotify` helper.
+- Linux builds also compile the experimental `tret-fanotify` helper for explicit development use. The CLI never selects it automatically.
 - `bash scripts/build.sh <os>-<arch>` builds one target.
 - `scripts/install.test.sh` exercises the install script against the built archive.
 - Run the full verification suite before tagging a release.
