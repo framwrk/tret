@@ -445,6 +445,7 @@ function sampleReport(overrides: Partial<InspectReport> = {}): InspectReport {
     actions: [{ path: "/home/.local/bin/mytool", action: "remove", kind: "file" }],
     requiresSudo: false,
     incomplete: false,
+    shell: { blocked: [] },
     delegated: { conflicts: [], blocked: [] },
     counts: { owned: 1, mutated: 0, deleted: 0, removable: 1, restorable: 0 },
     ...overrides,
@@ -582,6 +583,24 @@ describe("formatInspect", () => {
       }),
     );
     expect(lines).toContain("\tnothing tracked to remove for mytool");
+  });
+
+  test("shell refusal takes precedence over an empty action list", () => {
+    const lines = formatInspect(sampleReport({ actions: [], shell: { blocked: ["/home/.zshrc"] } }));
+    expect(lines).toContain("\tblocked shell edit: /home/.zshrc (no supported edit provenance or before-image; manual reconciliation required)");
+    expect(lines).toContain("\tno cleanup actions will be applied");
+    expect(lines.some((line) => line.includes("nothing tracked to remove"))).toBe(false);
+    expect(lines.some((line) => line.includes("would remove"))).toBe(false);
+  });
+
+  test("human shell refusals preserve delegated reasons alongside them", () => {
+    const lines = formatInspect(sampleReport({
+      shell: { blocked: ["/home/.zshrc"] },
+      delegated: { conflicts: [], blocked: ["unverified package scope"] },
+    }));
+    expect(lines).toContain("\tblocked: unverified package scope");
+    expect(lines).toContain("\tno cleanup actions will be applied");
+    expect(lines.some((line) => line.includes("would remove"))).toBe(false);
   });
 
   test("shows blocked delegation, sudo, and shared conflicts without promising cleanup", () => {

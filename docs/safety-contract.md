@@ -77,6 +77,34 @@ payload inventory, package lifecycle adapter, or recovery workflow.
 It cannot override another record's claim, including shell-config claims, or a
 change between planning and applying. Resolve shared claims with `unclaim`.
 
+## Shell edit provenance
+
+Tret does not delete profile lines by matching a tool name, installer marker or
+owned path. Those lines may predate the installer even when the final profile hash
+matches. The name-based line editor is disabled.
+
+Recorded shell mutations/deletions without a before-image remain unresolved.
+Uninstall, its dry-run, forced reinstall, repeated install and tracked update exit
+5 before cleanup or replacement execution; profiles, executables and records are
+preserved for manual reconciliation. `--yes` and `--force` cannot grant edit
+provenance. `inspect` marks the plan incomplete and lists `shell.blocked`, including
+missing profiles and configured direct snippet paths. Recognizing a profile path
+only authorizes refusal, never a write.
+
+Matching uses normalized recorded spellings and the declared platform table; it
+does not resolve symlink aliases. Equivalent target spellings, symlinked homes or
+profiles, and undeclared locations such as Linux `/etc/profile` or Darwin
+`~/.zshrc.d` can miss this guard and retain the existing detect-only limitations.
+Broader identity-aware scope reporting and retained receipts remain open work.
+Because backups default to off, an install that edits a declared profile will
+usually remain blocked until manual reconciliation and an explicit tracking
+discard. Repeating the installer or adding `--force` does not resolve that state.
+
+Before-images remain with the ordinary file planner's whole-file restoration
+checks. This containment does not establish attribution from a backup or implement
+precise edit reversal, three-way merging, broader per-effect authority or recovery.
+`forget` discards tracking without editing a profile or removing the executable.
+
 ## Backup privacy
 
 Backups are opt-in and have a per-file limit. Both heuristic backends and Linux

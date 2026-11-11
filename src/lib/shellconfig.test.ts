@@ -1,26 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { planShellCleanup, removeRcLines, shellConfigPaths } from "./shellconfig";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { LINUX_PLATFORM } from "./platform";
 import type { Platform } from "./platform";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { unverifiedShellEdits } from "./shellconfig";
 
-const HOME_BACKUP = process.env.HOME;
-
+const roots: string[] = [];
 afterEach(() => {
-  process.env.HOME = HOME_BACKUP;
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-
 function testHome(): string {
-  const home = mkdtempSync(join(tmpdir(), "tret-test-"));
-  process.env.HOME = home;
+  const home = mkdtempSync(join(tmpdir(), "tret-shell-policy-"));
+  roots.push(home);
   return home;
-}
-
-function sha256(text: string): string {
-  return new Bun.CryptoHasher("sha256").update(text).digest("hex");
 }
 
 function record(home: string, overrides: Partial<RecordV3> = {}): RecordV3 {
@@ -54,354 +48,56 @@ function snippetPlatform(dir: string): Platform {
   };
 }
 
-describe("shellconfig", () => {
-  test("removes the PATH line and its tool comment", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    writeFileSync(file, `\n\n# mytool\nexport PATH=${home}/.mytool/bin:$PATH\n`);
+test("final profile hashes and tool markers cannot establish edit provenance", () => {
+  const home = testHome();
+  const path = join(home, ".bashrc");
+  const target = record(home, { mutated: [{ path, installedHash: "a".repeat(64) }] });
+  expect(unverifiedShellEdits(target, LINUX_PLATFORM, home)).toEqual([path]);
+});
 
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], false);
+test("missing and deleted profiles remain unresolved without reading file content", () => {
+  const home = testHome();
+  const path = join(home, ".bashrc");
+  expect(unverifiedShellEdits(record(home, { deleted: [{ path }] }), LINUX_PLATFORM, home)).toEqual([path]);
+  expect(unverifiedShellEdits(record(home, { mutated: [{ path }] }), LINUX_PLATFORM, home)).toEqual([path]);
+});
 
-    expect(rc.cleaned).toHaveLength(2);
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe("\n\n");
+test("before-images stay with the ordinary verified file planner, never a line cleaner", () => {
+  const home = testHome();
+  const path = join(home, ".bashrc");
+  expect(unverifiedShellEdits(record(home, { mutated: [{ path, beforeBlob: "a".repeat(64) }] }), LINUX_PLATFORM, home)).toEqual(
+    [],
+  );
+});
+
+test("unrelated configs and similarly named profiles do not become shell scopes", () => {
+  const home = testHome();
+  const paths = [join(home, ".bashrc.backup"), join(home, ".config/fixture/config"), join(home, "other/.bashrc")];
+  expect(unverifiedShellEdits(record(home, { mutated: paths.map((path) => ({ path })) }), LINUX_PLATFORM, home)).toEqual([]);
+});
+
+test("configured snippet directories recognize absent direct children but not sibling or nested files", () => {
+  const home = testHome();
+  const dir = join(home, "snippets");
+  const mine = join(dir, "mine.sh");
+  const target = record(home, {
+    mutated: [{ path: mine }, { path: join(home, "snippets-other/mine.sh") }, { path: join(dir, "nested/mine.sh") }],
   });
-
-  test("leaves other tools' lines and shared PATH entries alone", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const before = "export PATH=$HOME/.local/bin:$PATH\n# other\ncd /Users/johnny/.mytool\n";
-
-    writeFileSync(file, before);
-
-    const rc = removeRcLines("mytool", ["/Users/johnny/.local/bin/mytool"], false);
-
-    expect(rc.cleaned).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(before);
-  });
-
-  test("dry run reports lines without writing", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const before = `export PATH=${home}/.mytool/bin:$PATH\n`;
-
-    writeFileSync(file, before);
-
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], true);
-
-    expect(rc.cleaned).toHaveLength(1);
-    expect(readFileSync(file, "utf8")).toBe(before);
-  });
-
-  test("cleans every existing rc file", () => {
-    const home = testHome();
-    writeFileSync(join(home, ".zshrc"), `export PATH=${home}/.mytool/bin:$PATH\n`);
-    writeFileSync(join(home, ".bash_profile"), `export PATH=${home}/.mytool/bin:$PATH\n`);
-
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], false);
-
-    expect(rc.cleaned).toHaveLength(2);
-    expect(readFileSync(join(home, ".zshrc"), "utf8")).toBe("");
-    expect(readFileSync(join(home, ".bash_profile"), "utf8")).toBe("");
-  });
-
-  test("matches a PATH line written with $HOME or ~ instead of the expanded path", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    writeFileSync(file, `# mytool\nexport PATH="$HOME/.mytool/bin:$PATH"\nexport PATH=~/.mytool/bin:$PATH\n`);
-
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], false);
-
-    expect(rc.cleaned).toHaveLength(3);
-    expect(readFileSync(file, "utf8")).toBe("");
-  });
-
-  test("does not match a line that names a longer directory", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const before = `export PATH=$HOME/.mytool-tools/bin:$PATH\nexport PATH=${home}/.mytool2/bin:$PATH\n`;
-
-    writeFileSync(file, before);
-
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], false);
-
-    expect(rc.cleaned).toHaveLength(0);
-    expect(readFileSync(file, "utf8")).toBe(before);
-  });
-
-  test("only edits the attributed config files, leaving other matching configs intact", () => {
-    const home = testHome();
-    const zshrc = join(home, ".zshrc");
-    const bash = join(home, ".bash_profile");
-    const line = `export PATH=${home}/.mytool/bin:$PATH\n`;
-    writeFileSync(zshrc, line);
-    writeFileSync(bash, line);
-
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], false, [zshrc]);
-
-    expect(rc.cleaned.map((cleaned) => cleaned.file)).toEqual([zshrc]);
-    expect(readFileSync(zshrc, "utf8")).toBe("");
-    expect(readFileSync(bash, "utf8")).toBe(line);
-  });
-
-  test("keeps a line the user edited to point elsewhere", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const userLine = `export PATH=${home}/.mytool-custom/bin:$PATH\n`;
-    writeFileSync(file, userLine);
-
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], false);
-
-    expect(rc.cleaned).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(userLine);
-  });
-
-  test("cleans the fish config from the Linux table", () => {
-    const home = testHome();
-    mkdirSync(join(home, ".config/fish"), { recursive: true });
-    const fish = join(home, ".config/fish/config.fish");
-    writeFileSync(fish, `set -gx PATH ${home}/.mytool/bin $PATH\n`);
-
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], false, [fish], LINUX_PLATFORM);
-
-    expect(rc.cleaned.map((cleaned) => cleaned.file)).toEqual([fish]);
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(fish, "utf8")).toBe("");
-  });
-
-  test("cleans a marked shared PATH line and leaves the identical unmarked line alone", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const marked = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
-    const unmarked = `export PATH="$HOME/.local/bin:$PATH"\n`;
-    writeFileSync(file, marked + unmarked);
-
-    const rc = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM, new Map([[file, sha256(marked + unmarked)]]));
-
-    expect(rc.cleaned.map((cleaned) => cleaned.line)).toEqual([marked.trimEnd()]);
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(unmarked);
-  });
-
-  test("uses the tool comment directly above a shared PATH line as the marker", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const content = `# mytool\nexport PATH="$HOME/.local/bin:$PATH"\n`;
-    writeFileSync(file, content);
-
-    const rc = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM, new Map([[file, sha256(content)]]));
-
-    expect(rc.cleaned).toHaveLength(2);
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe("");
-  });
-
-  test.each([true, false])("cleans the complete Codex installer block (dryRun=%s)", (dryRun) => {
-    const home = testHome();
-    const file = join(home, ".bash_profile");
-    // Upstream block from the 2026-11-09 black-box report, with its absolute HOME normalized.
-    const block = readFileSync(join(import.meta.dir, "fixtures/codex.bash_profile"), "utf8").replaceAll("$HOME", home);
-    const before = '# black-box sentinel bash profile\n\nexport PATH="$HOME/.local/bin:$PATH"\n';
-    const after = "# Codex notes: keep this unrelated comment\nexport PROFILE_SENTINEL=keep\n";
-    const content = before + block + after;
-    writeFileSync(file, content);
-
-    const rc = removeRcLines("codex", [], dryRun, [file], LINUX_PLATFORM, new Map([[file, sha256(content)]]));
-
-    expect(rc.cleaned.map((cleaned) => cleaned.line).sort()).toEqual(block.trimEnd().split("\n").sort());
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(dryRun ? content : before + after);
-  });
-
-  test.each([
-    ["# >>> Codex installer >>>", "# <<< other installer <<<"],
-    ["# >>> Codex installer >>>", "# Codex notes: keep this unrelated comment"],
-    ["# Codex", "# <<< Codex installer <<<"],
-  ])("keeps an unmatched comment after a removed PATH line (%s / %s)", (opening, closing) => {
-    const home = testHome();
-    const file = join(home, ".bash_profile");
-    const content = `${opening}\nexport PATH="$HOME/.local/bin:$PATH"\n${closing}\n`;
-    writeFileSync(file, content);
-
-    const rc = removeRcLines("codex", [], false, [file], LINUX_PLATFORM, new Map([[file, sha256(content)]]));
-
-    expect(rc.cleaned).toHaveLength(2);
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(`${closing}\n`);
-  });
-
-  test("leaves another tool's marked line and a line pointing elsewhere alone", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const content =
-      `export PATH="$HOME/.local/bin:$PATH" # othertool\n` +
-      `export PATH="$HOME/.other/bin:$PATH" # mytool\n` +
-      `export PATH="/usr/local/go/bin:$PATH" # mytool\n`;
-    writeFileSync(file, content);
-
-    const rc = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM, new Map([[file, sha256(content)]]));
-
-    expect(rc.cleaned).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(content);
-  });
-
-  test("does not clean a shared PATH line in an unattributed config", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const content = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
-    writeFileSync(file, content);
-
-    const rc = removeRcLines("mytool", [], false, undefined, LINUX_PLATFORM, new Map([[file, sha256(content)]]));
-
-    expect(rc.cleaned).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(content);
-  });
-
-  test("does not clean a shared PATH line without the recorded installed hash", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const content = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
-    writeFileSync(file, content);
-
-    const rc = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM);
-
-    expect(rc.cleaned).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(content);
-  });
-
-  test("does not clean a shared PATH line after the config changes between preview and apply", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const installed = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
-    writeFileSync(file, installed);
-    const hashes = new Map([[file, sha256(installed)]]);
-
-    const preview = removeRcLines("mytool", [], true, [file], LINUX_PLATFORM, hashes);
-    expect(preview.cleaned).toHaveLength(1);
-
-    const edited = installed + "# edited by the user\n";
-    writeFileSync(file, edited);
-    const applied = removeRcLines("mytool", [], false, [file], LINUX_PLATFORM, hashes);
-
-    expect(applied.cleaned).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(edited);
-  });
-
-  test("does not clean an owned PATH line after the config changes between preview and apply", () => {
-    const home = testHome();
-    const file = join(home, ".zshrc");
-    const installed = `export PATH="$HOME/.mytool/bin:$PATH"\n`;
-    writeFileSync(file, installed);
-    const shell = planShellCleanup(
-      record(home, {
-        owned: [{ path: join(home, ".mytool"), kind: "directory" }],
-        mutated: [{ path: file, installedHash: sha256(installed) }],
-      }),
-      new Set([file]),
-    );
-    expect(removeRcLines("mytool", shell.dirs, true, shell.files, undefined, shell.hashes).cleaned).toHaveLength(1);
-
-    const edited = installed + "# edited by the user\n";
-    writeFileSync(file, edited);
-    const applied = removeRcLines("mytool", shell.dirs, false, shell.files, undefined, shell.hashes);
-
-    expect(applied.cleaned).toEqual([]);
-    expect(readFileSync(file, "utf8")).toBe(edited);
-  });
-
-  test("expands a directory entry to its snippet files and never edits the directory as a file", () => {
-    const home = testHome();
-    const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
-    const mine = join(snippets, "mytool.sh");
-    const other = join(snippets, "other.sh");
-    writeFileSync(mine, `export PATH=${home}/.mytool/bin:$PATH\n`);
-    writeFileSync(other, "export PATH=/usr/local/bin:$PATH\n");
-    const platform: Platform = {
-      ...LINUX_PLATFORM,
-      shellConfigs: [{ shell: "sh", scope: "absolute", path: snippets, kind: "directory" }],
-    };
-
-    expect(shellConfigPaths(platform)).toEqual([mine, other]);
-
-    const rc = removeRcLines("mytool", [join(home, ".mytool")], false, undefined, platform);
-
-    expect(rc.cleaned.map((cleaned) => cleaned.file)).toEqual([mine]);
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(mine, "utf8")).toBe("");
-    expect(readFileSync(other, "utf8")).toBe("export PATH=/usr/local/bin:$PATH\n");
-  });
-
-  test("an unattributed snippet stays byte-for-byte unchanged even when it names an owned directory", () => {
-    const home = testHome();
-    const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
-    const unattributed = join(snippets, "other.sh");
-    const before = `export PATH=${home}/.config/bin:$PATH\n`;
-    writeFileSync(unattributed, before);
-    const platform = snippetPlatform(snippets);
-
-    // The record owns `$HOME/.config`, but never recorded this absolute snippet as mutated.
-    const shell = planShellCleanup(
-      record(home, { owned: [{ path: join(home, ".config"), kind: "directory" }] }),
-      new Set(shellConfigPaths(platform)),
-    );
-    expect(shell.files).toEqual([]);
-
-    const rc = removeRcLines("mytool", shell.dirs, false, shell.files, platform);
-
-    expect(rc.cleaned).toEqual([]);
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(unattributed, "utf8")).toBe(before);
-  });
-
-  test("cleans only an attributed snippet that still matches its recorded installed state", () => {
-    const home = testHome();
-    const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
-    const attributed = join(snippets, "mytool.sh");
-    const unattributed = join(snippets, "other.sh");
-    const content = `export PATH=${home}/.config/bin:$PATH\n`;
-    writeFileSync(attributed, content);
-    writeFileSync(unattributed, content);
-    const platform = snippetPlatform(snippets);
-
-    const shell = planShellCleanup(
-      record(home, {
-        owned: [{ path: join(home, ".config"), kind: "directory" }],
-        mutated: [{ path: attributed, installedHash: sha256(content) }],
-      }),
-      new Set(shellConfigPaths(platform)),
-    );
-    expect(shell.files).toEqual([attributed]);
-
-    const rc = removeRcLines("mytool", shell.dirs, false, shell.files, platform);
-
-    expect(rc.cleaned.map((cleaned) => cleaned.file)).toEqual([attributed]);
-    expect(rc.failed).toEqual([]);
-    expect(readFileSync(attributed, "utf8")).toBe("");
-    expect(readFileSync(unattributed, "utf8")).toBe(content);
-  });
-
-  test.skipIf(process.getuid?.() === 0)("a failed snippet write reports failed and never cleaned", () => {
-    const home = testHome();
-    const snippets = mkdtempSync(join(tmpdir(), "tret-profile-"));
-    const attributed = join(snippets, "mytool.sh");
-    const content = `export PATH=${home}/.config/bin:$PATH\n`;
-    writeFileSync(attributed, content);
-    chmodSync(attributed, 0o444);
-    const platform = snippetPlatform(snippets);
-
-    const shell = planShellCleanup(
-      record(home, {
-        owned: [{ path: join(home, ".config"), kind: "directory" }],
-        mutated: [{ path: attributed, installedHash: sha256(content) }],
-      }),
-      new Set(shellConfigPaths(platform)),
-    );
-    expect(shell.files).toEqual([attributed]);
-
-    const rc = removeRcLines("mytool", shell.dirs, false, shell.files, platform);
-
-    expect(rc.cleaned).toEqual([]);
-    expect(rc.failed).toEqual([attributed]);
-    expect(readFileSync(attributed, "utf8")).toBe(content);
-  });
+  expect(unverifiedShellEdits(target, snippetPlatform(dir), home)).toEqual([mine]);
+});
+
+test("profile matching uses the record's conservative case behavior", () => {
+  const home = testHome();
+  const path = join(home, ".BASHRC");
+  const target = record(home, { caseSensitive: false, mutated: [{ path }] });
+  expect(unverifiedShellEdits(target, LINUX_PLATFORM, home)).toEqual([path]);
+  expect(unverifiedShellEdits({ ...target, caseSensitive: true }, LINUX_PLATFORM, home)).toEqual([]);
+});
+
+test("unresolved shell paths are unique and stable across mutation/deletion evidence", () => {
+  const home = testHome();
+  const path = join(home, ".bashrc");
+  expect(unverifiedShellEdits(record(home, { mutated: [{ path }], deleted: [{ path }] }), LINUX_PLATFORM, home)).toEqual([
+    path,
+  ]);
 });

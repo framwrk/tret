@@ -16,8 +16,8 @@ import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// End-to-end cover for the uninstall record lifecycle, in a throwaway $HOME: a record whose muta-
-// tions/deletions have no before-image is detect-only and must not block completion (the churn bug),
+// End-to-end cover for the uninstall record lifecycle, in a throwaway $HOME: non-shell churn whose
+// mutations/deletions have no before-image remains detect-only; shell-provenance.test.ts covers refusals,
 // while a restorable change whose blob is gone still conflicts and keeps the record (D2/D4). `forget`
 // is the escape hatch that drops a record without touching files.
 
@@ -128,7 +128,7 @@ describe("uninstall record lifecycle", () => {
     expect(readFileSync(file, "utf8")).toBe("installed");
   });
 
-  test("shared shell config claims block cleanup even when forced", async () => {
+  test("unverified shared shell edits stay blocked even when forced", async () => {
     const home = makeHome();
     const file = join(home, ".zshrc");
     const content = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
@@ -137,20 +137,41 @@ describe("uninstall record lifecycle", () => {
     writeRecords(home, [record({ mutated: [{ path: file, installedHash: sha256(content) }] }), other]);
 
     const preview = await runCliResult(["uninstall", "mytool", "--dry-run", "--json"], home);
-    expect(preview.code).toBe(0);
-    expect(JSON.parse(preview.stdout).actions).toContainEqual({
-      action: "conflict", path: file, reason: "shared-owner",
-    });
+    expect(preview.code).toBe(5);
+    expect(JSON.parse(preview.stdout).error.code).toBe("uninstall-shell-unverified");
 
     const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
-    expect(result.code).toBe(EXIT_ERROR);
+    expect(result.code).toBe(5);
     expect(readFileSync(file, "utf8")).toBe(content);
     expect(readRecords(home).records).toHaveLength(2);
 
-    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(EXIT_ERROR);
+    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(5);
     expect(readFileSync(file, "utf8")).toBe(content);
     expect(readRecords(home).records).toHaveLength(2);
     expect(readRecords(home).records).toContainEqual(other);
+  });
+
+  test("a shared shell profile with a before-image still conflicts when forced", async () => {
+    const home = makeHome();
+    const file = join(home, ".zshrc");
+    const content = "# installed profile\n";
+    const before = "# original profile\n";
+    const blob = sha256(before);
+    mkdirSync(join(home, ".tret/objects"), { recursive: true });
+    writeFileSync(join(home, ".tret/objects", blob), before);
+    writeFileSync(file, content);
+    const other = record({ id: "rec-2", name: "other", mutated: [{ path: file }] });
+    writeRecords(home, [record({ mutated: [{ path: file, installedHash: sha256(content), beforeBlob: blob }] }), other]);
+    const preview = await runCliResult(["uninstall", "mytool", "--dry-run", "--json"], home);
+    expect(preview.code).toBe(0);
+    expect(JSON.parse(preview.stdout).actions).toContainEqual({ action: "conflict", path: file, reason: "shared-owner" });
+    const result = await runCliResult(["uninstall", "mytool", "--yes", "--force", "--json"], home);
+    expect(result.code).toBe(EXIT_ERROR);
+    expect(JSON.parse(result.stdout).error.code).toBe("uninstall-incomplete");
+    expect(readFileSync(file, "utf8")).toBe(content);
+    expect(readRecords(home).records).toHaveLength(2);
+    expect(readRecords(home).records).toContainEqual(other);
+    expect(readFileSync(join(home, ".tret/objects", blob), "utf8")).toBe(before);
   });
 
   test("detect-only churn is reported but does not block; owned paths go and the record drops", async () => {
@@ -183,7 +204,7 @@ describe("uninstall record lifecycle", () => {
     expect(readRecords(home).records).toHaveLength(0);
   });
 
-  test("cleans a marked shared PATH line and drops the record", async () => {
+  test("retains marked shared PATH lines without edit provenance", async () => {
     const home = makeHome();
     const zshrc = join(home, ".zshrc");
     const binary = join(home, ".local", "bin", "mytool");
@@ -201,15 +222,16 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const result = await runCliResult(["uninstall", "mytool", "--yes"], home);
-    expect(result.code).toBe(0);
+    expect(result.code).toBe(5);
     const output = result.stdout + result.stderr;
-    expect(output.match(/would clean .*\.zshrc/g)).toHaveLength(1);
-    expect(output.match(/cleaned .*\.zshrc/g)).toHaveLength(1);
-    expect(readFileSync(zshrc, "utf8")).toBe("");
-    expect(readRecords(home).records).toHaveLength(0);
+    expect(output).toContain("manual reconciliation");
+    expect(output).not.toContain("would clean");
+    expect(readFileSync(zshrc, "utf8")).toBe(content);
+    expect(readFileSync(binary, "utf8")).toBe("installed");
+    expect(readRecords(home).records).toHaveLength(1);
   });
 
-  test("reports an unmarked shared PATH line as detect-only once", async () => {
+  test("keeps unmarked shared PATH changes unresolved", async () => {
     const home = makeHome();
     const zshrc = join(home, ".zshrc");
     const content = `export PATH="$HOME/.local/bin:$PATH"\n`;
@@ -218,14 +240,14 @@ describe("uninstall record lifecycle", () => {
     writeRecords(home, [record({ mutated: [{ path: zshrc, installedHash: sha256(content) }] })]);
 
     const result = await runCliResult(["uninstall", "mytool", "--yes"], home);
-    expect(result.code).toBe(0);
+    expect(result.code).toBe(5);
     const output = result.stdout + result.stderr;
-    expect(output.split("\n").filter((line) => line.includes(`detected ${zshrc}`))).toHaveLength(1);
+    expect(output).toContain("manual reconciliation");
     expect(readFileSync(zshrc, "utf8")).toBe(content);
-    expect(readRecords(home).records).toHaveLength(0);
+    expect(readRecords(home).records).toHaveLength(1);
   });
 
-  test("removes the complete Codex installer block without backups and preserves unrelated lines", async () => {
+  test("preserves a whole installer-like shell block without before-state provenance", async () => {
     const home = makeHome();
     const profile = join(home, ".bash_profile");
     const binary = join(home, ".local", "bin", "codex");
@@ -246,19 +268,19 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const preview = await runCliResult(["uninstall", "codex", "--dry-run"], home);
-    expect(preview.code).toBe(0);
+    expect(preview.code).toBe(5);
     const output = preview.stdout + preview.stderr;
-    for (const line of block.trimEnd().split("\n")) expect(output).toContain(`would clean ${profile}: ${line}`);
+    expect(output).toContain("manual reconciliation");
     expect(readFileSync(profile, "utf8")).toBe(content);
     expect(readFileSync(binary, "utf8")).toBe("installed");
     expect(readRecords(home).records).toHaveLength(1);
 
     const result = await runCliResult(["uninstall", "codex", "--yes", "--json"], home);
-    expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout).ok).toBe(true);
-    expect(readFileSync(profile, "utf8")).toBe(before + after);
-    expect(existsSync(binary)).toBe(false);
-    expect(readRecords(home).records).toHaveLength(0);
+    expect(result.code).toBe(5);
+    expect(JSON.parse(result.stdout).ok).toBe(false);
+    expect(readFileSync(profile, "utf8")).toBe(content);
+    expect(existsSync(binary)).toBe(true);
+    expect(readRecords(home).records).toHaveLength(1);
   });
 
   test("restores the whole shell config when a before-image exists", async () => {

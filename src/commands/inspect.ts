@@ -19,6 +19,7 @@ import { fail } from "../lib/failure";
 import { formatWindow } from "../lib/session";
 import { log } from "../lib/utilities";
 import { ownershipConfidence } from "../lib/ownership";
+import { unverifiedShellEdits } from "../lib/shellconfig";
 
 /** One owned path and what the on-disk state says about it. */
 export type InspectOwned = {
@@ -70,6 +71,7 @@ export type InspectReport = {
   actions: InspectAction[];
   requiresSudo: boolean;
   incomplete: boolean;
+  shell: { blocked: string[] };
   delegated: {
     managedBy?: { manager: string; package: string };
     managedInstall?: { kind: string; layout: string; root: string };
@@ -112,6 +114,7 @@ export async function buildInspectReport(
     (conflict) => formatDelegatedRemovalConflict(conflict),
   );
   const blocked = delegatedRemovalBlocks(target);
+  const blockedShell = unverifiedShellEdits(target.record, undefined, home);
 
   const owned: InspectOwned[] = target.record.owned.map((entry) => {
     const verification = inspect(entry.path);
@@ -184,7 +187,8 @@ export async function buildInspectReport(
     deleted,
     actions,
     requiresSudo: plan.requiresSudo,
-    incomplete: plan.incomplete || conflicts.length > 0 || blocked.length > 0,
+    incomplete: plan.incomplete || conflicts.length > 0 || blocked.length > 0 || blockedShell.length > 0,
+    shell: { blocked: blockedShell },
     delegated: {
       ...(target.managedBy === undefined
         ? {}
@@ -240,7 +244,11 @@ export function formatInspect(report: InspectReport): string[] {
   }
 
   lines.push("what uninstall would do");
-  if (report.actions.length === 0 && report.delegated.managedBy === undefined && report.delegated.managedInstall === undefined) {
+  if (report.shell.blocked.length > 0) {
+    for (const path of report.shell.blocked) lines.push(`\tblocked shell edit: ${path} (no supported edit provenance or before-image; manual reconciliation required)`);
+    for (const reason of report.delegated.blocked) lines.push(`\tblocked: ${reason}`);
+    lines.push("\tno cleanup actions will be applied");
+  } else if (report.actions.length === 0 && report.delegated.managedBy === undefined && report.delegated.managedInstall === undefined) {
     lines.push(`\tnothing tracked to remove for ${report.name}`);
   } else if (report.delegated.blocked.length > 0) {
     for (const reason of report.delegated.blocked) lines.push(`\tblocked: ${reason}`);
