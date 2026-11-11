@@ -95,7 +95,7 @@ describe("install --backup -> uninstall restores", () => {
     seedHome(home);
     const server = serve(INSTALL_SCRIPT);
     try {
-      expect(await runCli(["install", server.url, "--backup"], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--backup"], home)).toBe(0);
 
       const record = findRecord(readStore(home), "mytool");
       const kept = record.mutated.find((entry) => entry.path === keepPath(home));
@@ -134,7 +134,7 @@ describe("install --backup -> uninstall restores", () => {
     seedHome(home);
     const server = serve(INSTALL_SCRIPT);
     try {
-      expect(await runCli(["install", server.url, "--backup", "--backup-size", "15"], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--backup", "--backup-size", "15"], home)).toBe(0);
 
       const record = findRecord(readStore(home), "mytool");
       const oversized = record.mutated.find((entry) => entry.path === keepPath(home));
@@ -156,7 +156,7 @@ describe("install --backup -> uninstall restores", () => {
     seedHome(home);
     const server = serve(INSTALL_SCRIPT);
     try {
-      expect(await runCli(["install", server.url], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
       const record = findRecord(readStore(home), "mytool");
       expect(record.mutated.find((entry) => entry.path === keepPath(home))?.beforeBlob).toBeUndefined();
@@ -183,7 +183,7 @@ describe("install --backup -> uninstall restores", () => {
     seedHome(home);
     const server = serve(INSTALL_SCRIPT);
     try {
-      expect(await runCli(["install", server.url, "--backup"], home)).toBe(0);
+      expect(await runCli(["install", "--yes", server.url, "--backup"], home)).toBe(0);
       writeFileSync(keepPath(home), "user-edit\n");
 
       expect(await runCli(["uninstall", "mytool", "--yes"], home)).not.toBe(0);

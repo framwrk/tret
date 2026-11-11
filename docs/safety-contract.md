@@ -5,6 +5,31 @@ prevent malicious activity, or establish machine-wide reversibility. Installers
 run with the caller's privileges; filesystem capture does not cover external
 services, credentials, running services, or every privileged effect.
 
+## Execution consent and command validation
+
+An installer or tracked-tool update requires `--yes` when stdin is not a terminal
+or JSON output is selected. Missing noninteractive consent exits 5 before fetching
+the script or removing the previous install. Interactive installs show the script identity and preview
+before asking for consent. Bare `tret update` is an explicit self-update request;
+a malformed flag or extra selector must never select that path.
+
+Ordinary URL/selector invocations reject unknown commands/options, duplicate
+single-value options, and extra selectors with exit 2 before dispatch. Options can
+appear before or after a selector.
+Only install accepts `--` followed by arbitrary script arguments; those arguments
+cannot supply Tret's execution consent or select its JSON mode. Pasted curl/wget
+commands remain inputs from which Tret extracts a URL, not commands it executes.
+When the first non-value argument is `curl` or `wget`, downloader options and pipe
+text stay opaque; known Tret options still apply. Put Tret options before the paste
+to keep the boundary clear. Pasted `sudo` text does not elevate Tret or execute a
+privileged shell.
+JSON help and version output each contain one document; neither checks for updates.
+
+Execution consent grants permission to run the selected script. It does not prove
+that subsequently observed paths belong to the installer or approve broader
+cleanup. Separate weaker-capture consent and per-path cleanup authority remain
+open implementation work.
+
 ## Classification
 
 On Linux, requesting `O_CREAT` does not establish that a file was created: it may

@@ -494,7 +494,7 @@ async function scenarioPathLineCleanup(binary: string): Promise<void> {
     // only the marked line may be cleaned.
     mkdirSync(join(marked.home, ".local", "bin"), { recursive: true });
     writeFileSync(join(marked.home, ".bashrc"), "initial\n");
-    expectSuccess(await runTret(marked.home, ["install", url], binary), "install pathfixture");
+    expectSuccess(await runTret(marked.home, ["install", "--yes", url], binary), "install pathfixture");
 
     const bashrc = join(marked.home, ".bashrc");
     const record = readRecords(marked.home)[0];
@@ -528,7 +528,7 @@ async function scenarioPathLineCleanup(binary: string): Promise<void> {
     const url = detectServer.add("/install.sh", UNMARKED_PATH_INSTALLER);
     mkdirSync(join(detect.home, ".local", "bin"), { recursive: true });
     writeFileSync(join(detect.home, ".bashrc"), "initial\n");
-    expectSuccess(await runTret(detect.home, ["install", url], binary), "install unmarked");
+    expectSuccess(await runTret(detect.home, ["install", "--yes", url], binary), "install unmarked");
 
     const bashrc = join(detect.home, ".bashrc");
     const result = await runTret(detect.home, ["uninstall", "unmarked", "--yes"], binary);
@@ -549,7 +549,7 @@ async function scenarioNoCaptureUninstall(binary: string): Promise<void> {
   const server = FixtureServer.start();
   try {
     const url = server.add("/install.sh", NO_CAPTURE_INSTALLER);
-    expectSuccess(await runTret(ctx.home, ["install", url, "--no-capture"], binary), "install --no-capture");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", url, "--no-capture"], binary), "install --no-capture");
 
     const executable = join(ctx.home, ".local", "bin", "nct");
     const link = join(ctx.home, ".local", "bin", "nct-link");
@@ -584,7 +584,7 @@ async function scenarioJsonBeforeCommand(binary: string): Promise<void> {
   const server = FixtureServer.start();
   try {
     const url = server.add("/install.sh", PROBE_INSTALLER);
-    expectSuccess(await runTret(ctx.home, ["install", url], binary), "install probe");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", url], binary), "install probe");
 
     const listed = await runTret(ctx.home, ["--json", "list"], binary);
     expectSuccess(listed, "--json list");
@@ -626,7 +626,7 @@ async function scenarioTraceYama(binary: string): Promise<void> {
   const server = FixtureServer.start();
   try {
     const url = server.add("/install.sh", TRACED_INSTALLER);
-    expectSuccess(await runTret(ctx.home, ["install", url], binary), "install traced");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", url], binary), "install traced");
 
     const traced = await runTret(ctx.home, ["trace", "traced", "--yes", "--json"], binary);
     expectSuccess(traced, "trace traced");
@@ -657,8 +657,8 @@ async function scenarioSharedParentReplacement(binary: string): Promise<void> {
   try {
     const urlA = server.add("/a.sh", SHARED_PARENT_A);
     const urlB = server.add("/b.sh", SHARED_PARENT_B);
-    expectSuccess(await runTret(ctx.home, ["install", urlA], binary), "install shared-a");
-    expectSuccess(await runTret(ctx.home, ["install", urlB], binary), "install shared-b");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", urlA], binary), "install shared-a");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", urlB], binary), "install shared-b");
 
     const sharedParent = join(ctx.home, ".sharedparent");
     const aFile = join(sharedParent, "a.conf");
@@ -671,7 +671,7 @@ async function scenarioSharedParentReplacement(binary: string): Promise<void> {
       "shared-a did not own the shared parent directory",
     );
 
-    expectSuccess(await runTret(ctx.home, ["install", urlA, "--force"], binary), "force reinstall shared-a");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", urlA, "--force"], binary), "force reinstall shared-a");
 
     assertEqual(readFileSync(aFile, "utf8"), "a\n", "shared-a file after forced replacement");
     assertEqual(readFileSync(bFile, "utf8"), "b\n", "shared-b file after forced replacement");
@@ -726,7 +726,7 @@ async function scenarioForcedShellCleanup(binary: string): Promise<void> {
       }),
     ]);
 
-    const replaced = await runTret(ctx.home, ["install", url, "--force"], binary);
+    const replaced = await runTret(ctx.home, ["install", "--yes", url, "--force"], binary);
     expectSuccess(replaced, "forced reinstall with unattributed HOME config");
     assertEqual(readFileSync(bashrc, "utf8"), "", "attributed ~/.bashrc after forced reinstall");
     assertEqual(readFileSync(profile, "utf8"), homePath, "unattributed ~/.profile after forced reinstall");
@@ -785,6 +785,7 @@ async function scenarioForcedShellCleanup(binary: string): Promise<void> {
           ROOT,
           binary,
           "install",
+          "--yes",
           url,
           "--force",
         ],
@@ -826,7 +827,7 @@ async function scenarioBareUpdateFlags(binary: string): Promise<void> {
   const server = FixtureServer.start();
   try {
     const url = server.add("/install.sh", PROBE_INSTALLER);
-    expectSuccess(await runTret(ctx.home, ["install", url], binary), "install probe");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", url], binary), "install probe");
     const before = readRecords(ctx.home)[0];
     assert(before !== undefined, "probe install left no record");
 
@@ -882,7 +883,7 @@ async function scenarioNoExecutablePartialRecord(binary: string): Promise<void> 
   const server = FixtureServer.start();
   try {
     const url = server.add("/install.sh", NO_EXECUTABLE_INSTALLER);
-    const installed = await runTret(ctx.home, ["install", url, "--name", "noexec-tool"], binary);
+    const installed = await runTret(ctx.home, ["install", "--yes", url, "--name", "noexec-tool"], binary);
     expectExit(installed, 1, "no-executable install");
 
     const config = join(ctx.home, ".config", "noexec", "config");
@@ -933,8 +934,8 @@ async function scenarioBackupBlobGc(binary: string): Promise<void> {
     mkdirSync(join(ctx.home, ".config", "gconetool"), { recursive: true });
     writeFileSync(join(ctx.home, ".config", "gconetool", "gone.conf"), "gone-original\n");
 
-    expectSuccess(await runTret(ctx.home, ["install", keepUrl, "--backup"], binary), "install gctool-keep --backup");
-    expectSuccess(await runTret(ctx.home, ["install", goneUrl, "--backup"], binary), "install gctool-gone --backup");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", keepUrl, "--backup"], binary), "install gctool-keep --backup");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", goneUrl, "--backup"], binary), "install gctool-gone --backup");
 
     const records = readRecords(ctx.home);
     const keep = records.find((record) => record.name === "gctool-keep");
@@ -960,7 +961,7 @@ async function scenarioBackupBlobGc(binary: string): Promise<void> {
 
     // A later record mutation runs GC. The keep record still references its blob; the aged orphan
     // from the uninstalled tool must be reclaimed.
-    expectSuccess(await runTret(ctx.home, ["install", triggerUrl], binary), "install gctrigger");
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", triggerUrl], binary), "install gctrigger");
     expectSuccess(await runTret(ctx.home, ["uninstall", "gctrigger", "--yes"], binary), "uninstall gctrigger");
 
     assert(!existsSync(goneObject), "aged unreferenced blob was not reclaimed after a later command");
@@ -980,9 +981,6 @@ async function scenarioInformationalOutput(binary: string): Promise<void> {
   const ctx = contextFor("info-output");
   const server = FixtureServer.start();
   try {
-    const url = server.add("/install.sh", PROBE_INSTALLER);
-    expectSuccess(await runTret(ctx.home, ["install", url], binary), "install probe");
-
     const version = await runTret(ctx.home, ["--version"], binary);
     expectSuccess(version, "--version");
     assert(version.stdout.trim() !== "", "--version wrote nothing to stdout");
@@ -992,6 +990,14 @@ async function scenarioInformationalOutput(binary: string): Promise<void> {
     expectSuccess(help, "--help");
     includes(help.stdout, "Usage", "--help stdout");
     includes(help.stdout, "Commands", "--help stdout");
+
+    const jsonHelp = await runTret(ctx.home, ["--json", "help"], binary);
+    expectSuccess(jsonHelp, "--json help");
+    assertEqual(parseJson(jsonHelp.stdout, "--json help").command, "help", "JSON help command");
+    assert(!existsSync(join(ctx.home, ".tret", "update-check.json")), "help/version created an update-check cache");
+
+    const url = server.add("/install.sh", PROBE_INSTALLER);
+    expectSuccess(await runTret(ctx.home, ["install", "--yes", url], binary), "install probe");
 
     const listed = await runTret(ctx.home, ["list"], binary);
     expectSuccess(listed, "list");

@@ -1,15 +1,16 @@
 import { DEFAULT_BACKUP_POLICY, DEFAULT_BACKUP_SIZE_LIMIT_BYTES } from "./src/lib/store";
 import { EXIT_USAGE, IS_DEV, SCRIPT_NAME, VERSION } from "./src/constants";
+import { emitJson, enableJsonMode } from "./src/lib/json-output";
 import { extractBackupSizeFlag, extractNameFlag, install, parseObserveFlags } from "./src/commands/install";
-import { info, log } from "./src/lib/utilities";
+import { log, info as printInfo } from "./src/lib/utilities";
 import { openRunLog, watchRunLog } from "./src/lib/runlog";
 import { checkForUpdate } from "./src/lib/updatecheck";
-import { enableJsonMode } from "./src/lib/json-output";
 import { fail } from "./src/lib/failure";
 import { find } from "./src/commands/find";
 import { forget } from "./src/commands/forget";
 import { inspect } from "./src/commands/inspect";
 import { list } from "./src/commands/list";
+import { normalizeCliArgs } from "./src/lib/cli-args";
 import { trace } from "./src/commands/trace";
 import { unclaim } from "./src/commands/unclaim";
 import { uninstall } from "./src/commands/uninstall";
@@ -23,27 +24,34 @@ const argv = process.argv.slice(2);
 const separator = argv.indexOf("--");
 const preSeparator = separator === -1 ? argv : argv.slice(0, separator);
 const jsonMode = preSeparator.includes("--json");
-const ownArgs = preSeparator.filter((arg) => arg !== "--time" && arg !== "--json");
+const rawOwnArgs = preSeparator.filter((arg) => arg !== "--time" && arg !== "--json");
 const scriptArgs = separator === -1 ? [] : argv.slice(separator + 1);
-
-const command = ownArgs[0];
 
 // JSON mode is decided before anything prints, so a human line can never reach stdout in a `--json` run.
 if (jsonMode) enableJsonMode();
+const parsed = normalizeCliArgs(rawOwnArgs, separator !== -1);
+if ("error" in parsed) {
+  openRunLog(rawOwnArgs);
+  watchRunLog();
+  fail("cli-usage", parsed.error, EXIT_USAGE);
+}
+const ownArgs = parsed.args;
+const command = ownArgs[0];
 
-const timed = IS_DEV && process.argv.includes("--time");
+const timed = IS_DEV && preSeparator.includes("--time");
 
 const start = Date.now();
 
 // `--version` prints the release tag injected at build time and stops there — no logging or
 // update check, so a compiled run answers instantly even when offline or stdout is piped.
-if (ownArgs.includes("--version")) {
-  info(`${VERSION}`);
+if (command === "--version") {
+  if (jsonMode) emitJson({ ok: true, command: "version", version: VERSION });
+  else printInfo(`${VERSION}`);
   process.exit(0);
 }
 
 // Each run writes its own log under ~/.tret/logs; a failure or crash points the user at that file.
-openRunLog(ownArgs);
+openRunLog(rawOwnArgs);
 watchRunLog();
 
 switch (command) {
@@ -134,7 +142,7 @@ switch (command) {
 // Every compiled run checks once a day for a newer release and prints a notice when one
 // exists; the check caches its result, so most runs only read it. Dev runs skip the check,
 // and `update` replaces the binary itself, so checking right after would be redundant.
-if (!IS_DEV && command !== "update") {
+if (!IS_DEV && command !== "update" && command !== "help" && command !== "--help" && command !== "-h") {
   await checkForUpdate();
 }
 
@@ -145,6 +153,10 @@ if (timed) {
 }
 
 function help(): void {
+  const lines: string[] = [];
+  const info = (line: string): void => {
+    lines.push(line);
+  };
   info(`Usage`);
   info(`\t${SCRIPT_NAME.toLowerCase()} [--version] [--json] <command> [arguments]`);
   info("");
@@ -203,9 +215,9 @@ function help(): void {
   info(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);
   info(`\t--name <name> install: record the tool under this display name instead of the installed command's basename`);
   info(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
-  info(`\t--yes         install: skip the installer confirmation prompt`);
+  info(`\t--yes         install: required when noninteractive; otherwise skip the installer confirmation`);
   info(`\t              uninstall, trace, update <tool>: skip the confirmation prompt`);
-  info(`\t              uninstall and trace require --yes in JSON mode; install and update <tool> never prompt there`);
+  info(`\t              install, uninstall, trace, and update <tool> require --yes in JSON mode`);
   info(`\t              Note: with backups off, mutations/deletions are detect-only and never block uninstall;`);
   info(`\t              a record with nothing actionable left is dropped, or remove it with tret forget <tool>`);
   info(`\t              Shell PATH lines are cleaned only in an attributed config; a shared entry such as ~/.local/bin`);
@@ -225,7 +237,7 @@ function help(): void {
   info(`\t${SCRIPT_NAME.toLowerCase()} install curl -fsSL https://example.com/install.sh | bash`);
   info(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --name opencode -- --skip-browser`);
   info(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --backup --backup-size 524288`);
-  info(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --json`);
+  info(`\t${SCRIPT_NAME.toLowerCase()} install https://example.com/install.sh --yes --json`);
   info(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode`);
   info(`\t${SCRIPT_NAME.toLowerCase()} inspect opencode --json`);
   info(`\t${SCRIPT_NAME.toLowerCase()} trace opencode`);
@@ -238,4 +250,6 @@ function help(): void {
   info(`\t${SCRIPT_NAME.toLowerCase()} list`);
   info(`\t${SCRIPT_NAME.toLowerCase()} update opencode`);
   info(`\t${SCRIPT_NAME.toLowerCase()} update`);
+  if (jsonMode) emitJson({ ok: true, command: "help", usage: lines.join("\n") });
+  else for (const line of lines) printInfo(line);
 }
