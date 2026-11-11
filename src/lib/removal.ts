@@ -259,22 +259,17 @@ function message(error: unknown): string {
 }
 
 /**
- * Drops everything a run actually removed or restored, plus shell configs it cleaned, leaving only
+ * Drops everything a run actually removed or restored, leaving only
  * the entries a retry still needs. Keeping the survivors (rather than the full record) means a
  * restored or removed path is never re-verified on the next run and reported as a false conflict.
  */
-export function reduceRecordForRetry(
-  record: RecordV3,
-  result: ApplyUninstallResult,
-  cleanedShell: Iterable<AbsolutePath> = [],
-): RecordV3 {
+export function reduceRecordForRetry(record: RecordV3, result: ApplyUninstallResult): RecordV3 {
   const removed = new Set(result.removed);
   const restored = new Set(result.restored);
-  const cleaned = new Set(cleanedShell);
   return {
     ...record,
     owned: record.owned.filter((entry) => !removed.has(entry.path)),
-    mutated: record.mutated.filter((entry) => !restored.has(entry.path) && !cleaned.has(entry.path)),
+    mutated: record.mutated.filter((entry) => !restored.has(entry.path)),
     deleted: record.deleted.filter((entry) => !restored.has(entry.path)),
   };
 }

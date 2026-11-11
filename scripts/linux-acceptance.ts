@@ -484,62 +484,41 @@ printf '#!/bin/sh\\necho gctrigger\\n' > "$HOME/.local/bin/gctrigger"
 chmod +x "$HOME/.local/bin/gctrigger"
 `;
 
-/** Shared PATH cleanup: one marked line is cleaned, the identical unmarked line survives. */
+/** Marked and unmarked shell changes stay unresolved without before-state edit provenance. */
 async function scenarioPathLineCleanup(binary: string): Promise<void> {
-  const marked = contextFor("path-marked");
-  const markedServer = FixtureServer.start();
-  try {
-    const url = markedServer.add("/install.sh", PATH_LINES_INSTALLER);
-    // `~/.local/bin` already exists, so it is a *shared* directory and not owned by this install:
-    // only the marked line may be cleaned.
-    mkdirSync(join(marked.home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(marked.home, ".bashrc"), "initial\n");
-    expectSuccess(await runTret(marked.home, ["install", "--yes", url], binary), "install pathfixture");
-
-    const bashrc = join(marked.home, ".bashrc");
-    const record = readRecords(marked.home)[0];
-    assert(record !== undefined, "pathfixture install left no record");
-    assert(
-      record.mutated.some((entry) => entry.path === bashrc && entry.installedHash !== undefined),
-      "pathfixture record did not attribute ~/.bashrc with an installed hash",
-    );
-
-    const result = await runTret(marked.home, ["uninstall", "pathfixture", "--yes"], binary);
-    expectSuccess(result, "uninstall pathfixture");
-    const remaining = readFileSync(bashrc, "utf8");
-    const markedLine = 'export PATH="$HOME/.local/bin:$PATH" # pathfixture';
-    const unmarkedLine = 'export PATH="$HOME/.local/bin:$PATH"';
-    assert(!remaining.includes(markedLine), `marked shared PATH line was not cleaned:\n${remaining}`);
-    assert(remaining.includes(unmarkedLine), `identical unmarked PATH line was removed:\n${remaining}`);
-    const cleanedLines = result.stderr.split("\n").filter((line) => line.includes(`cleaned ${bashrc}:`));
-    assertEqual(cleanedLines.length, 1, `cleaned ${bashrc} line count`);
-    includes(result.stderr, `would clean ${bashrc}:`, "uninstall preview");
-    excludes(result.stderr, `detected ${bashrc}`, "cleanup of an attributed file");
-    assertEqual(readRecords(marked.home).length, 0, "records after pathfixture uninstall");
-  } finally {
-    markedServer.stop();
-  }
-
-  // Detect-only output: an unmarked shared line is never fabricated away, and the preview/apply
-  // pair must report the unresolved file exactly once.
-  const detect = contextFor("path-detect");
-  const detectServer = FixtureServer.start();
-  try {
-    const url = detectServer.add("/install.sh", UNMARKED_PATH_INSTALLER);
-    mkdirSync(join(detect.home, ".local", "bin"), { recursive: true });
-    writeFileSync(join(detect.home, ".bashrc"), "initial\n");
-    expectSuccess(await runTret(detect.home, ["install", "--yes", url], binary), "install unmarked");
-
-    const bashrc = join(detect.home, ".bashrc");
-    const result = await runTret(detect.home, ["uninstall", "unmarked", "--yes"], binary);
-    expectSuccess(result, "uninstall unmarked");
-    const line = 'export PATH="$HOME/.local/bin:$PATH"';
-    assert(readFileSync(bashrc, "utf8").includes(line), "unmarked shared PATH line was removed");
-    const detected = result.stderr.split("\n").filter((entry) => entry.includes(`detected ${bashrc} changed during install`));
-    assertEqual(detected.length, 1, `detect-only output count for ${bashrc}`);
-    excludes(result.stderr, `cleaned ${bashrc}`, "detect-only shared line");
-  } finally {
-    detectServer.stop();
+  for (const [label, installer, name] of [
+    ["path-marked", PATH_LINES_INSTALLER, "pathfixture"],
+    ["path-detect", UNMARKED_PATH_INSTALLER, "unmarked"],
+  ] as const) {
+    const ctx = contextFor(label);
+    const server = FixtureServer.start();
+    try {
+      const url = server.add("/install.sh", installer);
+      mkdirSync(join(ctx.home, ".local", "bin"), { recursive: true });
+      const bashrc = join(ctx.home, ".bashrc");
+      writeFileSync(bashrc, '# acceptance sentinel\nexport PATH="$HOME/.local/bin:$PATH"\n');
+      expectSuccess(await runTret(ctx.home, ["install", "--yes", url], binary), `install ${name}`);
+      const record = readRecords(ctx.home)[0];
+      assert(record !== undefined, `${name} install left no record`);
+      assert(record.mutated.some((entry) => entry.path === bashrc && entry.installedHash !== undefined), `${name} omitted profile evidence`);
+      const profileBefore = readFileSync(bashrc, "utf8");
+      const recordsBefore = readFileSync(join(ctx.home, ".tret", "records.json"), "utf8");
+      const executableBefore = readFileSync(record.executable, "utf8");
+      for (const flags of [["--dry-run"], ["--yes"], ["--yes", "--force"]]) {
+        const result = await runTret(ctx.home, ["uninstall", name, ...flags, "--json"], binary);
+        expectExit(result, 5, `${name} unsupported shell cleanup`);
+        assertEqual((parseJson(result.stdout, "shell refusal").error as { code: string }).code, "uninstall-shell-unverified", "shell refusal code");
+        assertEqual(readFileSync(bashrc, "utf8"), profileBefore, `${name} profile bytes`);
+        assertEqual(readFileSync(join(ctx.home, ".tret", "records.json"), "utf8"), recordsBefore, `${name} record bytes`);
+        assertEqual(readFileSync(record.executable, "utf8"), executableBefore, `${name} executable bytes`);
+      }
+      const inspection = await runTret(ctx.home, ["inspect", name, "--json"], binary);
+      expectSuccess(inspection, `inspect ${name}`);
+      const report = parseJson(inspection.stdout, "shell inspection").tool as { incomplete: boolean; shell: { blocked: string[] } };
+      assert(report.incomplete && report.shell.blocked.includes(bashrc), `${name} did not expose its unresolved shell scope`);
+    } finally {
+      server.stop();
+    }
   }
 }
 
@@ -700,7 +679,7 @@ async function scenarioSharedParentReplacement(binary: string): Promise<void> {
   }
 }
 
-/** Forced reinstall must not touch an unattributed shell config, including `/etc/profile.d`. */
+/** Unsupported shell edits block replacement without touching attributed or unrelated profiles. */
 async function scenarioForcedShellCleanup(binary: string): Promise<void> {
   const ctx = contextFor("forced-shell");
   const server = FixtureServer.start();
@@ -726,11 +705,13 @@ async function scenarioForcedShellCleanup(binary: string): Promise<void> {
       }),
     ]);
 
+    const originalHomeRecord = readFileSync(join(ctx.home, ".tret", "records.json"), "utf8");
     const replaced = await runTret(ctx.home, ["install", "--yes", url, "--force"], binary);
-    expectSuccess(replaced, "forced reinstall with unattributed HOME config");
-    assertEqual(readFileSync(bashrc, "utf8"), "", "attributed ~/.bashrc after forced reinstall");
+    expectExit(replaced, 5, "forced reinstall with unsupported HOME config");
+    assertEqual(readFileSync(join(ctx.home, ".tret", "records.json"), "utf8"), originalHomeRecord, "original HOME record bytes");
+    assertEqual(readFileSync(bashrc, "utf8"), homePath, "unresolved ~/.bashrc after refused reinstall");
     assertEqual(readFileSync(profile, "utf8"), homePath, "unattributed ~/.profile after forced reinstall");
-    includes(replaced.stderr, `cleaned ${bashrc}`, "forced reinstall cleaned the attributed config");
+    includes(replaced.stderr, "manual reconciliation", "forced reinstall shell refusal");
     excludes(replaced.stderr, `cleaned ${profile}`, "forced reinstall claimed an unattributed config");
     const homeRecords = readRecords(ctx.home);
     assertEqual(homeRecords.length, 1, "record count after HOME-config replacement");
@@ -772,6 +753,7 @@ async function scenarioForcedShellCleanup(binary: string): Promise<void> {
         }),
       ]);
 
+      const originalEtcRecord = readFileSync(join(etcHome, ".tret", "records.json"), "utf8");
       const inside = await runProcess(
         [
           bwrap,
@@ -791,27 +773,26 @@ async function scenarioForcedShellCleanup(binary: string): Promise<void> {
         ],
         childEnvironment(etcHome),
       );
-      expectSuccess(inside, "forced reinstall under a private /etc/profile.d mount");
+      expectExit(inside, 5, "refused reinstall under a private /etc/profile.d mount");
+      assertEqual(readFileSync(join(etcHome, ".tret", "records.json"), "utf8"), originalEtcRecord, "original snippet record bytes");
       assertEqual(
         readFileSync(attributedOnHost, "utf8"),
-        "",
-        "attributed /etc/profile.d snippet after forced reinstall",
+        snippetLine,
+        "unresolved /etc/profile.d snippet after refused reinstall",
       );
       assertEqual(
         readFileSync(unattributedOnHost, "utf8"),
         snippetLine,
         "unattributed /etc/profile.d snippet after forced reinstall",
       );
-      includes(inside.stderr, `cleaned ${attributedInSandbox}`, "forced reinstall cleaned the attributed snippet");
+      includes(inside.stderr, "manual reconciliation", "forced reinstall snippet refusal");
       excludes(inside.stderr, `cleaned ${unattributedInSandbox}`, "forced reinstall claimed the unattributed snippet");
       excludes(inside.stderr, `cleaned ${PROFILE_DIR}:`, "forced reinstall treated the snippet directory as a file");
       const etcRecords = readRecords(etcHome);
       assertEqual(etcRecords.length, 1, "record count after /etc/profile.d replacement");
       assert(
-        ![...etcRecords[0]!.owned, ...etcRecords[0]!.mutated].some((entry) =>
-          entry.path.startsWith(`${PROFILE_DIR}/`),
-        ),
-        "replacement record claimed an /etc/profile.d path it did not mutate",
+        etcRecords[0]!.mutated.some((entry) => entry.path === attributedInSandbox),
+        "refusal lost the original unresolved snippet evidence",
       );
     }
 
@@ -1018,12 +999,12 @@ async function scenarioInformationalOutput(binary: string): Promise<void> {
 /** Runs the scenarios in reported-finding order and stops at the first product failure. */
 const scenarios: { name: string; run: (binary: string) => Promise<void> }[] = [
   { name: "trace under stock Yama uses linux-heuristic exactly once", run: scenarioTraceYama },
-  { name: "forced reinstall leaves unattributed shell configs alone", run: scenarioForcedShellCleanup },
+  { name: "unsupported shell edits block replacement and preserve all profiles", run: scenarioForcedShellCleanup },
   { name: "forced replacement keeps a shared parent's other file and record", run: scenarioSharedParentReplacement },
   { name: "global --json before the command emits one document", run: scenarioJsonBeforeCommand },
   { name: "bare update flags take the self-update path, not a selector", run: scenarioBareUpdateFlags },
   { name: "--no-capture install uninstalls its additions", run: scenarioNoCaptureUninstall },
-  { name: "marked shared PATH line is cleaned once and unmarked survives", run: scenarioPathLineCleanup },
+  { name: "unproven marked and unmarked shell edits remain unresolved", run: scenarioPathLineCleanup },
   { name: "fresh no-executable install keeps a removable partial record", run: scenarioNoExecutablePartialRecord },
   { name: "aged backup blobs are reclaimed but referenced ones survive", run: scenarioBackupBlobGc },
   { name: "version, help, and piped list write to stdout", run: scenarioInformationalOutput },

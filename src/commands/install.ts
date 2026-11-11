@@ -13,7 +13,6 @@ import { describeManagedPackage, detectManagedPackage, withoutManagedGlobalPaths
 import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
-import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
 import type { CaptureBackend } from "../lib/capture/backend";
 import type { Journal } from "../lib/capture/events";
 import type { Platform } from "../lib/platform";
@@ -29,6 +28,7 @@ import { resolve } from "node:path";
 import { runInstaller } from "../lib/installer";
 import { runLogPhase } from "../lib/runlog";
 import { snapshot } from "../lib/snapshot";
+import { unverifiedShellEdits } from "../lib/shellconfig";
 
 /** Options for `install`; the command line uses the defaults, tests inject capture seams. */
 export type InstallOptions = {
@@ -197,9 +197,14 @@ export async function install(
       ? records.find((record) => record.url === url)
       : records.find((record) => record.id === options.replaceId);
   if (existing && !force) {
-    const blocked = delegatedRemovalBlocks(recordTarget(existing));
+    const target = recordTarget(existing);
+    const blocked = delegatedRemovalBlocks(target);
     if (blocked.length > 0) {
       fail("install-delegated-unverified", `${blocked.join("; ")}; previous install is unchanged`, EXIT_BLOCKED);
+    }
+    const blockedShell = unverifiedShellEdits(target.record);
+    if (blockedShell.length > 0) {
+      fail("install-shell-unverified", `shell edits have no supported edit provenance or before-image: ${blockedShell.join(", ")}; manual reconciliation is required; previous install is unchanged`, EXIT_BLOCKED);
     }
     fail(
       "install-exists",
@@ -595,17 +600,12 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     fail("install-delegated-unverified", `${blocked.join("; ")}; previous install is unchanged`, EXIT_BLOCKED);
   }
 
-  // Shell configs with no before-image are handled by the narrow line cleaner, not the file planner,
-  // so the two never double-handle a path. Only files this install recorded as mutated are eligible;
-  // a scan of every shell config because a directory is owned is exactly what forced reinstall must
-  // not do.
-  const platform = currentPlatform();
-  const shellPaths = new Set(shellConfigPaths(platform));
-  const shell = planShellCleanup(target, shellPaths, { otherRecords: records });
-  const lineClean = new Set(shell.files);
-  const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
+  const blockedShell = unverifiedShellEdits(target);
+  if (blockedShell.length > 0) {
+    fail("install-shell-unverified", `shell edits have no supported edit provenance or before-image: ${blockedShell.join(", ")}; manual reconciliation is required; previous install is unchanged`, EXIT_BLOCKED);
+  }
 
-  const plan = await planner.plan(fileRecord, {
+  const plan = await planner.plan(target, {
     otherRecords: records,
     force: true,
     // A shared parent directory another tool has since written into is a safe leftover during a
@@ -619,7 +619,7 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     log(`\t${line}`);
   }
 
-  // A conflict force cannot resolve aborts before file removal or shell cleanup.
+  // A conflict force cannot resolve aborts before removing or restoring files.
   // The previous install and its record are left exactly as they were,
   // so a replacement never deletes the old executable and then strands a parent-directory record.
   if (plan.incomplete) {
@@ -644,24 +644,9 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
     log(`\t${describeOutcome(outcome)}`);
   }
 
-  const rc = removeRcLines(target.name, shell.dirs, false, shell.files, platform, shell.hashes);
-  for (const cleaned of rc.cleaned) {
-    log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
-  }
-  for (const file of rc.failed) {
-    log(`\tcould not clean ${file}`);
-  }
-
-  // A shell config Tret could not write is incomplete work like a failed file removal: keep the
-  // affected record entries for a retry instead of reporting the reinstall as clean.
-  const incomplete = result.incomplete || rc.failed.length > 0;
+  const incomplete = result.incomplete;
   if (incomplete) {
-    const reduced = reduceRecordForRetry(
-      target,
-      result,
-      // A failed file is absent from `cleaned`, so its mutation stays in the reduced record.
-      rc.cleaned.map((cleaned) => cleaned.file),
-    );
+    const reduced = reduceRecordForRetry(target, result);
     const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
     if (remaining === 0) await storage.removeRecord(reduced.id);
     else await storage.saveRecord(reduced);

@@ -95,7 +95,7 @@ tret uninstall opencode --dry-run
 ## Uninstall
 
 - `tret uninstall <tool>` removes only files whose fingerprints still match.
-- Without backups, unchanged recorded shell profiles have attributed PATH lines and their matching installer markers removed; unrelated lines are kept.
+- Shell changes without a recorded before-image stay unresolved: uninstall, dry-run and replacement refuse with exit `5`, preserving profiles, executables and records. Tool names, PATH mentions, markers and final hashes do not prove which lines an installer added. `inspect` reports these paths under `shell.blocked`; `--force` does not bypass the refusal.
 - `tret uninstall <tool> --dry-run` prints the plan.
 - `tret uninstall <tool> --yes` skips confirmation.
 - Package-manager and recursive managed-install cleanup are blocked with exit `5`, including with `--force`. Recognition is not removal authority; `inspect` reports the unresolved package or managed root. Targets and records stay intact for manual reconciliation.
@@ -138,7 +138,7 @@ rm -rf ~/.tret
 - Capture covers bounded observation roots under `$HOME`; `--observe` and `--observe-exclude` adjust them.
 - Tool updates preserve capture enablement, backup policy and size limit, and observation additions/exclusions. Older records without saved settings use the install defaults.
 - Backups store only files at or below the per-file limit.
-- With backups off, mutations and deletions are detect-only.
+- With backups off, non-shell mutations and deletions are detect-only; declared shell changes instead block cleanup with exit `5` as described under Uninstall.
 - `complete` means the tracer observed the full process tree with no known blind spot; otherwise the window is `partial`.
 - Known Linux gaps: cross-root renames, `openat2` creates, mmap writes, xattr/ownership changes, and hard links.
 - Fanotify captures always report `partial` (observed ownership): the helper omits directory events, and full coverage has not been established by real-kernel tests.

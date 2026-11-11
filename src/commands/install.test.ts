@@ -537,7 +537,7 @@ describe("install -> list -> uninstall", () => {
   });
 
   test.skipIf(process.getuid?.() === 0)(
-    "--force reports a failed shell cleanup as failed and keeps the affected record entry",
+    "--force refuses unsupported shell cleanup before touching a read-only profile",
     async () => {
       const home = makeHome();
       const server = serve(INSTALL_SCRIPT);
@@ -549,7 +549,7 @@ describe("install -> list -> uninstall", () => {
       writeFileSync(executable, binary);
       chmodSync(executable, 0o755);
       writeFileSync(rcFile, rcContent);
-      // Readable but not writable: the line cleaner can only fail after selecting this attributed file.
+      // Readable but not writable: no attempt to edit or remove anything is authorized.
       chmodSync(rcFile, 0o444);
       writeRecords(home, [
         {
@@ -578,16 +578,17 @@ describe("install -> list -> uninstall", () => {
 
         expect(result.code).not.toBe(0);
         const output = `${result.stdout}\n${result.stderr}\n${runLogText(home)}`;
-        expect(output).toContain(`could not clean ${rcFile}`);
+        expect(result.code).toBe(5);
+        expect(output).toContain("manual reconciliation");
         expect(output).not.toContain(`cleaned ${rcFile}`);
         expect(readFileSync(rcFile, "utf8")).toBe(rcContent);
-        // The failed previous removal stops the reinstall before the replacement runs.
-        expect(existsSync(executable)).toBe(false);
+        // Preflight refusal preserves the previous executable and stops replacement execution.
+        expect(readFileSync(executable, "utf8")).toBe(binary);
 
         const records = readStore(home).records;
         expect(records).toHaveLength(1);
         expect(records[0]?.id).toBe("rec-old");
-        expect(records[0]?.owned).toEqual([]);
+        expect(records[0]?.owned).toEqual([{ path: executable, kind: "file", installedHash: sha256Text(binary) }]);
         expect(records[0]?.mutated).toEqual([{ path: rcFile, installedHash: sha256Text(rcContent) }]);
       } finally {
         await server.stop();

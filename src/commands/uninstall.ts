@@ -1,4 +1,3 @@
-import type { AbsolutePath, RecordV3 } from "../types";
 import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import { FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
@@ -8,10 +7,10 @@ import { delegatedRemovalBlocks, delegatedScopes, recordTarget } from "../lib/re
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
-import { planShellCleanup, removeRcLines, shellConfigPaths } from "../lib/shellconfig";
-import type { ShellCleanup } from "../lib/shellconfig";
+import type { RecordV3 } from "../types";
 import { fail } from "../lib/failure";
 import { runLogPhase } from "../lib/runlog";
+import { unverifiedShellEdits } from "../lib/shellconfig";
 
 /**
  * Removes a tool by planning an evidence-based uninstall, printing exactly what it will do, then
@@ -58,16 +57,13 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     fail("uninstall-delegated-unverified", `${blocked.join("; ")}; ${name} is unchanged`, EXIT_BLOCKED);
   }
 
-  // Shell configs with no before-image are handled by the narrow line cleaner, not the file planner,
-  // so the two never double-handle a path. Shell configs that do have a before-image are restored by
-  // the planner like any other mutation; a diverged config is reported as a conflict there.
-  const shellPaths = new Set(shellConfigPaths());
-  const shell = planShellCleanup(target, shellPaths, { otherRecords: records });
-  const lineClean = new Set(shell.files);
-  const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
+  const blockedShell = unverifiedShellEdits(target);
+  if (blockedShell.length > 0) {
+    fail("uninstall-shell-unverified", `shell edits have no supported edit provenance or before-image: ${blockedShell.join(", ")}; manual reconciliation is required; ${name} is unchanged`, EXIT_BLOCKED);
+  }
   const planner = new VerifiedUninstallPlanner();
   runLogPhase("plan");
-  const plan = await planner.plan(fileRecord, {
+  const plan = await planner.plan(target, {
     otherRecords: records,
     force,
   });
@@ -89,18 +85,17 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
         requiresSudo: plan.requiresSudo,
         managedPackage: null,
         managedInstall: null,
-        shell: { dirs: shell.dirs, files: shell.files },
+        shell: { dirs: [], files: [] },
       });
       return;
     }
-    printDryRun(name, plan, shell);
+    printDryRun(name, plan);
     return;
   }
 
   const hasFileWork = plan.actions.length > 0;
-  const hasShellWork = shell.files.length > 0;
 
-  if (!hasFileWork && !hasShellWork) {
+  if (!hasFileWork) {
     await storage.removeRecord(record.id);
     await collectUnreferencedBlobs();
     if (isJsonMode()) {
@@ -115,7 +110,6 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   for (const line of formatUninstallPlan(plan, "apply")) {
     log(`\t${line}`);
   }
-  const previewedShell = printUnresolvedShell(name, shell.dirs, shell.files, true, shell.hashes);
 
   if (!yes) {
     // JSON mode never prompts; a script that needs the removal to happen must pass --yes.
@@ -153,29 +147,9 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     log(`\t${describeOutcome(outcome)}`, true);
   }
 
-  const rc = removeRcLines(name, shell.dirs, false, shell.files, undefined, shell.hashes);
-  for (const cleaned of rc.cleaned) {
-    log(`\tcleaned ${cleaned.file}: ${cleaned.line.trim()}`);
-  }
-  const cleanedShell = new Set(rc.cleaned.map((cleaned) => cleaned.file));
-  const failedShell = new Set(rc.failed);
-  const unresolved = shell.files.filter(
-    (file) => !cleanedShell.has(file) && !failedShell.has(file) && !previewedShell.has(file),
-  );
-  for (const file of unresolved) {
-    // A shell config with no before-image is detect-only: report it, but never let it block (D2).
-    log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
-  }
-  for (const file of rc.failed) {
-    log(`\tcould not clean ${file}`);
-  }
-
-  // Only actionable work blocks: file conflicts/failures and a shell config Tret could not read or
-  // write. Delegated scopes were blocked before apply. Detect-only
-  // leftovers (no before-image) never keep a record alive.
-  const incomplete = result.incomplete || rc.failed.length > 0;
+  const incomplete = result.incomplete;
   if (incomplete) {
-    const reduced = reduceRecordForRetry(target, result, cleanedShell);
+    const reduced = reduceRecordForRetry(target, result);
     await persistRetry(storage, reduced);
     if (isJsonMode()) {
       emitJson({
@@ -189,7 +163,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
         },
         requiresSudo: plan.requiresSudo,
         outcomes: result.outcomes,
-        failedShell: rc.failed,
+        failedShell: [],
       });
       process.exit(EXIT_ERROR);
     }
@@ -213,7 +187,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
       id: record.id,
       removed,
       restored,
-      cleanedShell: rc.cleaned.map((cleaned) => cleaned.file),
+      cleanedShell: [],
       outcomes: result.outcomes,
     });
     return;
@@ -222,9 +196,9 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
 }
 
 /** Prints the same actions the real run will apply, with no side effects. */
-function printDryRun(name: string, plan: Awaited<ReturnType<VerifiedUninstallPlanner["plan"]>>, shell: ShellCleanup): void {
+function printDryRun(name: string, plan: Awaited<ReturnType<VerifiedUninstallPlanner["plan"]>>): void {
   const lines = formatUninstallPlan(plan, "dry-run");
-  if (lines.length === 0 && shell.files.length === 0) {
+  if (lines.length === 0) {
     log(`nothing tracked to remove for ${name}`);
     return;
   }
@@ -232,39 +206,10 @@ function printDryRun(name: string, plan: Awaited<ReturnType<VerifiedUninstallPla
   for (const line of lines) {
     log(`\t${line}`);
   }
-  printUnresolvedShell(name, shell.dirs, shell.files, true, shell.hashes);
 
   if (plan.requiresSudo) {
     log("\tnote: some entries are root-owned; re-run with sudo to remove them");
   }
-}
-
-/**
- * Prints the shell-config lines the cleaner would strip, and reports any attributed config where no
- * line can be safely matched. A config without a before-image is detect-only: it is reported but
- * never keeps the record alive (D2). Returns the files already reported, so the apply pass does not
- * repeat a detect-only line the preview already printed.
- */
-function printUnresolvedShell(
-  name: string,
-  dirs: AbsolutePath[],
-  files: AbsolutePath[],
-  dryRun: boolean,
-  hashes: ReadonlyMap<AbsolutePath, string>,
-): Set<AbsolutePath> {
-  const rc = removeRcLines(name, dirs, dryRun, files, undefined, hashes);
-  for (const cleaned of rc.cleaned) {
-    log(`\t${dryRun ? "would clean" : "clean"} ${cleaned.file}: ${cleaned.line.trim()}`);
-  }
-  const cleanedFiles = new Set(rc.cleaned.map((cleaned) => cleaned.file));
-  const failedFiles = new Set(rc.failed);
-  const reported = new Set<AbsolutePath>();
-  for (const file of files) {
-    if (cleanedFiles.has(file) || failedFiles.has(file)) continue;
-    log(`\tdetected ${file} changed during install (not restored; no before-image was captured)`);
-    reported.add(file);
-  }
-  return reported;
 }
 
 /**
