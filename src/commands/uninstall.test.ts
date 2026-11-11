@@ -357,7 +357,7 @@ describe("uninstall record lifecycle", () => {
     expect(readRecords(home).records).toHaveLength(1);
   });
 
-  test("a managed global package is removed through its package manager", async () => {
+  test("a managed global package is blocked without invoking its package manager", async () => {
     const home = makeHome();
     const shim = join(home, ".bun", "bin", "acmetool");
     const packageDir = join(home, ".bun", "install", "global", "node_modules", "@acme", "tool");
@@ -385,12 +385,12 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const path = `${fakebin}:${process.env.PATH ?? ""}`;
-    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(5);
 
-    expect(linkExists(shim)).toBe(false);
-    expect(existsSync(packageDir)).toBe(false);
-    expect(readFileSync(join(home, "fake-bun-args.txt"), "utf8").trim().split("\n")).toEqual(["remove", "-g", "@acme/tool"]);
-    expect(readRecords(home).records).toHaveLength(0);
+    expect(linkExists(shim)).toBe(true);
+    expect(existsSync(packageDir)).toBe(true);
+    expect(existsSync(join(home, "fake-bun-args.txt"))).toBe(false);
+    expect(readRecords(home).records).toHaveLength(1);
   });
 
   test("blocks package-manager removal when another record claims a descendant, even with --force", async () => {
@@ -476,7 +476,7 @@ describe("uninstall record lifecycle", () => {
     expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
   });
 
-  test("allows package-manager removal when another record claims a sibling package", async () => {
+  test("blocks unverified package-manager removal even when another record claims a sibling package", async () => {
     const home = makeHome();
     const shim = join(home, ".bun", "bin", "acmetool");
     const globalRoot = join(home, ".bun", "install", "global");
@@ -514,16 +514,16 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const path = `${fakebin}:${process.env.PATH ?? ""}`;
-    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(5);
 
-    expect(existsSync(join(home, "fake-bun-called"))).toBe(true);
-    expect(existsSync(packageDir)).toBe(false);
-    expect(linkExists(shim)).toBe(false);
+    expect(existsSync(join(home, "fake-bun-called"))).toBe(false);
+    expect(existsSync(packageDir)).toBe(true);
+    expect(linkExists(shim)).toBe(true);
     expect(readFileSync(siblingClaim, "utf8")).toBe("sibling package");
-    expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-other"]);
+    expect(readRecords(home).records.map((entry) => entry.id)).toEqual(["rec-managed", "rec-other"]);
   });
 
-  test("a managed npm global is removed through its recorded prefix", async () => {
+  test("a managed npm global keeps its recorded prefix intact when cleanup is blocked", async () => {
     const home = makeHome();
     const prefix = join(home, ".local");
     const shim = join(prefix, "bin", "acmetool");
@@ -552,18 +552,12 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const path = `${fakebin}:${process.env.PATH ?? ""}`;
-    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(5);
 
-    expect(linkExists(shim)).toBe(false);
-    expect(existsSync(packageDir)).toBe(false);
-    expect(readFileSync(join(home, "fake-npm-args.txt"), "utf8").trim().split("\n")).toEqual([
-      "uninstall",
-      "-g",
-      "--prefix",
-      prefix,
-      "@acme/tool",
-    ]);
-    expect(readRecords(home).records).toHaveLength(0);
+    expect(linkExists(shim)).toBe(true);
+    expect(existsSync(packageDir)).toBe(true);
+    expect(existsSync(join(home, "fake-npm-args.txt"))).toBe(false);
+    expect(readRecords(home).records).toHaveLength(1);
   });
 
   test("recognizes an npm global on a record written before managedBy existed", async () => {
@@ -598,22 +592,16 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const path = `${fakebin}:${process.env.PATH ?? ""}`;
-    expect(await runCli(["uninstall", "eslint", "--yes"], home, { PATH: path })).toBe(0);
+    expect(await runCli(["uninstall", "eslint", "--yes"], home, { PATH: path })).toBe(5);
 
     expect(existsSync(libDir)).toBe(true);
-    expect(linkExists(shim)).toBe(false);
-    expect(existsSync(packageDir)).toBe(false);
-    expect(readFileSync(join(home, "fake-npm-args.txt"), "utf8").trim().split("\n")).toEqual([
-      "uninstall",
-      "-g",
-      "--prefix",
-      join(home, ".npm-global"),
-      "eslint",
-    ]);
-    expect(readRecords(home).records).toHaveLength(0);
+    expect(linkExists(shim)).toBe(true);
+    expect(existsSync(packageDir)).toBe(true);
+    expect(existsSync(join(home, "fake-npm-args.txt"))).toBe(false);
+    expect(readRecords(home).records).toHaveLength(1);
   });
 
-  test("a managed package the manager cannot remove keeps the record for a retry", async () => {
+  test("a managed package without verified authority keeps the record for a retry", async () => {
     const home = makeHome();
     const shim = join(home, ".bun", "bin", "acmetool");
     const packageDir = join(home, ".bun", "install", "global", "node_modules", "@acme", "tool");
@@ -637,10 +625,9 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const path = `${fakebin}:${process.env.PATH ?? ""}`;
-    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).not.toBe(0);
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(5);
 
-    // The manager runs first and failed, so Tret touched nothing: the shim and package both remain
-    // and the record is kept for a retry.
+    // Unverified delegation is blocked before the manager runs; both targets and evidence remain.
     expect(linkExists(shim)).toBe(true);
     expect(existsSync(packageDir)).toBe(true);
     const file = readRecords(home);
@@ -682,18 +669,18 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const path = `${fakebin}:${process.env.PATH ?? ""}`;
-    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(0);
+    expect(await runCli(["uninstall", "acmetool", "--yes"], home, { PATH: path })).toBe(5);
 
-    // Shared state survives; only the shim is removed by Tret and the package by the manager.
+    // Refusal preserves shared state, shim, package and record without invoking the manager.
     expect(existsSync(manifest)).toBe(true);
     expect(existsSync(globalDir)).toBe(true);
-    expect(linkExists(shim)).toBe(false);
-    expect(existsSync(packageDir)).toBe(false);
-    expect(readFileSync(join(home, "fake-bun-args.txt"), "utf8").trim().split("\n")).toEqual(["remove", "-g", "@acme/tool"]);
-    expect(readRecords(home).records).toHaveLength(0);
+    expect(linkExists(shim)).toBe(true);
+    expect(existsSync(packageDir)).toBe(true);
+    expect(existsSync(join(home, "fake-bun-args.txt"))).toBe(false);
+    expect(readRecords(home).records).toHaveLength(1);
   });
 
-  test("removes a managed install recognized from its executable when the record predates the field", async () => {
+  test("blocks a managed install recognized from its executable when the record predates the field", async () => {
     const home = makeHome();
     const root = join(home, ".pi", "agent", "install");
     const launcher = join(home, ".pi", "agent", "bin", "pi");
@@ -721,11 +708,11 @@ describe("uninstall record lifecycle", () => {
       }),
     ]);
 
-    expect(await runCli(["uninstall", "pi", "--yes"], home)).toBe(0);
+    expect(await runCli(["uninstall", "pi", "--yes"], home)).toBe(5);
 
-    // The delegated recursive removal clears the root and its payload; Tret clears the ancestors.
-    expect(existsSync(join(home, ".pi"))).toBe(false);
-    expect(readRecords(home).records).toHaveLength(0);
+    // Recognizing a legacy layout cannot authorize deleting the untracked payload.
+    expect(existsSync(join(home, ".pi"))).toBe(true);
+    expect(readRecords(home).records).toHaveLength(1);
   });
 
   test("does not recursively remove a managed-install root with another record's descendant claim, even with --force", async () => {

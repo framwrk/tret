@@ -176,6 +176,7 @@ function help(): void {
   info(
     `\tuninstall <tool>  Remove a tool by deleting what its install added, cleaning the shell PATH lines it marked, and dropping the record (aliases: remove, unadd)`,
   );
+  info(`\t                  Package-manager and recursive managed-install cleanup are blocked (exit 5); inspect the unresolved scope for manual reconciliation. --force does not bypass this.`);
   info(
     `\tunclaim <tool> <path>  Drop one record's claim on a path another record also claims, resolving a shared-owner conflict without --force (changes no files)`,
   );

@@ -1,15 +1,9 @@
 import type { AbsolutePath, ManagedInstall, OwnedEntry } from "../types";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 
-// Managed install. Some tools ship a first-party installer that lays out versioned releases under a
-// managed root and marks the layout with a marker file, then drops a launcher and (optionally) a PATH
-// symlink. The root's payload is a full `node_modules` tree, which capture deliberately skips
-// everywhere (`EXCLUDED_DIR_NAMES`), so owning the root's directories would strand the record: after
-// uninstall removes the tracked wrapper files, the untracked `node_modules` keeps every ancestor
-// `not-empty`, the run conflicts, and the record is stuck. This parallels package-manager globals:
-// recognize the layout from its marker, never own the payload, and delegate removal of the managed
-// root before Tret removes the owned remainder.
+// Managed-install recognition keeps skipped payloads visible and out of ordinary file cleanup.
+// A matching marker or root shape never authorizes recursive removal of its descendants.
 //
 // Detection leans on the launcher the installer leaves under `<agent>/bin/<cmd>`, with the managed
 // root as its sibling `<agent>/install`. A PATH entrypoint symlink is resolved first, so a command
@@ -29,8 +23,7 @@ type ManagedInstallLayout = {
   rootCandidates: (resolved: AbsolutePath) => AbsolutePath[];
   /**
    * Structural check for a real root of this layout. A matching marker alone is not enough: without
-   * this, a stray marker in a home or shared directory would make that whole directory a removal
-   * target.
+   * this, a stray marker in a home or shared directory would misidentify the managed scope.
    */
   hasRootShape: (root: AbsolutePath) => boolean;
 };
@@ -88,8 +81,8 @@ export function isManagedInstallPath(path: AbsolutePath, managed: ManagedInstall
 
 /**
  * Keeps only the entries a record may own from a managed install: the whole root subtree (the
- * marker, release payload, staging, and `current-version`) is dropped and left to the delegated
- * removal, while the launcher and PATH entrypoint outside it survive and are still removed by Tret.
+ * marker, release payload, staging, and `current-version`) is excluded from ordinary cleanup. The unresolved
+ * root stays visible; no recursive removal is supported.
  */
 export function withoutManagedInstallPaths<T extends { path: AbsolutePath }>(
   entries: readonly T[],
@@ -97,109 +90,6 @@ export function withoutManagedInstallPaths<T extends { path: AbsolutePath }>(
 ): T[] {
   return entries.filter((entry) => !isManagedInstallPath(entry.path, managed));
 }
-
-/** One delegated removal command invocation: exit code plus whatever the command wrote. */
-export type ManagedInstallCommandResult = { code: number; stdout: string; stderr: string };
-
-/** Runs one delegated removal command; injectable so removal is testable without spawning anything. */
-export type ManagedInstallRunner = (command: string, args: string[]) => Promise<ManagedInstallCommandResult>;
-
-/** The result of delegating a managed root's removal. */
-export type ManagedInstallRemoval = {
-  /** True when the root is gone (removed now or already absent). */
-  ok: boolean;
-  /** Whether nothing had to be done because the root was already absent. */
-  skipped: boolean;
-  /** Human-readable explanation for the outcome. */
-  detail: string;
-};
-
-/**
- * Removes a managed root by delegating a recursive removal of the whole tree, which is safe only
- * because the marker still identifies it. The marker is re-verified immediately before deleting, so
- * a directory that was repurposed or whose marker vanished is never recursively removed; the caller
- * then keeps the record. A missing root is a no-op, and success is proven by the root being gone
- * afterwards rather than trusted from the exit code.
- *
- * Tret does not invoke the installed tool's own uninstall command: the record already owns the
- * launcher and entrypoint outside the root, and running an installed command is outside Tret's model.
- */
-export async function removeManagedInstall(
-  managed: ManagedInstall,
-  options: { runner?: ManagedInstallRunner; home?: AbsolutePath } = {},
-): Promise<ManagedInstallRemoval> {
-  if (managed.root === "" || !isAbsolute(managed.root)) {
-    return { ok: false, skipped: false, detail: `${managed.root || "(empty)"} is not an absolute managed root` };
-  }
-  const root = resolve(managed.root);
-  if (!existsSync(root)) {
-    return { ok: true, skipped: true, detail: `${root} is already absent` };
-  }
-
-  const layout = LAYOUTS.find((candidate) => candidate.kind === managed.kind && candidate.layout === managed.layout);
-  if (layout === undefined) {
-    return {
-      ok: false,
-      skipped: false,
-      detail: `${managed.kind} (${managed.layout}) is not a supported managed-install layout`,
-    };
-  }
-  if (!layout.hasRootShape(root)) {
-    return {
-      ok: false,
-      skipped: false,
-      detail: `${root} does not have the ${layout.layout} root shape`,
-    };
-  }
-  if (isUnsafeRemovalRoot(root, options.home ?? Bun.env.HOME)) {
-    return {
-      ok: false,
-      skipped: false,
-      detail: `${root} is a home or shared directory, not a managed root`,
-    };
-  }
-  if (!markerMatches(root, layout)) {
-    return {
-      ok: false,
-      skipped: false,
-      detail: `marker ${join(root, layout.marker)} is missing or no longer valid`,
-    };
-  }
-
-  const runner = options.runner ?? spawnRunner;
-  let result: ManagedInstallCommandResult;
-  try {
-    result = await runner("rm", ["-rf", root]);
-  } catch (error) {
-    return { ok: false, skipped: false, detail: message(error) };
-  }
-
-  if (!existsSync(root)) return { ok: true, skipped: false, detail: `removed ${root}` };
-  return {
-    ok: false,
-    skipped: false,
-    detail: `rm exited ${result.code}: ${firstLine(result.stderr) || firstLine(result.stdout)}`,
-  };
-}
-
-/**
- * Recursive removal must never target a home directory or one of its ancestors: no marker makes a
- * whole shared tree disposable, even when the path happens to end in the expected layout segments.
- */
-function isUnsafeRemovalRoot(root: AbsolutePath, home: AbsolutePath | undefined): boolean {
-  if (root === "/") return true;
-  if (home === undefined || home === "") return false;
-  const normalizedHome = resolve(home);
-  return root === normalizedHome || normalizedHome.startsWith(`${root}/`);
-}
-
-/** The real runner: spawn `rm`, inherit the environment (and PATH), capture output. */
-const spawnRunner: ManagedInstallRunner = async (command, args) => {
-  const proc = Bun.spawn([command, ...args], { stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  const code = await proc.exited;
-  return { code, stdout, stderr };
-};
 
 /** A short label for a managed install, used in install/uninstall output. */
 export function describeManagedInstall(managed: ManagedInstall): string {
@@ -245,17 +135,4 @@ function resolveCommandPath(executable: AbsolutePath, owned: readonly OwnedEntry
 /** Resolves a possibly-relative symlink target against the directory holding the link. */
 function absolutize(base: AbsolutePath, target: AbsolutePath): AbsolutePath {
   return isAbsolute(target) ? target : resolve(base, target);
-}
-
-function firstLine(text: string): string {
-  return (
-    text
-      .split("\n")
-      .find((line) => line.trim().length > 0)
-      ?.trim() ?? ""
-  );
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

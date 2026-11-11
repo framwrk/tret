@@ -3,11 +3,9 @@ import {
   describeManagedInstall,
   detectManagedInstall,
   isManagedInstallPath,
-  removeManagedInstall,
   withoutManagedInstallPaths,
 } from "./managed-install";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import type { ManagedInstallRunner } from "./managed-install";
 import type { OwnedEntry } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -136,107 +134,6 @@ describe("managed install paths", () => {
       "/home/.pi/agent",
       "/home/.pi/agent/bin/pi",
     ]);
-  });
-});
-
-describe("removeManagedInstall", () => {
-  const managed = { kind: "pi-managed-install", layout: "releases-v1", root: "" };
-
-  test("is a skipped no-op when the root is already absent", async () => {
-    const home = testHome();
-    let called = false;
-    const runner: ManagedInstallRunner = async () => {
-      called = true;
-      return { code: 0, stdout: "", stderr: "" };
-    };
-
-    const removal = await removeManagedInstall({ ...managed, root: join(home, "missing") }, { runner });
-    expect(removal.ok).toBe(true);
-    expect(removal.skipped).toBe(true);
-    expect(called).toBe(false);
-  });
-
-  test("removes the root through the runner and reports success when it is gone", async () => {
-    const home = testHome();
-    const { root } = piManagedHome(home);
-    const calls: { command: string; args: string[] }[] = [];
-    const runner: ManagedInstallRunner = async (command, args) => {
-      calls.push({ command, args });
-      rmSync(root, { recursive: true, force: true });
-      return { code: 0, stdout: "", stderr: "" };
-    };
-
-    const removal = await removeManagedInstall({ ...managed, root }, { runner });
-    expect(removal).toEqual({ ok: true, skipped: false, detail: `removed ${root}` });
-    expect(calls).toEqual([{ command: "rm", args: ["-rf", root] }]);
-  });
-
-  test("keeps the failure actionable when the root remains", async () => {
-    const home = testHome();
-    const { root } = piManagedHome(home);
-    const runner: ManagedInstallRunner = async () => ({ code: 1, stdout: "", stderr: "permission denied\ndetail" });
-
-    const removal = await removeManagedInstall({ ...managed, root }, { runner });
-    expect(removal.ok).toBe(false);
-    expect(removal.detail).toContain("permission denied");
-  });
-
-  test("refuses to delete a root whose marker no longer validates", async () => {
-    const home = testHome();
-    const { root, marker } = piManagedHome(home);
-    rmSync(marker);
-    let called = false;
-    const runner: ManagedInstallRunner = async () => {
-      called = true;
-      return { code: 0, stdout: "", stderr: "" };
-    };
-
-    const removal = await removeManagedInstall({ ...managed, root }, { runner });
-    expect(removal.ok).toBe(false);
-    expect(removal.detail).toContain("no longer valid");
-    expect(called).toBe(false);
-  });
-
-  test("refuses an unrecognized layout instead of deleting anything", async () => {
-    const home = testHome();
-    const { root } = piManagedHome(home);
-
-    const removal = await removeManagedInstall({ kind: "unknown-managed-install", layout: "x", root });
-    expect(removal.ok).toBe(false);
-    expect(removal.detail).toContain("not a supported managed-install layout");
-  });
-
-  test("refuses a marker-bearing home directory instead of recursively removing it", async () => {
-    const home = testHome();
-    writeFileSync(join(home, "managed-install.json"), JSON.stringify(piMarker()));
-    let called = false;
-    const runner: ManagedInstallRunner = async () => {
-      called = true;
-      return { code: 0, stdout: "", stderr: "" };
-    };
-
-    const removal = await removeManagedInstall({ ...managed, root: home }, { runner });
-    expect(removal.ok).toBe(false);
-    expect(removal.detail).toContain("root shape");
-    expect(called).toBe(false);
-  });
-
-  test("refuses a shaped root that contains the home directory", async () => {
-    const base = testHome();
-    const root = join(base, "agent", "install");
-    const home = join(root, "home");
-    mkdirSync(home, { recursive: true });
-    writeFileSync(join(root, "managed-install.json"), JSON.stringify(piMarker()));
-    let called = false;
-    const runner: ManagedInstallRunner = async () => {
-      called = true;
-      return { code: 0, stdout: "", stderr: "" };
-    };
-
-    const removal = await removeManagedInstall({ ...managed, root }, { runner, home });
-    expect(removal.ok).toBe(false);
-    expect(removal.detail).toContain("home or shared directory");
-    expect(called).toBe(false);
   });
 });
 

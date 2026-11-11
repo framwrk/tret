@@ -10,7 +10,7 @@ import type { CaptureCompleteness, CaptureSegment, OwnedKind, OwnershipConfidenc
 import { EXIT_AMBIGUOUS, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import type { UninstallPlanner, UninstallVerification } from "../lib/uninstall-planner";
 import { VerifiedUninstallPlanner, inspectPath } from "../lib/uninstall-planner";
-import { delegatedScopes, recordTarget } from "../lib/record-target";
+import { delegatedRemovalBlocks, delegatedScopes, recordTarget } from "../lib/record-target";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
@@ -74,6 +74,7 @@ export type InspectReport = {
     managedBy?: { manager: string; package: string };
     managedInstall?: { kind: string; layout: string; root: string };
     conflicts: string[];
+    blocked: string[];
   };
   counts: {
     owned: number;
@@ -105,12 +106,12 @@ export async function buildInspectReport(
   const planner = options.planner ?? new VerifiedUninstallPlanner(inspect);
   const plan = await planner.plan(target.record, {
     otherRecords: records,
-    ...(target.managedInstall === undefined ? {} : { delegatedRoots: [target.managedInstall.root] }),
   });
 
   const conflicts = findDelegatedRemovalConflicts(delegatedScopes(target, home), records, record, home).map(
     (conflict) => formatDelegatedRemovalConflict(conflict),
   );
+  const blocked = delegatedRemovalBlocks(target);
 
   const owned: InspectOwned[] = target.record.owned.map((entry) => {
     const verification = inspect(entry.path);
@@ -183,7 +184,7 @@ export async function buildInspectReport(
     deleted,
     actions,
     requiresSudo: plan.requiresSudo,
-    incomplete: plan.incomplete,
+    incomplete: plan.incomplete || conflicts.length > 0 || blocked.length > 0,
     delegated: {
       ...(target.managedBy === undefined
         ? {}
@@ -198,6 +199,7 @@ export async function buildInspectReport(
             },
           }),
       conflicts,
+      blocked,
     },
     counts: {
       owned: owned.length,
@@ -240,13 +242,10 @@ export function formatInspect(report: InspectReport): string[] {
   lines.push("what uninstall would do");
   if (report.actions.length === 0 && report.delegated.managedBy === undefined && report.delegated.managedInstall === undefined) {
     lines.push(`\tnothing tracked to remove for ${report.name}`);
+  } else if (report.delegated.blocked.length > 0) {
+    for (const reason of report.delegated.blocked) lines.push(`\tblocked: ${reason}`);
+    lines.push("\tno cleanup actions will be applied");
   } else {
-    if (report.delegated.managedBy !== undefined) {
-      lines.push(`\tremove package ${report.delegated.managedBy.package} through ${report.delegated.managedBy.manager}`);
-    }
-    if (report.delegated.managedInstall !== undefined) {
-      lines.push(`\tremove managed install ${report.delegated.managedInstall.layout} at ${report.delegated.managedInstall.root} recursively`);
-    }
     for (const line of formatPlanLines(report)) lines.push(`\t${line}`);
   }
   if (report.requiresSudo) lines.push("\tsome entries are root-owned; removing them needs sudo");

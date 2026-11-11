@@ -282,7 +282,7 @@ describe("buildInspectReport", () => {
     expect(report.counts).toEqual({ owned: 0, mutated: 0, deleted: 0, removable: 1, restorable: 1 });
   });
 
-  test("passes the record's delegated managed-install root to the planner", async () => {
+  test("never tells the planner that a blocked managed root will disappear", async () => {
     const seen: { delegatedRoots?: string[] } = {};
     const target = record({
       managedInstall: { kind: "pi-managed-install", layout: "releases-v1", root: "/home/test/.pi/install" },
@@ -293,7 +293,42 @@ describe("buildInspectReport", () => {
       home: "/home/test",
       executableExists: () => true,
     });
-    expect(seen.delegatedRoots).toEqual(["/home/test/.pi/install"]);
+    expect(seen.delegatedRoots).toBeUndefined();
+  });
+
+  test("managed payloads keep their ancestors non-empty in the JSON plan", async () => {
+    const home = makeHome();
+    const pi = join(home, ".pi");
+    const agent = join(pi, "agent");
+    const bin = join(agent, "bin");
+    const root = join(agent, "install");
+    const launcher = join(bin, "pi");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(root);
+    writeFileSync(join(root, "user-data.txt"), "untracked payload");
+    writeFileSync(launcher, "launcher bytes");
+    const target = record({
+      executable: launcher,
+      owned: [
+        { path: launcher, kind: "file", installedHash: sha256("launcher bytes") },
+        ...[bin, agent, pi].map((path) => ({ path, kind: "directory" as const })),
+      ],
+      managedInstall: { kind: "pi-managed-install", layout: "releases-v1", root },
+    });
+    writeRecords(home, [target]);
+    const original = readRecordsRaw(home);
+    const result = await runCliResult(["inspect", target.name, "--json"], home);
+    expect(result.code).toBe(0);
+    const report = JSON.parse(result.stdout).tool as InspectReport;
+    for (const path of [agent, pi]) {
+      expect(report.actions).toContainEqual({ path, action: "conflict", reason: "not-empty" });
+      expect(report.actions.some((action) => action.path === path && action.action === "remove")).toBe(false);
+    }
+    expect(report.counts.removable).toBe(2);
+    expect(report.incomplete).toBe(true);
+    expect(report.delegated.blocked).toHaveLength(1);
+    expect(readFileSync(join(root, "user-data.txt"), "utf8")).toBe("untracked payload");
+    expect(readRecordsRaw(home)).toBe(original);
   });
 
   test("a managed package's shared global state is left out of the owned paths", async () => {
@@ -410,7 +445,7 @@ function sampleReport(overrides: Partial<InspectReport> = {}): InspectReport {
     actions: [{ path: "/home/.local/bin/mytool", action: "remove", kind: "file" }],
     requiresSudo: false,
     incomplete: false,
-    delegated: { conflicts: [] },
+    delegated: { conflicts: [], blocked: [] },
     counts: { owned: 1, mutated: 0, deleted: 0, removable: 1, restorable: 0 },
     ...overrides,
   };
@@ -489,7 +524,7 @@ describe("formatInspect", () => {
         ],
         counts: { owned: 3, mutated: 0, deleted: 0, removable: 1, restorable: 0 },
         actions: [],
-        delegated: { conflicts: [] },
+        delegated: { conflicts: [], blocked: [] },
       }),
     );
 
@@ -549,7 +584,7 @@ describe("formatInspect", () => {
     expect(lines).toContain("\tnothing tracked to remove for mytool");
   });
 
-  test("shows delegated removals, sudo, and conflicts alongside the plan", () => {
+  test("shows blocked delegation, sudo, and shared conflicts without promising cleanup", () => {
     const lines = formatInspect(
       sampleReport({
         name: "acmetool",
@@ -558,6 +593,7 @@ describe("formatInspect", () => {
         delegated: {
           managedBy: { manager: "bun", package: "@acme/tool" },
           managedInstall: { kind: "pi-managed-install", layout: "releases-v1", root: "/home/.pi/install" },
+          blocked: ["unverified scope requires manual reconciliation"],
           conflicts: ["conflict: delegated removal of /x overlaps /x/y, claimed by other"],
         },
         counts: { owned: 1, mutated: 0, deleted: 0, removable: 1, restorable: 0 },
@@ -566,10 +602,8 @@ describe("formatInspect", () => {
 
     const fromPlan = lines.slice(lines.indexOf("what uninstall would do") + 1);
     expect(fromPlan).toEqual([
-      "\tremove package @acme/tool through bun",
-      "\tremove managed install releases-v1 at /home/.pi/install recursively",
-      "\tnote: these paths are observed, not proven to belong to this tool",
-      "\twould remove /home/.bun/bin/acmetool (observed, not proven)",
+      "\tblocked: unverified scope requires manual reconciliation",
+      "\tno cleanup actions will be applied",
       "\tsome entries are root-owned; removing them needs sudo",
       "\tdelegated-removal conflict: conflict: delegated removal of /x overlaps /x/y, claimed by other",
     ]);

@@ -46,7 +46,7 @@ export const EXIT_USAGE = 2;
 export const EXIT_NOT_FOUND = 3;
 /** Several records matched the selector; one must be chosen by id. */
 export const EXIT_AMBIGUOUS = 4;
-/** The command refused to proceed without explicit consent or force. */
+/** Missing execution consent or a blocked/unverified cleanup scope. */
 export const EXIT_BLOCKED = 5;
 
 // Runtime mode
@@ -105,7 +105,7 @@ export const EXCLUDED_PATHS = [
   // Shared package-manager global state. Every `bun install -g` rewrites the same `package.json`
   // and `bun.lock` and shares one `node_modules`, so no single tool owns them; deleting them is
   // unsafe and the real package files are under the already-skipped `node_modules`. The package is
-  // removed through the manager instead, driven by a record's `managedBy` (see package-manager.ts).
+  // reported through `managedBy`; automatic manager cleanup remains blocked (see package-manager.ts).
   ".bun/install/global",
   // npm's user-level state (cache, logs, update-notifier). An installer that shells out to
   // `npm install`/`npm ci` writes here, but it is shared npm state no tool owns, and its cache
