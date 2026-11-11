@@ -15,7 +15,7 @@ export type BlobRef = {
  * migration) lands in phase 6; this freezes the contract so capture and uninstall can target it.
  */
 export interface Storage {
-  /** Loads every record, migrating v2 records to v3 where applicable. */
+  /** Loads records, interpreting legacy evidence in memory without persisting migration. */
   loadRecords(): Promise<RecordV3[]>;
   /** Atomically persists one record, replacing any record with the same id. */
   saveRecord(record: RecordV3): Promise<void>;

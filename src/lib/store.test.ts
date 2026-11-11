@@ -142,7 +142,7 @@ describe("FileStorage records", () => {
     expect(existsSync(recordsPath(home))).toBe(false);
   });
 
-  test("migrates a v2 file to v3 on disk without inventing restore capability", async () => {
+  test("interprets v2 in memory without rewriting it or inventing restore capability", async () => {
     const home = makeHome();
     mkdirSync(join(home, ".tret"), { recursive: true });
     writeFileSync(recordsPath(home), JSON.stringify({ version: 2, records: [v2Record("ripgrep")] }));
@@ -156,8 +156,8 @@ describe("FileStorage records", () => {
     expect(records[0]?.deleted).toEqual([]);
 
     const onDisk = JSON.parse(readFileSync(recordsPath(home), "utf8"));
-    expect(onDisk.version).toBe(3);
-    expect(onDisk.records[0].capture.backend).toBe("legacy-v2");
+    expect(onDisk.version).toBe(2);
+    expect(onDisk.records[0]).toEqual(v2Record("ripgrep"));
   });
 
   test("rejects a corrupt records file and leaves its bytes untouched", async () => {
@@ -292,7 +292,7 @@ describe("FileStorage records lock", () => {
 
   test("fails closed when another process holds the lock past the timeout, preserving its lock", async () => {
     const home = makeHome();
-    const storage = new FileStorage({ homeDir: home, lockTimeoutMs: 40, lockStaleMs: 60_000 });
+    const storage = new FileStorage({ homeDir: home, lockTimeoutMs: 40 });
     mkdirSync(join(home, ".tret"), { recursive: true });
     writeFileSync(`${recordsPath(home)}.lock`, "99999\n");
 
@@ -301,19 +301,18 @@ describe("FileStorage records lock", () => {
     expect(existsSync(`${recordsPath(home)}.lock`)).toBe(true);
   });
 
-  test("reclaims a lock left behind by a crashed writer once it is stale", async () => {
+  test("an old lock requires explicit recovery instead of being reclaimed by age", async () => {
     const home = makeHome();
-    const storage = new FileStorage({ homeDir: home, lockStaleMs: 1000 });
+    const storage = new FileStorage({ homeDir: home, lockTimeoutMs: 25 });
     mkdirSync(join(home, ".tret"), { recursive: true });
     const lock = `${recordsPath(home)}.lock`;
     writeFileSync(lock, "99999\n");
     const past = new Date(Date.now() - 60_000);
     utimesSync(lock, past, past);
 
-    await storage.saveRecord(v3Record());
-
-    expect((await storage.loadRecords()).map((record) => record.id)).toEqual(["rec-1"]);
-    expect(existsSync(lock)).toBe(false);
+    await expect(storage.saveRecord(v3Record())).rejects.toBeInstanceOf(RecordsLockedError);
+    expect(await storage.loadRecords()).toEqual([]);
+    expect(readFileSync(lock, "utf8")).toBe("99999\n");
   });
 
   test("a failed write releases the lock instead of stranding it", async () => {

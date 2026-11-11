@@ -40,9 +40,10 @@ describe("legacy v2 writers are disabled", () => {
     mkdirSync(join(home, ".tret"), { recursive: true });
     writeFileSync(join(home, ".tret", "records.json"), JSON.stringify({ version: 2, records: [record("ripgrep")] }));
 
-    // The first read migrates the file to v3 in place.
+    // Reading only interprets v2; the first write preserves its original then commits v3.
     const storage = new FileStorage({ homeDir: home });
-    await storage.loadRecords();
+    const loaded = await storage.loadRecords();
+    await storage.saveRecord(loaded[0]!);
 
     expect(() => saveRecord(record("other"))).toThrow(LegacyRecordWriteError);
 

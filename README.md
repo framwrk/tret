@@ -151,6 +151,7 @@ rm -rf ~/.tret
 - Use HTTPS sources you trust.
 - See [capture and removal safety](docs/safety-contract.md) for classification,
   filesystem revalidation, backup exclusions, and remaining limits.
+- Legacy record reads do not persist migration. The first mutation preserves the original; see [record storage and recovery](docs/recovery.md) for retained evidence, lock behavior, and current limits.
 
 ## JSON and exit codes
 

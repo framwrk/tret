@@ -280,8 +280,8 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   }
 
   await storage.removeRecord(record.id);
-  // Best-effort, outside the records lock: the record is gone, so its before-images are now
-  // unreferenced. A failed sweep never turns this successful uninstall into a failure.
+  // Best-effort collection takes its own records lease and rechecks all references after removal.
+  // A failed sweep never turns this successful uninstall into a failure.
   await collectUnreferencedBlobs();
   if (isJsonMode()) {
     const removed = result.outcomes.filter((outcome) => outcome.outcome === "removed").map((outcome) => outcome.path);

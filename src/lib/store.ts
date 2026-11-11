@@ -7,23 +7,34 @@
 //   still record the mutation while leaving `beforeBlob` unset and the entry non-restorable (D2).
 // - The records file is written with a temp-file-and-rename and validated on read; a corrupt file
 //   raises instead of being overwritten, so a failed read or migration never erases user records.
-// - Record updates run under an exclusive lock file, so two simultaneous `tret` processes cannot
-//   each read the same snapshot and overwrite one another's record (plan 01 item 5).
-// - Garbage collection deletes only blobs no record references, tolerates an interrupted run, and
-//   can spare blobs written inside a grace window so an in-flight install cannot lose one.
-//
-// This owns the v3 records file. The legacy commands still read the v2 helpers in `records.ts`
-// until phase 9 rewires them, so nothing constructs this store yet; tests exercise it directly.
+// - Reads interpret legacy records without rewriting them. The first mutation preserves the raw
+//   original before committing a migrated file under the records lock.
+// - Updates serialize their read/modify/write step under an exclusive lease. Age never steals a
+//   lease; this is not yet an operation-wide lock or protection against stale same-record updates.
+// - Command GC preserves blobs when recovery entries leave references unknown. A grace window
+//   reduces unpublished-blob races but does not replace durable active-operation pins.
 
 import type { BlobId, BlobRef, Storage } from "./storage";
 import { OBJECTS_PATH, RECORDS_PATH } from "../constants";
-import { PRIVATE_FILE_MODE, ensurePrivateDir, isErrno, isTemporaryName, readFileIfExists, writeFileAtomic } from "./atomic";
+import {
+  PRIVATE_FILE_MODE,
+  assertDirectoryIfExists,
+  ensurePrivateDir,
+  flushDirectory,
+  flushFile,
+  isErrno,
+  isTemporaryName,
+  readFileIfExists,
+  writeFileAtomic,
+  writeFileExclusive,
+} from "./atomic";
 import type { RecordFileV3, RecordV3 } from "../types";
 import { RecordMigrationError, isV3Record, migrateRecordFileV2ToV3 } from "./records";
-import { dirname, join } from "node:path";
-import { readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import type { BackupPolicy } from "./capture/normalize";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { referencedBlobs } from "./storage";
 
 /** Default cap on one before-image; larger files are recorded as mutations but not stored (D2). */
@@ -42,17 +53,13 @@ export const DEFAULT_BACKUP_POLICY: BackupPolicy = {
 export const DEFAULT_GC_GRACE_MS = 0;
 
 /**
- * Grace window `collectUnreferencedBlobs` uses after a completed command. It protects a concurrent
- * install that has written a content-addressed blob but has not saved its record yet, so the blob
- * cannot look unreferenced and be swept mid-install.
+ * Grace window `collectUnreferencedBlobs` uses after a completed command. It spares recent blobs
+ * whose record may not yet be saved; operations lasting longer still need durable pins.
  */
 export const COMMAND_GC_GRACE_MS = 60_000;
 
 /** Default bounded wait for the records lock; see `FileStorageOptions.lockTimeoutMs`. */
 export const DEFAULT_RECORDS_LOCK_TIMEOUT_MS = 5000;
-
-/** Default age at which a records lock is presumed abandoned; see `FileStorageOptions.lockStaleMs`. */
-export const DEFAULT_RECORDS_LOCK_STALE_MS = 10_000;
 
 /** How long to wait between records-lock attempts. */
 const RECORDS_LOCK_RETRY_MS = 25;
@@ -104,12 +111,12 @@ export class InvalidRecordError extends Error {
   }
 }
 
-/** Raised when another process holds the records lock past the configured wait. */
+/** Raised when an existing records lease remains past the configured wait; its owner may be unknown. */
 export class RecordsLockedError extends Error {
   readonly path: string;
 
   constructor(path: string) {
-    super(`records are locked by another tret process: ${path}`);
+    super(`records have an existing lease; resolve its owner before retrying: ${path}`);
     this.name = "RecordsLockedError";
     this.path = path;
   }
@@ -127,8 +134,6 @@ export type FileStorageOptions = {
   gcGraceMs?: number;
   /** Bounded wait for the records lock before an update fails closed; defaults to `DEFAULT_RECORDS_LOCK_TIMEOUT_MS`. */
   lockTimeoutMs?: number;
-  /** Age at which an existing records lock is presumed abandoned by a crashed writer; defaults to `DEFAULT_RECORDS_LOCK_STALE_MS`. */
-  lockStaleMs?: number;
   /** Clock in milliseconds, injectable so grace windows and quarantine names are testable. */
   now?: () => number;
 };
@@ -150,7 +155,6 @@ export class FileStorage implements Storage {
 
   private readonly gcGraceMs: number;
   private readonly lockTimeoutMs: number;
-  private readonly lockStaleMs: number;
   private readonly now: () => number;
 
   constructor(options: FileStorageOptions = {}) {
@@ -158,7 +162,6 @@ export class FileStorage implements Storage {
     this.backups = options.backups ?? DEFAULT_BACKUP_POLICY;
     this.gcGraceMs = options.gcGraceMs ?? DEFAULT_GC_GRACE_MS;
     this.lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_RECORDS_LOCK_TIMEOUT_MS;
-    this.lockStaleMs = options.lockStaleMs ?? DEFAULT_RECORDS_LOCK_STALE_MS;
     this.now = options.now ?? Date.now;
     this.recordsPath = join(this.homeDir, RECORDS_PATH);
     this.objectsDir = join(this.homeDir, OBJECTS_PATH);
@@ -170,11 +173,12 @@ export class FileStorage implements Storage {
   }
 
   /**
-   * Loads every record, upgrading a v2 file to v3 the first time it is read. A missing file is no
+   * Loads every record, interpreting v2 as v3 in memory without changing disk. A missing file is no
    * records; a file that cannot be parsed or migrated raises `RecordsCorruptionError` and is left
    * untouched, so a corrupt read never becomes a silent erase.
    */
   async loadRecords(): Promise<RecordV3[]> {
+    assertDirectoryIfExists(dirname(this.recordsPath));
     const raw = readFileIfExists(this.recordsPath);
     if (raw === undefined) return [];
 
@@ -193,11 +197,6 @@ export class FileStorage implements Storage {
         throw new RecordsCorruptionError(this.recordsPath, error.message, error.issues);
       }
       throw error;
-    }
-
-    // Persist the upgrade once. The atomic write leaves the original intact if it fails.
-    if (!isVersion3File(parsed)) {
-      this.writeRecords(file.records);
     }
 
     return file.records;
@@ -237,6 +236,8 @@ export class FileStorage implements Storage {
       throw new BlobTooLargeError(size, this.backups.sizeLimitBytes);
     }
     const id = hashContent(content);
+    ensurePrivateDir(dirname(this.recordsPath));
+    assertDirectoryIfExists(this.objectsDir);
     if (!this.blobIsValid(id)) {
       writeFileAtomic(this.blobPath(id), content, PRIVATE_FILE_MODE);
     }
@@ -249,6 +250,7 @@ export class FileStorage implements Storage {
    */
   async getBlob(id: BlobId): Promise<Uint8Array | undefined> {
     if (!BLOB_ID_PATTERN.test(id)) return undefined;
+    this.assertBlobDirectories();
     const bytes = readFileIfExists(this.blobPath(id));
     if (bytes === undefined) return undefined;
     if (hashContent(bytes) !== id) throw new BlobCorruptionError(id);
@@ -261,6 +263,7 @@ export class FileStorage implements Storage {
    * sweep set, so re-running only finishes what was left.
    */
   async gc(keep: Iterable<BlobId>): Promise<BlobId[]> {
+    this.assertBlobDirectories();
     const kept = new Set(keep);
     const removed: BlobId[] = [];
     const cutoff = this.now() - this.gcGraceMs;
@@ -289,7 +292,13 @@ export class FileStorage implements Storage {
    * makes, so only blobs no record references are ever deleted.
    */
   async gcUnreferenced(): Promise<BlobId[]> {
-    return this.gc(referencedBlobs(await this.loadRecords()));
+    return this.withRecordsLock(async () => {
+      // Corrupt recovery entries can contain references validation cannot recover. Never mistake
+      // that unknown graph for an empty store. Legacy v2 originals cannot reference v3 blobs.
+      const base = basename(this.recordsPath);
+      if (readdirSync(dirname(this.recordsPath)).some((name) => name.startsWith(`${base}.corrupt-`))) return [];
+      return this.gc(referencedBlobs(await this.loadRecords()));
+    });
   }
 
   /**
@@ -309,17 +318,24 @@ export class FileStorage implements Storage {
    * quarantined automatically, and the original bytes are preserved.
    */
   async quarantineCorruptRecords(): Promise<string | undefined> {
+    assertDirectoryIfExists(dirname(this.recordsPath));
     if (readFileIfExists(this.recordsPath) === undefined) return undefined;
-    try {
-      await this.loadRecords();
-      return undefined;
-    } catch (error) {
-      if (!(error instanceof RecordsCorruptionError)) throw error;
-    }
+    return this.withRecordsLock(async () => {
+      try {
+        await this.loadRecords();
+        return undefined;
+      } catch (error) {
+        if (!(error instanceof RecordsCorruptionError)) throw error;
+      }
 
-    const target = `${this.recordsPath}.corrupt-${quarantineStamp(this.now())}`;
-    renameSync(this.recordsPath, target);
-    return target;
+      const target = `${this.recordsPath}.corrupt-${quarantineStamp(this.now())}`;
+      if (readFileIfExists(target) !== undefined) {
+        throw new RecordsCorruptionError(target, "recovery file already exists; original records were left untouched");
+      }
+      renameSync(this.recordsPath, target);
+      flushDirectory(dirname(this.recordsPath));
+      return target;
+    });
   }
 
   /** Whether a stored blob for `id` exists and its bytes still hash to that address. */
@@ -338,6 +354,20 @@ export class FileStorage implements Storage {
   }
 
   private writeRecords(records: RecordV3[]): void {
+    const original = readFileIfExists(this.recordsPath);
+    if (original !== undefined && !isVersion3File(JSON.parse(new TextDecoder().decode(original)))) {
+      const backup = `${this.recordsPath}.legacy-v2-${hashContent(original)}.json`;
+      try {
+        writeFileExclusive(backup, original, PRIVATE_FILE_MODE);
+      } catch (error) {
+        if (!isErrno(error, "EEXIST")) throw error;
+        const existing = readFileIfExists(backup);
+        if (existing === undefined || hashContent(existing) !== hashContent(original)) {
+          throw new RecordsCorruptionError(backup, "legacy original does not match its content address");
+        }
+        flushFile(backup);
+      }
+    }
     const file: RecordFileV3 = { version: 3, records };
     writeFileAtomic(this.recordsPath, JSON.stringify(file, null, 2), PRIVATE_FILE_MODE);
   }
@@ -346,25 +376,21 @@ export class FileStorage implements Storage {
    * Runs one read-modify-write under an exclusive lock file beside the records, so two `tret`
    * processes cannot both read the same snapshot and have the later write discard the earlier
    * record. The file is created with `wx`, which is atomic: exactly one contender wins and the
-   * others see `EEXIST`. A lock left by a crashed writer is reclaimed once it is older than
-   * `lockStaleMs` — comfortably longer than any real update — and a lock that cannot be taken
-   * within `lockTimeoutMs` fails the write instead of proceeding unlocked.
+   * others see `EEXIST`. Age never authorizes stealing a lock: an interrupted or unknown owner
+   * requires explicit recovery. Contention past `lockTimeoutMs` fails closed.
    */
   private async withRecordsLock<T>(work: () => Promise<T>): Promise<T> {
     const lockPath = `${this.recordsPath}.lock`;
     ensurePrivateDir(dirname(this.recordsPath));
     const deadline = this.now() + this.lockTimeoutMs;
+    const owner = `${process.pid}\n${randomUUID()}\n`;
 
     for (;;) {
       try {
-        writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx", mode: PRIVATE_FILE_MODE });
+        writeFileExclusive(lockPath, owner, PRIVATE_FILE_MODE);
         break;
       } catch (error) {
         if (!isErrno(error, "EEXIST")) throw error;
-        if (this.lockIsStale(lockPath)) {
-          rmSync(lockPath, { force: true });
-          continue;
-        }
         if (this.now() >= deadline) throw new RecordsLockedError(lockPath);
         await Bun.sleep(RECORDS_LOCK_RETRY_MS);
       }
@@ -373,18 +399,18 @@ export class FileStorage implements Storage {
     try {
       return await work();
     } finally {
-      rmSync(lockPath, { force: true });
+      try {
+        const current = readFileIfExists(lockPath);
+        if (current !== undefined && new TextDecoder().decode(current) === owner) rmSync(lockPath);
+      } catch {
+        // Never remove an uninspectable/replaced lease. Recovery must resolve it explicitly.
+      }
     }
   }
 
-  /** Whether a lock file is older than `lockStaleMs`; a lock released in the meantime is not stale. */
-  private lockIsStale(lockPath: string): boolean {
-    try {
-      return this.now() - statSync(lockPath).mtimeMs > this.lockStaleMs;
-    } catch (error) {
-      if (isErrno(error, "ENOENT")) return false;
-      throw error;
-    }
+  private assertBlobDirectories(): void {
+    assertDirectoryIfExists(dirname(this.recordsPath));
+    assertDirectoryIfExists(this.objectsDir);
   }
 
   private listObjects(): Array<{ name: string; isFile(): boolean }> {
@@ -399,10 +425,10 @@ export class FileStorage implements Storage {
 
 /**
  * The best-effort production entry point: collects every blob no stored record references and
- * returns the addresses removed. Runs outside the records lock and never raises, so a failed sweep
- * leaves the blobs for the next run instead of turning a command that already succeeded into a
- * failure. The default store uses the 60-second command grace window so a concurrent install's
- * not-yet-recorded blob survives; cleanup is therefore eventually consistent for fresh orphans.
+ * returns the addresses removed. The reference read and sweep share the records lease with writers
+ * and quarantine. This wrapper never raises, so a failed sweep leaves blobs for the next run instead
+ * of turning a completed command into a failure. The default store spares fresh orphans for 60
+ * seconds; longer-running operations still need durable pins for their unpublished references.
  */
 export async function collectUnreferencedBlobs(
   storage: Pick<FileStorage, "gcUnreferenced"> = new FileStorage({ gcGraceMs: COMMAND_GC_GRACE_MS }),
