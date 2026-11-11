@@ -98,6 +98,7 @@ tret uninstall opencode --dry-run
 - Without backups, unchanged recorded shell profiles have attributed PATH lines and their matching installer markers removed; unrelated lines are kept.
 - `tret uninstall <tool> --dry-run` prints the plan.
 - `tret uninstall <tool> --yes` skips confirmation.
+- Package-manager and recursive managed-install cleanup are blocked with exit `5`, including with `--force`. Recognition is not removal authority; `inspect` reports the unresolved package or managed root. Targets and records stay intact for manual reconciliation.
 - `tret unclaim <tool> <path>` resolves a `shared-owner` conflict without `--force`.
 - `tret forget <tool>` stops tracking a tool without deleting files.
 
@@ -176,7 +177,7 @@ tret inspect opencode --json | jq '.tool.actions'
 | `2`  | Bad command line (missing or malformed argument)  |
 | `3`  | No tracked install matched the selector           |
 | `4`  | Several installs matched; select one by record id |
-| `5`  | Refused without consent or force                  |
+| `5`  | Missing consent or blocked/unverified scope       |
 
 ## Run logs
 

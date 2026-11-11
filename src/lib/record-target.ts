@@ -7,24 +7,29 @@
 // its executable, matching the detection uninstall already does, so all three commands agree.
 
 import type { AbsolutePath, ManagedInstall, ManagedPackage, RecordV3 } from "../types";
-import { detectManagedInstall, withoutManagedInstallPaths } from "./managed-install";
-import { detectManagedPackage, managedPackageRemovalScope, withoutManagedGlobalPaths } from "./package-manager";
+import { describeManagedInstall, detectManagedInstall, withoutManagedInstallPaths } from "./managed-install";
+import {
+  describeManagedPackage,
+  detectManagedPackage,
+  managedPackageRemovalScope,
+  withoutManagedGlobalPaths,
+} from "./package-manager";
 
-/** A record reduced to what Tret may actually remove, plus the managed layouts it defers to. */
+/** A record reduced to what Tret may actually remove, plus the managed layouts it reports as unresolved. */
 export type RecordTarget = {
   /** The record with managed shared paths dropped from `owned`, `mutated`, and `deleted`. */
   record: RecordV3;
-  /** The package-manager global state delegated to the manager, when there is one. */
+  /** Recognized package-manager state; this never grants manager execution authority. */
   managedBy?: ManagedPackage;
-  /** The first-party managed root delegated to a recursive removal, when there is one. */
+  /** Recognized managed root; this never grants recursive removal authority. */
   managedInstall?: ManagedInstall;
 };
 
 /**
  * Reduces `record` to the paths Tret may remove or restore. A managed package's shared global root
- * and a managed install's root subtree are dropped and reported as delegated instead; the bin shim,
- * launcher, and other owned paths outside those roots stay in the reduced record. The detected
- * values are stamped onto the reduced record so a later save keeps delegating.
+ * and a managed install's root subtree are dropped and reported as unresolved; the bin shim,
+ * launcher, and other owned paths outside those roots stay in the reduced record. Legacy detection
+ * is in memory only; blocked callers preserve the original record without saving this view.
  */
 export function recordTarget(record: RecordV3, home: AbsolutePath | undefined = Bun.env.HOME): RecordTarget {
   const managedBy = record.managedBy ?? detectManagedPackage(record.executable, record.owned);
@@ -66,4 +71,20 @@ export function delegatedScopes(target: RecordTarget, home: AbsolutePath | undef
   }
   if (target.managedInstall !== undefined) scopes.push(target.managedInstall.root);
   return scopes;
+}
+
+/** Recognition is evidence of a layout, never authority over its payload or manager lifecycle. */
+export function delegatedRemovalBlocks(target: RecordTarget): string[] {
+  const reasons: string[] = [];
+  if (target.managedBy !== undefined) {
+    reasons.push(
+      `package ${describeManagedPackage(target.managedBy)} has no verified removal authority or bounded manager scope; manual reconciliation is required`,
+    );
+  }
+  if (target.managedInstall !== undefined) {
+    reasons.push(
+      `managed install ${describeManagedInstall(target.managedInstall)} has no verified payload inventory; manual reconciliation is required`,
+    );
+  }
+  return reasons;
 }

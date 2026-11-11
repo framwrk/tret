@@ -59,8 +59,19 @@ These checks detect substitutions before revalidation; path-based filesystem
 operations still have a race between the last check and the syscall. They do not
 provide an atomic directory-relative removal guarantee or protect against a
 malicious concurrent process with the same privileges. Ordinary directory removal
-is non-recursive. Recursive managed-install delegation has a separate, broader
-scope and is not covered by the ordinary per-file checks.
+is non-recursive. Tret does not invoke package managers or recursively delete
+recognized managed-install roots during cleanup. A marker, launcher, package name,
+matching fingerprint, or old `complete` label cannot authorize all descendants or
+manager lifecycle hooks. No verified adapter currently supplies that authority.
+
+Uninstall, its dry-run, forced reinstall, and tracked update refuse these scopes
+with exit 5 before cleanup or replacement execution. `--yes` and `--force` do not
+bypass the refusal. `inspect` marks the plan incomplete and reports the blocked
+scope. Shared-claim conflicts remain visible. Launchers, payloads, and records stay
+intact for manual reconciliation; `forget` only discards tracking, not the files.
+Recognizing a layout from a legacy executable can block unsafe cleanup but never
+authorizes a fresh removal scope. This containment does not implement a verified
+payload inventory, package lifecycle adapter, or recovery workflow.
 
 `--force` can permit a known content/link mismatch already present in a preview.
 It cannot override another record's claim, including shell-config claims, or a

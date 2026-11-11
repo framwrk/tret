@@ -1,29 +1,26 @@
 import type { AbsolutePath, ManagedPackage, OwnedEntry, PackageManagerId } from "../types";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { existsSync, lstatSync, readlinkSync } from "node:fs";
+import { lstatSync, readlinkSync } from "node:fs";
 
 // Package-manager global mode. A global install lives in shared state every other global install
 // also edits: one `node_modules` (plus, for bun, a lockfile and manifest). Tret never records those
 // paths as owned — bun's global root is skipped at capture time, and npm's shared tree is filtered
-// out once the shim identifies the package — so uninstall delegates to the manager's own remove
-// command. Detection leans on the bin shim a global install leaves behind: it is a symlink into the
-// manager's shared `node_modules`, and the package name is the first path segment(s) below it.
+// out once the shim identifies the package. Recognition never authorizes invoking a manager: its
+// lifecycle hooks and shared-state scope are not verified. Detection uses the bin shim, a symlink
+// into the manager's shared `node_modules`; the package name is the first segment(s) below it.
 //
 // bun keeps its globals at one fixed home-relative root. npm does not: its prefix is whatever
-// `npm config get prefix` reports, so the shim target is what reveals the root to remove from.
+// `npm config get prefix` reports, so the shim target reveals the root that must remain protected.
 
-/** How one manager keeps its globals home-relative, plus the remove command for a package. */
+/** Where one recognized manager keeps its home-relative global state. */
 type ManagerSpec = {
   /** Home-relative shared root the global state lives under (contains the shared `node_modules`). */
   globalRoot: string;
-  /** Arguments passed to the manager binary to remove a global package, given its resolved root. */
-  remove: (pkg: string, globalRoot: AbsolutePath) => string[];
 };
 
 const MANAGERS: Partial<Record<PackageManagerId, ManagerSpec>> = {
   bun: {
     globalRoot: ".bun/install/global",
-    remove: (pkg) => ["remove", "-g", pkg],
   },
   npm: {
     // `~/.npm-global` is the conventional home prefix, but npm actually uses whatever
@@ -31,8 +28,6 @@ const MANAGERS: Partial<Record<PackageManagerId, ManagerSpec>> = {
     // records the real root on the package; this stays only as the fallback for a record written
     // before that field existed.
     globalRoot: ".npm-global/lib",
-    // The shared root is `<prefix>/lib`, so npm removes from the prefix one level up.
-    remove: (pkg, globalRoot) => ["uninstall", "-g", "--prefix", dirname(globalRoot), pkg],
   },
 };
 
@@ -64,9 +59,8 @@ export function detectManagedPackage(
 /**
  * Recognizes an npm global from its shim target when npm's prefix is not the home-relative default.
  * A global package keeps its files under `<prefix>/lib/node_modules/<package>` and its shim in
- * `<prefix>/bin`; the prefix is recorded so removal runs `npm uninstall -g --prefix <prefix>` and
- * never touches a different prefix's package of the same name. A target that merely mentions
- * `lib/node_modules` somewhere else (or whose shim sits outside the prefix) is not a global install.
+ * `<prefix>/bin`; the prefix is recorded for reporting and shared-state exclusion, not removal
+ * authority. A target that merely mentions `lib/node_modules` somewhere else (or whose shim sits outside the prefix) is not a global install.
  */
 function detectNpmGlobal(executable: AbsolutePath, target: AbsolutePath): ManagedPackage | undefined {
   const marker = "/lib/node_modules/";
@@ -110,7 +104,7 @@ export function managedGlobalRoot(pkg: ManagedPackage, home: AbsolutePath | unde
   return spec === undefined ? undefined : join(home, spec.globalRoot);
 }
 
-/** The package directory a managed-package removal delegates to its package manager. */
+/** Recognized package scope for visibility and overlap checks; not removal authority. */
 export function managedPackageRemovalScope(pkg: ManagedPackage, home: AbsolutePath | undefined): AbsolutePath | undefined {
   const root = managedGlobalRoot(pkg, home);
   return root === undefined ? undefined : join(root, "node_modules", pkg.package);
@@ -151,88 +145,7 @@ function packageFromNodeModules(target: AbsolutePath, nodeModules: AbsolutePath)
   return first;
 }
 
-/** One captured package-manager invocation: exit code plus whatever the command wrote. */
-export type PackageCommandResult = { code: number; stdout: string; stderr: string };
-
-/** Runs one package-manager command; injectable so removal is testable without spawning anything. */
-export type PackageCommandRunner = (command: string, args: string[]) => Promise<PackageCommandResult>;
-
-/** The result of asking a package manager to remove a global package. */
-export type PackageRemoval = {
-  /** True when the package is gone (removed now or already absent). */
-  ok: boolean;
-  /** Whether the manager was not needed because the package was already absent. */
-  skipped: boolean;
-  /** Human-readable explanation for the outcome. */
-  detail: string;
-};
-
-/**
- * Removes a global package through its manager. The package is proven gone rather than trusted: an
- * already-absent `node_modules` is a no-op, a zero exit is success, and a non-zero exit is success
- * only if the package directory is gone afterwards. Anything else stays actionable so the record is
- * kept for a retry.
- */
-export async function removeManagedPackage(
-  pkg: ManagedPackage,
-  options: { home?: AbsolutePath; runner?: PackageCommandRunner } = {},
-): Promise<PackageRemoval> {
-  const home = options.home ?? Bun.env.HOME;
-  if (!home) return { ok: false, skipped: false, detail: "HOME is not set" };
-
-  const spec = MANAGERS[pkg.manager];
-  const root = managedGlobalRoot(pkg, home);
-  if (spec === undefined || root === undefined) {
-    return { ok: false, skipped: false, detail: `${pkg.manager} is not a supported package manager` };
-  }
-
-  const packageDir = managedPackageRemovalScope(pkg, home);
-  if (packageDir === undefined) {
-    return { ok: false, skipped: false, detail: `${pkg.manager} is not a supported package manager` };
-  }
-  if (!existsSync(packageDir)) return { ok: true, skipped: true, detail: `${pkg.package} is already absent` };
-
-  const runner = options.runner ?? spawnRunner;
-  let result: PackageCommandResult;
-  try {
-    result = await runner(pkg.manager, spec.remove(pkg.package, root));
-  } catch (error) {
-    return { ok: false, skipped: false, detail: message(error) };
-  }
-
-  if (result.code === 0) return { ok: true, skipped: false, detail: `${pkg.manager} removed ${pkg.package}` };
-  if (!existsSync(packageDir)) {
-    return { ok: true, skipped: false, detail: `${pkg.manager} exited ${result.code} but ${pkg.package} is gone` };
-  }
-  return {
-    ok: false,
-    skipped: false,
-    detail: `${pkg.manager} exited ${result.code}: ${firstLine(result.stderr) || firstLine(result.stdout)}`,
-  };
-}
-
-/** The real runner: spawn the manager binary, inherit the environment (and PATH), capture output. */
-const spawnRunner: PackageCommandRunner = async (command, args) => {
-  const proc = Bun.spawn([command, ...args], { stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  const code = await proc.exited;
-  return { code, stdout, stderr };
-};
-
 /** A short label for a managed package, used in install/uninstall output. */
 export function describeManagedPackage(pkg: ManagedPackage): string {
   return `${pkg.package} (${pkg.manager} global)`;
-}
-
-function firstLine(text: string): string {
-  return (
-    text
-      .split("\n")
-      .find((line) => line.trim().length > 0)
-      ?.trim() ?? ""
-  );
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
