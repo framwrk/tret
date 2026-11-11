@@ -4,8 +4,22 @@
 // The persistence layers depend on these so a crash can never leave a half-written records or blob
 // file in place of the last good one.
 
-import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 
 /** Mode for a directory only its owner can read or traverse. */
 export const PRIVATE_DIR_MODE = 0o700;
@@ -15,12 +29,26 @@ export const PRIVATE_FILE_MODE = 0o600;
 
 const TEMP_SUFFIX = ".tmp";
 
-let tempCounter = 0;
-
 /** Creates `dir` (and parents) owned by the current user, tightening permissions on an existing dir. */
 export function ensurePrivateDir(dir: string): void {
+  assertDirectoryIfExists(dir);
   mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
-  chmodSync(dir, PRIVATE_DIR_MODE);
+  assertDirectoryIfExists(dir);
+  const fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fchmodSync(fd, PRIVATE_DIR_MODE);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Checks with lstat; never creates the directory, follows a link, or changes its mode. */
+export function assertDirectoryIfExists(dir: string): void {
+  try {
+    if (!lstatSync(dir).isDirectory()) throw new Error(`private state directory is not a real directory: ${dir}`);
+  } catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+  }
 }
 
 /**
@@ -28,11 +56,19 @@ export function ensurePrivateDir(dir: string): void {
  * example a permissions failure) is rethrown, so callers never mistake unreadable data for absence.
  */
 export function readFileIfExists(path: string): Uint8Array | undefined {
+  let fd: number;
   try {
-    return readFileSync(path);
+    if (!lstatSync(path).isFile()) throw new Error(`private state is not a regular file: ${path}`);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (isErrno(error, "ENOENT")) return undefined;
     throw error;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`private state is not a regular file: ${path}`);
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -41,7 +77,9 @@ export function readFileIfExists(path: string): Uint8Array | undefined {
  * directory, are flushed to disk, and are renamed over the destination in one step. A reader sees
  * either the previous file or the complete new one, never a partial write, and an interrupted write
  * leaves the destination untouched. `mode` is forced on the temporary file so restrictive
- * permissions survive the rename, and the parent directory is made private first.
+ * permissions survive the rename, and the parent directory is made private first. Errors before
+ * rename preserve the destination. A directory-flush error after rename means the replacement may
+ * already be visible; callers must inspect current state rather than assume rollback.
  */
 export function writeFileAtomic(path: string, data: Uint8Array | string, mode: number): void {
   ensurePrivateDir(dirname(path));
@@ -60,27 +98,75 @@ export function writeFileAtomicPreservingParents(path: string, data: Uint8Array 
 
 function writeAtomic(path: string, data: Uint8Array | string, mode: number): void {
   const temp = temporaryPath(path);
-  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
-  const fd = openSync(temp, "w", mode);
+  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
   try {
-    writeSync(fd, bytes);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  chmodSync(temp, mode);
-  try {
+    try {
+      writeAndFlush(fd, data, mode);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(temp, path);
+    flushDirectory(dirname(path));
   } catch (error) {
     rmSync(temp, { force: true });
     throw error;
   }
 }
 
+/** Creates an original/recovery file once; an existing file or symlink is never overwritten. */
+export function writeFileExclusive(path: string, data: Uint8Array | string, mode: number): void {
+  ensurePrivateDir(dirname(path));
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+  try {
+    try {
+      writeAndFlush(fd, data, mode);
+    } finally {
+      closeSync(fd);
+    }
+    flushDirectory(dirname(path));
+  } catch (error) {
+    rmSync(path, { force: true });
+    throw error;
+  }
+}
+
+/** Reused recovery files must also be private and flushed before their source can be replaced. */
+export function flushFile(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`private state is not a regular file: ${path}`);
+    fchmodSync(fd, PRIVATE_FILE_MODE);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  flushDirectory(dirname(path));
+}
+
+function writeAndFlush(fd: number, data: Uint8Array | string, mode: number): void {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  fchmodSync(fd, mode);
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const written = writeSync(fd, bytes, offset, bytes.byteLength - offset);
+    if (written <= 0) throw new Error("write made no progress");
+    offset += written;
+  }
+  fsyncSync(fd);
+}
+
+export function flushDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** A temporary path in the same directory as `path`, unique across processes and calls. */
 export function temporaryPath(path: string): string {
-  tempCounter += 1;
-  return `${path}.${process.pid}.${tempCounter}${TEMP_SUFFIX}`;
+  return `${path}.${process.pid}.${randomUUID()}${TEMP_SUFFIX}`;
 }
 
 /** Whether a directory entry name is one of this module's temporary files. */
