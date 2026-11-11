@@ -139,6 +139,7 @@ case "\${E2E_FIXTURE_ROOT:-}" in
   *) echo "fixture: refusing an unexpected root: \${E2E_FIXTURE_ROOT:-<unset>}" >&2; exit 1 ;;
 esac
 mkdir -p "\$E2E_FIXTURE_ROOT/bin"
+set -C
 printf '#!/bin/sh\necho $TOOL\n' >"\$E2E_FIXTURE_ROOT/bin/$TOOL"
 chmod 755 "\$E2E_FIXTURE_ROOT/bin/$TOOL"
 EOF

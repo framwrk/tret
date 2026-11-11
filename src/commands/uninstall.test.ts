@@ -128,7 +128,7 @@ describe("uninstall record lifecycle", () => {
     expect(readFileSync(file, "utf8")).toBe("installed");
   });
 
-  test("shared shell config claims block cleanup until explicitly forced", async () => {
+  test("shared shell config claims block cleanup even when forced", async () => {
     const home = makeHome();
     const file = join(home, ".zshrc");
     const content = `export PATH="$HOME/.local/bin:$PATH" # mytool\n`;
@@ -147,9 +147,10 @@ describe("uninstall record lifecycle", () => {
     expect(readFileSync(file, "utf8")).toBe(content);
     expect(readRecords(home).records).toHaveLength(2);
 
-    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(0);
-    expect(readFileSync(file, "utf8")).toBe("");
-    expect(readRecords(home).records).toEqual([other]);
+    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(EXIT_ERROR);
+    expect(readFileSync(file, "utf8")).toBe(content);
+    expect(readRecords(home).records).toHaveLength(2);
+    expect(readRecords(home).records).toContainEqual(other);
   });
 
   test("detect-only churn is reported but does not block; owned paths go and the record drops", async () => {

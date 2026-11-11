@@ -5,6 +5,7 @@ import { diffScopedSnapshots, filesToHash, hashBytes, hashFile, readFileBytes, s
 import { MACOS_PLATFORM } from "../../platform";
 import type { ScopedRootBounds } from "./scoped";
 import type { ScopedSnapshot } from "./scoped";
+import { isSensitiveBackupPath } from "../../../constants";
 import { isVolatileChurnPath } from "./scope";
 import { macosHomeRootBounds } from "./homeScope";
 
@@ -117,9 +118,9 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
     if (backups === undefined || !backups.enabled) return images;
 
     for (const node of before.entries.values()) {
-      if (node.kind !== "file" || node.size > backups.sizeLimitBytes) continue;
+      if (node.kind !== "file" || node.size > backups.sizeLimitBytes || isSensitiveBackupPath(node.path)) continue;
       const bytes = await this.read(node.path);
-      if (bytes === undefined) continue;
+      if (bytes === undefined || bytes.byteLength > backups.sizeLimitBytes) continue;
       node.hash = hashBytes(bytes);
       images.set(node.hash, bytes);
     }

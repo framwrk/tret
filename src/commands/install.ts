@@ -621,7 +621,7 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   // not do.
   const platform = currentPlatform();
   const shellPaths = new Set(shellConfigPaths(platform));
-  const shell = planShellCleanup(target, shellPaths);
+  const shell = planShellCleanup(target, shellPaths, { otherRecords: records });
   const lineClean = new Set(shell.files);
   const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
 

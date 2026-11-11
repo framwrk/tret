@@ -189,7 +189,7 @@ function help(): void {
   info(`\t              Human text and installer output go to the terminal or stderr, so a piped run stays valid JSON`);
   info(`\t--force       install: replace an existing tracked install of the URL before reinstalling`);
   info(`\t              shell cleanup edits only config files the old record attributes to the tool; a write failure keeps the old record`);
-  info(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; bypass shared-owner conflicts`);
+  info(`\t              uninstall: allow known file/symlink fingerprint mismatches at plan time; shared-owner conflicts still block`);
   info(`\t              unverified paths and state changes after planning still block removal`);
   info(`\t              delegated-removal overlap always blocks, including with --force`);
   info(`\t--no-capture  install: run the installer without attaching a capture window`);

@@ -75,7 +75,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   // so the two never double-handle a path. Shell configs that do have a before-image are restored by
   // the planner like any other mutation; a diverged config is reported as a conflict there.
   const shellPaths = new Set(shellConfigPaths());
-  const shell = planShellCleanup(target, shellPaths, { otherRecords: records, force });
+  const shell = planShellCleanup(target, shellPaths, { otherRecords: records });
   const lineClean = new Set(shell.files);
   const fileRecord: RecordV3 = { ...target, mutated: target.mutated.filter((entry) => !lineClean.has(entry.path)) };
   const planner = new VerifiedUninstallPlanner();
@@ -113,7 +113,12 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
         dryRun: true,
         tool: name,
         id: record.id,
-        actions: plan.actions,
+        actions: plan.actions.map((action) => {
+          if (action.action !== "remove" && action.action !== "restore") return action;
+          const plannedState = { ...action.plannedState };
+          delete plannedState.identity;
+          return { ...action, plannedState };
+        }),
         requiresSudo: plan.requiresSudo,
         managedPackage: target.managedBy ?? null,
         managedInstall: managedInstall ?? null,

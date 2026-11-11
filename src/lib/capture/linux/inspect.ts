@@ -322,7 +322,7 @@ async function recordFile(path: AbsolutePath, info: NodeInfo, baseline: MemoryBa
     return;
   }
   const bytes = await backup.read(path);
-  if (bytes === undefined) {
+  if (bytes === undefined || bytes.byteLength > backup.sizeLimitBytes) {
     baseline.set(path, "file");
     return;
   }

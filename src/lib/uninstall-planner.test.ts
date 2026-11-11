@@ -459,7 +459,8 @@ describe("inspectPath non-regular nodes", () => {
       const fifo = join(dir, "pipe");
       expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
 
-      expect(inspectPath(fifo)).toEqual({ exists: true, uid: process.getuid?.() });
+      expect(inspectPath(fifo)).toMatchObject({ exists: true, uid: process.getuid?.() });
+      expect(inspectPath(fifo).kind).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -467,7 +468,7 @@ describe("inspectPath non-regular nodes", () => {
 });
 
 describe("VerifiedUninstallPlanner shared ownership", () => {
-  test("another record claiming the path blocks removal unless forced", async () => {
+  test("another record claiming the path blocks removal even when forced", async () => {
     const target = { ...record(), owned: [{ path: "/h/bin/tool", kind: "file" as const, installedHash: h("b") }] };
     const state = { "/h/bin/tool": { exists: true, kind: "file", hash: h("b") } } satisfies Record<
       string,
@@ -484,17 +485,10 @@ describe("VerifiedUninstallPlanner shared ownership", () => {
     expect(blocked.actions).toEqual([{ action: "conflict", path: "/h/bin/tool", reason: "shared-owner" }]);
 
     const forced = await planFor(target, state, { otherRecords: [other], force: true });
-    expect(forced.actions).toEqual([
-      {
-        action: "remove",
-        path: "/h/bin/tool",
-        kind: "file",
-        plannedState: { exists: true, kind: "file", hash: h("b") },
-      },
-    ]);
+    expect(forced.actions).toEqual([{ action: "conflict", path: "/h/bin/tool", reason: "shared-owner" }]);
   });
 
-  test("another record claiming a detect-only mutation still blocks unless forced (D4)", async () => {
+  test("another record claiming a detect-only mutation still blocks when forced", async () => {
     const target = { ...record(), owned: [], mutated: [{ path: "/h/rc", installedHash: h("b") }] };
     const state = { "/h/rc": { exists: true, kind: "file", hash: h("b") } } satisfies Record<string, UninstallVerification>;
     const other: RecordV3 = {
@@ -509,10 +503,10 @@ describe("VerifiedUninstallPlanner shared ownership", () => {
     expect(blocked.actions).toEqual([{ action: "conflict", path: "/h/rc", reason: "shared-owner" }]);
     expect(blocked.incomplete).toBe(true);
 
-    // Forcing past D4 leaves the non-restorable change, which is then detect-only and non-blocking.
+    // Force cannot relinquish another record's claim.
     const forced = await planFor(target, state, { otherRecords: [other], force: true });
-    expect(forced.actions).toEqual([{ action: "detected", path: "/h/rc", kind: "mutated" }]);
-    expect(forced.incomplete).toBe(false);
+    expect(forced.actions).toEqual([{ action: "conflict", path: "/h/rc", reason: "shared-owner" }]);
+    expect(forced.incomplete).toBe(true);
   });
 
   test("case-variant claims are shared only where a record's filesystem is case-insensitive (D10)", async () => {

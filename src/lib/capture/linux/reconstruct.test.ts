@@ -45,7 +45,7 @@ describe("linux reconstruction: created paths", () => {
       [
         { op: "mkdir", at: 1, pid: 9, path: "/h/.mytool" },
         { op: "mkdir", at: 2, pid: 9, path: "/h/.mytool/bin" },
-        { op: "open", at: 3, pid: 9, path: "/h/.mytool/bin/tool", created: true, truncated: true, mode: 0o755 },
+        { op: "open", at: 3, pid: 9, path: "/h/.mytool/bin/tool", created: true, exclusive: true, truncated: true, mode: 0o755 },
         { op: "write", at: 4, pid: 9, path: "/h/.mytool/bin/tool" },
         { op: "chmod", at: 5, pid: 9, path: "/h/.mytool/bin/tool", mode: 0o755 },
         { op: "symlink", at: 6, pid: 9, path: "/h/.local/bin/tool", target: "/h/.mytool/bin/tool" },
@@ -65,15 +65,15 @@ describe("linux reconstruction: created paths", () => {
     const inspector = new FakeFsInspector([["/h/bin/tool", file(HASH_A)]]);
     const { result, effects } = await run(
       [
-        { op: "open", at: 1, pid: 9, path: "/h/.tmp.tool", created: true, truncated: true },
+        { op: "open", at: 1, pid: 9, path: "/h/.tmp.tool", created: true, exclusive: true, truncated: true },
         { op: "write", at: 2, pid: 9, path: "/h/.tmp.tool" },
         { op: "rename", at: 3, pid: 9, from: "/h/.tmp.tool", to: "/h/bin/tool" },
       ],
       { inspector },
     );
 
-    expect(effects.owned).toEqual([{ path: "/h/bin/tool", kind: "file", installedHash: HASH_A }]);
-    expect(effects.mutated).toEqual([]);
+    expect(effects.owned).toEqual([]);
+    expect(effects.mutated).toEqual([{ path: "/h/bin/tool", installedHash: HASH_A }]);
     const diagnostics = normalizeJournal({
       journal: { backend: "linux-strace", completeness: "complete", events: result.events },
       backups: NO_BACKUPS,
@@ -84,7 +84,7 @@ describe("linux reconstruction: created paths", () => {
 
   test("a created path that is then removed cancels out with a create-delete diagnostic", async () => {
     const { effects } = await run([
-      { op: "open", at: 1, pid: 9, path: "/h/scratch", created: true, truncated: true },
+      { op: "open", at: 1, pid: 9, path: "/h/scratch", created: true, exclusive: true, truncated: true },
       { op: "unlink", at: 2, pid: 9, path: "/h/scratch" },
     ]);
 
@@ -100,7 +100,7 @@ describe("linux reconstruction: pre-existing paths", () => {
     const baseline = new MemoryBaseline([["/h/.mytool/config", "file"]]);
     const { effects } = await run(
       [
-        { op: "open", at: 1, pid: 9, path: "/h/.mytool/config", created: true, truncated: true },
+        { op: "open", at: 1, pid: 9, path: "/h/.mytool/config", created: true, exclusive: true, truncated: true },
         { op: "write", at: 2, pid: 9, path: "/h/.mytool/config" },
       ],
       { inspector, baseline },
@@ -116,7 +116,7 @@ describe("linux reconstruction: pre-existing paths", () => {
     baseline.setNode("/h/.mytool/config", { kind: "file", hash: HASH_A, size: 4, mode: 0o640 });
     const { result } = await run(
       [
-        { op: "open", at: 1, pid: 9, path: "/h/.mytool/config", created: true, truncated: true },
+        { op: "open", at: 1, pid: 9, path: "/h/.mytool/config", created: true, exclusive: true, truncated: true },
         { op: "write", at: 2, pid: 9, path: "/h/.mytool/config" },
       ],
       { inspector, baseline },
@@ -168,7 +168,8 @@ describe("linux reconstruction: pre-existing paths", () => {
     const baseline = new MemoryBaseline([["/h/old", "file"]]);
     const { effects } = await run([{ op: "rename", at: 1, pid: 9, from: "/h/old", to: "/h/new" }], { inspector, baseline });
 
-    expect(effects.owned).toEqual([{ path: "/h/new", kind: "file", installedHash: HASH_A }]);
+    expect(effects.owned).toEqual([]);
+    expect(effects.mutated).toEqual([{ path: "/h/new", installedHash: HASH_A }]);
     expect(effects.diagnostics.some((diagnostic) => diagnostic.code === "rename")).toBe(true);
   });
 });

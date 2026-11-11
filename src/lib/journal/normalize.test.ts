@@ -261,7 +261,7 @@ describe("journal normalization: mutation and deletion", () => {
 });
 
 describe("journal normalization: sequence collapsing", () => {
-  test("a temporary file created and renamed over a destination collapses to the destination", () => {
+  test("a created temporary source and unknown rename destination retain a mutation", () => {
     const effects = normalize([
       { type: "create", path: "/home/.mytool/.install.tmp", after: { kind: "file", hash: HASH_A } },
       {
@@ -272,13 +272,12 @@ describe("journal normalization: sequence collapsing", () => {
       },
     ]);
 
-    expect(effects.owned).toEqual([{ path: "/home/.mytool/bin/mytool", kind: "file", installedHash: HASH_A }]);
-    expect(effects.owned.some((entry) => entry.path.includes("tmp"))).toBe(false);
-    expect(effects.mutated).toEqual([]);
+    expect(effects.owned).toEqual([]);
+    expect(effects.mutated).toEqual([{ path: "/home/.mytool/bin/mytool", installedHash: HASH_A }]);
     expect(effects.diagnostics.map((diagnostic) => diagnostic.code)).toContain("temp-rename");
   });
 
-  test("a temporary file written without prior state then renamed collapses too", () => {
+  test("a written source with unknown prior state never proves destination ownership", () => {
     const effects = normalize([
       { type: "write", path: "/home/.tmp123", after: { kind: "file", hash: HASH_A } },
       {
@@ -289,12 +288,12 @@ describe("journal normalization: sequence collapsing", () => {
       },
     ]);
 
-    expect(effects.owned).toEqual([{ path: "/home/.local/bin/tool", kind: "file", installedHash: HASH_A }]);
-    expect(effects.mutated).toEqual([]);
-    expect(effects.diagnostics.some((diagnostic) => diagnostic.code === "temp-rename")).toBe(true);
+    expect(effects.owned).toEqual([]);
+    expect(effects.mutated).toEqual([{ path: "/home/.local/bin/tool", installedHash: HASH_A }]);
+    expect(effects.diagnostics.some((diagnostic) => diagnostic.code === "rename")).toBe(true);
   });
 
-  test("renaming a pre-existing file removes the source and creates the destination", () => {
+  test("renaming a pre-existing file retains an unknown destination as a mutation", () => {
     const effects = normalize([
       {
         type: "rename",
@@ -306,7 +305,8 @@ describe("journal normalization: sequence collapsing", () => {
     ]);
 
     expect(effects.deleted).toEqual([{ path: "/home/old", beforeHash: HASH_A }]);
-    expect(effects.owned).toEqual([{ path: "/home/new", kind: "file", installedHash: HASH_A }]);
+    expect(effects.owned).toEqual([]);
+    expect(effects.mutated).toEqual([{ path: "/home/new", installedHash: HASH_A }]);
     expect(effects.diagnostics.map((diagnostic) => diagnostic.code)).toContain("rename");
   });
 
@@ -327,15 +327,15 @@ describe("journal normalization: sequence collapsing", () => {
     expect(effects.diagnostics.some((diagnostic) => diagnostic.code === "temp-rename")).toBe(true);
   });
 
-  test("a newly written file followed by a delete cancels out", () => {
+  test("a lone write followed by delete retains uncertain prior existence", () => {
     const effects = normalize([
       { type: "write", path: "/home/.mytool/junk", after: { kind: "file", hash: HASH_A } },
       { type: "unlink", path: "/home/.mytool/junk", before: { kind: "file", hash: HASH_A } },
     ]);
 
     expect(effects.owned).toEqual([]);
-    expect(effects.deleted).toEqual([]);
-    expect(effects.diagnostics.map((diagnostic) => diagnostic.code)).toContain("create-delete");
+    expect(effects.deleted).toEqual([{ path: "/home/.mytool/junk", beforeHash: HASH_A }]);
+    expect(effects.diagnostics.map((diagnostic) => diagnostic.code)).not.toContain("create-delete");
   });
 
   test("a create followed by a delete cancels out", () => {

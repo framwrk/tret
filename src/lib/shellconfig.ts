@@ -31,7 +31,7 @@ export type ShellCleanup = {
 export function planShellCleanup(
   record: RecordV3,
   shellPaths: Set<AbsolutePath>,
-  context: Pick<UninstallPlanContext, "otherRecords" | "force"> = {},
+  context: Pick<UninstallPlanContext, "otherRecords"> = {},
 ): ShellCleanup {
   const dirs = record.owned.map((entry) => entry.path);
   const files: AbsolutePath[] = [];
@@ -42,7 +42,7 @@ export function planShellCleanup(
     if (!shellPaths.has(entry.path)) continue;
     if (entry.beforeBlob !== undefined) continue;
     // Shared configs stay in the file planner, which reports the ownership conflict.
-    if (!context.force && sharedClaim(claims, entry.path, record.caseSensitive)) continue;
+    if (sharedClaim(claims, entry.path, record.caseSensitive)) continue;
     if (entry.installedHash !== undefined) {
       const verification = inspectPath(entry.path);
       if (verification.exists && verification.hash !== undefined && verification.hash !== entry.installedHash) {

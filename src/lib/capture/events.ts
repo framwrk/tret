@@ -58,6 +58,8 @@ export type RenameEvent = JournalEventBase & {
   from: AbsolutePath;
   to: AbsolutePath;
   before?: NodeMetadata;
+  /** Destination before replacement; omitted means unknown, never proof of absence. */
+  destinationBefore?: NodeMetadata | null;
   after?: NodeMetadata;
 };
 

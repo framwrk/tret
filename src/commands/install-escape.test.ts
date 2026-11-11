@@ -39,7 +39,7 @@ class ReconstructingBackend implements CaptureBackend {
       stop: async () => {
         const traced: { records: TracerRecord[]; unsupported: string[]; diagnostics: string[] } = {
           records: [
-            { op: "open", at: 1, path: join(this.home, ".local", "bin", "escapetool"), created: true, truncated: false },
+            { op: "open", at: 1, path: join(this.home, ".local", "bin", "escapetool"), created: true, exclusive: true, truncated: false },
             { op: "mkdir", at: 2, path: join(this.home, "visible-dir") },
             // Lexically under the home root, but the parent symlink resolves outside every root.
             { op: "mkdir", at: 3, path: join(this.home, "escaped", "owned-dir") },

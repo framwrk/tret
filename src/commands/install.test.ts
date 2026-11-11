@@ -121,7 +121,7 @@ function serveResponses(...responses: { body: string; status?: number; contentTy
 }
 
 const INSTALL_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin" "$HOME/.config/mytool"
 printf '#!/bin/sh\\necho mytool\\n' > "$HOME/.local/bin/mytool"
 chmod +x "$HOME/.local/bin/mytool"
@@ -1019,6 +1019,29 @@ describe("install -> list -> uninstall", () => {
         layout: "releases-v1",
         root: join(home, ".pi", "agent", "install"),
       });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("forced reinstall preserves shell configuration claimed by another record", async () => {
+    const home = makeHome();
+    const server = serve(INSTALL_SCRIPT);
+    try {
+      expect(await runCli(["install", server.url, "--yes"], home)).toBe(0);
+      const original = readStore(home).records[0]!;
+      const file = join(home, ".zshrc");
+      const content = 'export PATH="$HOME/.local/bin:$PATH" # mytool\n';
+      writeFileSync(file, content);
+      original.mutated = [{ path: file, installedHash: sha256Text(content) }];
+      const other = { ...original, id: "shared-shell", name: "other", url: "", owned: [], mutated: [{ path: file }] };
+      writeRecords(home, [original, other]);
+      const before = readFileSync(join(home, ".tret", "records.json"), "utf8");
+      const result = await runCliResult(["install", server.url, "--force", "--yes"], home);
+      expect(result.code).not.toBe(0);
+      expect(readFileSync(file, "utf8")).toBe(content);
+      expect(existsSync(original.executable)).toBe(true);
+      expect(readFileSync(join(home, ".tret", "records.json"), "utf8")).toBe(before);
     } finally {
       await server.stop();
     }

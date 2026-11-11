@@ -115,7 +115,9 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
       [
         "set -euo pipefail",
         'mkdir -p "$HOME/smoke/newdir"',
+        "set -o noclobber", // successful O_EXCL proves creation; O_CREAT alone does not
         'printf "created\\n" > "$HOME/smoke/newdir/created.txt"',
+        "set +o noclobber",
         'printf "after\\n" > "$HOME/existing.txt"',
         'ln -s target "$HOME/smoke/link"',
         'rm "$HOME/to-delete.txt"',
