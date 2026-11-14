@@ -1,68 +1,95 @@
-# Record storage and recovery limits
+# Records, operations and recovery
 
-`list` and `inspect` interpret legacy v2 records in memory. They do not rewrite
-`records.json` or persist a migration. Commands may still write their disclosed
-private run logs and update-check cache.
+Read commands normalize v2/v3 evidence in memory without rewriting `records.json`.
+Migration invents no ownership, absence, causality or cleanup approval. Version 4
+stores an increasing sequence, record revisions and per-effect evidence/decisions.
+Older readers reject this wrapper. Before external work, the writer commits the
+format barrier and a durable operation intent. Refusal before execution consent or
+cleanup preflight does not migrate records.
 
-The first record mutation preserves the exact legacy bytes in an owner-only file
-named `records.json.legacy-v2-<sha256>.json` under `~/.tret/`, then writes v3 records
-while holding the records lock. Migration does not invent ownership, fingerprints,
-before-images, or restoration capability. If the original cannot be preserved,
-the write fails and leaves the active legacy file unchanged. A matching original
-from an interrupted attempt is validated and flushed before reuse.
-If that retained file has different bytes, mutations fail closed and preserve both
-files for manual reconciliation; retrying alone cannot resolve the mismatch.
+The first migration retains the exact raw original in an owner-only file named
+`records.json.legacy-v2-<sha256>.json` or `records.json.legacy-v3-<sha256>.json`.
+A matching retained original is validated/flushed before reuse. A mismatched copy
+fails closed without replacing either file. Originals are recovery evidence, not
+active claims. V3 originals can reference blobs and keep them alive after active
+records are forgotten; v2 originals cannot. Explicit original discard remains a
+manual reconciliation step.
 
-Original copies retain historical metadata even after an active record is
-forgotten. They are recovery evidence, not active ownership claims. Evidence
-discard and automated crash reconciliation remain separate implementation work.
+## Serialization and revisions
 
-## Locked records
+One kernel operation lease spans command reads, capture, target application and
+persistence. Contention waits up to five seconds. The stable `operation.lock`
+file is never unlinked/replaced. The parent and foreground supervisor retain its
+kernel lock until the foreground program exits. Its
+PID/token metadata is advisory and timestamps never grant permission to steal it.
+Internal update/install/cleanup calls reuse the enclosing lease sequentially.
+Initial migration additionally acquires the legacy owner-token records lease.
+After the v4 barrier, ordinary transactions rely on the kernel lease and create no
+second persistent lock to strand. An interrupted migration still using an older
+active format can require manual legacy-lease owner reconciliation, never age-based
+deletion. An obsolete migration lease does not authorize a v4 write and is left intact.
 
-Record mutations wait up to five seconds for `records.json.lock`. A lease records
-its process id and a unique token. Only that lease is released by its writer;
-another writer's replacement lease is preserved. A lock is never reclaimed merely
-because it is old. Slow or paused writers can still be alive.
+Saves and removals compare the revision read earlier. Every record mutation
+advances the store sequence, including removals, so delete/recreate cannot revive
+a stale claim. A revision conflict requires a fresh read and plan.
 
-An interrupted or unknown owner keeps writes blocked. Do not remove a lock based
-on its timestamp. Establish that no Tret writer is running and preserve the state
-before manually reconciling it. There is no automated lock-recovery or interrupted
-operation-resume command yet. Reading records does not need the records lock.
+## Durable evidence
 
-## Corrupt records and recovery content
+Private operation manifests under `.tret/operations/` contain prior records,
+before-image pins, baseline metadata, the last closed capture journal, normalized
+record checkpoints and per-action native cursors/outcomes. Permitted before-images
+are pinned and flushed before external execution. A persistence barrier failure
+refuses execution and cannot trigger fallback/reexecution.
 
-Invalid records fail closed instead of becoming an empty store. The storage-layer
-quarantine API runs under the records lock, preserves the corrupt bytes, and refuses
-to overwrite an existing recovery file. No CLI command exposes this API yet, and
-read commands never quarantine records automatically.
+Live capture is not yet incrementally checkpointed. SIGKILL, disk failure or power
+loss may leave only a baseline and an unknown interval. Recovery preserves that
+uncertainty. Replacement is currently non-atomic: the previous manifest and its
+recovery content remain even if a replacement fails after old cleanup.
 
-Command garbage collection retains blobs while quarantined record entries exist.
-Their full reference graph may be unknown, so an empty active store cannot
-authorize deleting that recovery content. This may retain otherwise unused blobs
-until evidence is explicitly reconciled/discarded. Legacy v2 originals cannot
-reference blobs and do not prevent collection. The reference read and sweep share
-the records lease with record mutations and quarantine.
+## Commands
 
-## Filesystem boundaries
+```sh
+tret recover
+tret recover <operation-id>
+tret recover <operation-id> --resume --yes
+tret recover <operation-id> --discard --yes
+```
 
-Private reads reject symlinks and non-regular files. Private state directories
-(`.tret` and `objects`) must be real directories, not symlinks. Atomic writes create
-unpredictable temporary files exclusively with no-follow flags, handle short
-writes, set permissions through descriptors, and flush file data and the containing
-directory. Restore writes preserve the permissions of existing parent directories.
-Failed exclusive creates remove their incomplete lock or original file so a later
-attempt can retry. Existing names are never removed by a failed exclusive open.
+Inspection reads summaries without target changes. `inspect <tool-or-record-id>`
+also finds related receipts if no active record remains. Resume requires exclusive
+store access and reconciles supported native steps/postconditions or available
+partial capture evidence. It never runs external code and never blindly overwrites
+a later user edit. Finished action outcomes are not replayed. An interrupted
+replacement's prior cleanup may finish, but its replacement installer is not run.
 
-A failure before rename leaves the destination unchanged and removes the write's
-temporary file. A directory-flush failure after rename may leave the replacement
-visible even though durability was not confirmed. Filesystem/platform guarantees
-still limit behavior after power loss; file writes are not a transaction covering
-an entire installation.
-This also applies to restored user files: filesystems that reject directory
-flushes, or parents that cannot be opened for reading, may report a failed restore
-after its replacement bytes are visible.
+Unfinished manifests and retained native cursors block new mutations. Retained
+objects must be reconciled manually; explicit discard relinquishes the receipt's
+references without deleting target or staging files. Their locations remain in
+the discarded summary. JSON/noninteractive recovery decisions require `--yes`.
 
-These remain path-based operations. Directory checks do not eliminate ancestor
-substitution races or provide tamper-proof storage against the same user. Whole
-operation locking, revisions, durable installer checkpoints, active blob pins,
-interrupted-apply recovery, and stronger directory-relative operations remain open.
+## Garbage collection and private storage
+
+Both GC entry points serialize their reference read and sweep with writers. Active
+records, operations, receipts and retained v3 originals keep referenced blobs alive.
+Unknown/corrupt recovery graphs prevent collection. Completed receipts shed unused
+baseline-content pins while preserving their prior/current record references.
+`forget` drops active tracking, not historical receipts/originals. Receipt discard
+releases its pins; a later GC may collect content no other evidence references.
+
+Private reads reject final symlinks/non-regular nodes, and bounded operation reads
+check actual bytes. State directories must be real directories. Atomic private
+writes use exclusive no-follow temporary files, handle short writes and flush the
+file and directory. Failed exclusive writes clean their own partial file; existing
+names survive failed exclusive opens. A post-rename directory-flush failure can
+leave replacement bytes visible; inspect current state before retrying.
+
+Manifests have a 16 MiB limit. Broader aggregate storage/capture budgets remain
+pending. Same-user state is not tamper-proof, and private persistence still uses
+path-based primitives. Native target application, its supported scope and further
+limits are described in [authority-and-operations.md](authority-and-operations.md).
+
+A foreground supervisor retains the kernel lease until the program exits, even if
+Tret is killed. The program receives that descriptor closed; daemonized descendants
+do not hold it indefinitely and remain part of the bounded-capture uncertainty.
+The `.tret-stage-<uuid>` namespace is reserved for private application staging and
+is excluded from capture alongside `.tret`, including explicit observation roots.

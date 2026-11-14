@@ -101,7 +101,7 @@ describe("adoptedEntries", () => {
     // The user edits one file after adoption; the record still holds the installed fingerprint.
     writeFileSync(edited, "user edit\n");
 
-    const plan = await new VerifiedUninstallPlanner().plan(record);
+    const plan = await new VerifiedUninstallPlanner(undefined, undefined, async () => undefined).plan(record);
 
     expect(plan.actions.map((action) => [action.action, action.path])).toEqual([
       ["remove", nested],

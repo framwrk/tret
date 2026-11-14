@@ -249,9 +249,10 @@ test("an old lock owned by a live process is never stolen", async () => {
 test("releasing a records lock preserves a replacement lease", async () => {
   const root = home();
   const storage = new FileStorage({ homeDir: root });
-  const load = storage.loadRecords.bind(storage);
+  const internals = storage as unknown as { loadFile(): Promise<import("../types").RecordFileV4> };
+  const load = internals.loadFile.bind(storage);
   const lock = join(root, ".tret/records.json.lock");
-  storage.loadRecords = async () => {
+  internals.loadFile = async () => {
     const records = await load();
     rmSync(lock);
     writeFileSync(lock, "replacement lease\n");

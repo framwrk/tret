@@ -1,6 +1,6 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureSegment, Privilege } from "../types";
+import type { CaptureBackend, CaptureSession } from "./capture/backend";
 import type { BackupPolicy } from "./capture/normalize";
-import type { CaptureBackend } from "./capture/backend";
 import type { Journal } from "./capture/events";
 
 /**
@@ -50,11 +50,20 @@ export type BoundedSessionOptions<T> = {
   backups?: BackupPolicy;
   /** The bounded work to run while capture is attached. */
   run: () => Promise<T>;
+  /** Durable barrier after baseline/attach, before external work. A failure never triggers fallback. */
+  beforeRun?: (session: CaptureSession) => Promise<void>;
   /** Clock in milliseconds; injectable so tests can pin the window. */
   now?: () => number;
   /** Which kind of window this is; defaults to "install" (`trace` is reserved by D5 for later). */
   kind?: CaptureSegment["kind"];
 };
+
+export class BeforeExecutionError extends Error {
+  constructor(cause: unknown) {
+    super(`pre-execution persistence failed: ${message(cause)}`, { cause });
+    this.name = "BeforeExecutionError";
+  }
+}
 
 /**
  * Runs one bounded capture session: attach the backend, run the work, close the window, and report
@@ -81,6 +90,13 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
     // Omit the key entirely when no policy is supplied, so a plain window's start options stay exact.
     ...(options.backups === undefined ? {} : { backups: options.backups }),
   });
+
+  try {
+    await options.beforeRun?.(session);
+  } catch (error) {
+    try { await session.stop(); } catch { /* No external work ran. Preserve the barrier failure. */ }
+    throw new BeforeExecutionError(error);
+  }
 
   let value: T | undefined;
   let error: unknown;

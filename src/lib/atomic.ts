@@ -14,6 +14,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   writeSync,
@@ -55,7 +56,7 @@ export function assertDirectoryIfExists(dir: string): void {
  * Reads a file as raw bytes, returning undefined when it does not exist. Any other error (for
  * example a permissions failure) is rethrown, so callers never mistake unreadable data for absence.
  */
-export function readFileIfExists(path: string): Uint8Array | undefined {
+export function readFileIfExists(path: string, maxBytes?: number): Uint8Array | undefined {
   let fd: number;
   try {
     if (!lstatSync(path).isFile()) throw new Error(`private state is not a regular file: ${path}`);
@@ -65,7 +66,23 @@ export function readFileIfExists(path: string): Uint8Array | undefined {
     throw error;
   }
   try {
-    if (!fstatSync(fd).isFile()) throw new Error(`private state is not a regular file: ${path}`);
+    const node = fstatSync(fd);
+    if (!node.isFile()) throw new Error(`private state is not a regular file: ${path}`);
+    if (maxBytes !== undefined) {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("invalid private read limit");
+      if (node.size > maxBytes) throw new Error(`private state exceeds ${maxBytes} bytes: ${path}`);
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for (;;) {
+        // One extra byte detects growth beyond the budget without an unbounded readFile allocation.
+        const chunk = Buffer.alloc(Math.min(64 * 1024, maxBytes - total + 1));
+        const count = readSync(fd, chunk, 0, chunk.byteLength, null);
+        if (count === 0) return Buffer.concat(chunks, total);
+        total += count;
+        if (total > maxBytes) throw new Error(`private state exceeds ${maxBytes} bytes: ${path}`);
+        chunks.push(chunk.subarray(0, count));
+      }
+    }
     return readFileSync(fd);
   } finally {
     closeSync(fd);

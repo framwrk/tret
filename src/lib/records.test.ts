@@ -48,7 +48,7 @@ describe("legacy v2 writers are disabled", () => {
     expect(() => saveRecord(record("other"))).toThrow(LegacyRecordWriteError);
 
     const raw = JSON.parse(readFileSync(join(home, ".tret", "records.json"), "utf8"));
-    expect(raw.version).toBe(3);
+    expect(raw.version).toBe(4);
     expect(raw.records).toHaveLength(1);
     expect(await storage.loadRecords()).toHaveLength(1);
   });

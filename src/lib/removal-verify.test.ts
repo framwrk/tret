@@ -1,6 +1,6 @@
 import { VerifiedUninstallPlanner, inspectPath } from "./uninstall-planner";
 import { afterAll, describe, expect, test } from "bun:test";
-import { applyUninstallPlan, reduceRecordForRetry } from "./removal";
+import { applyUninstallPlan as applyPlan, nodeRemovalFileSystem, reduceRecordForRetry } from "./removal";
 import {
   chmodSync,
   existsSync,
@@ -75,7 +75,11 @@ function record(overrides: Partial<RecordV3> = {}): RecordV3 {
   };
 }
 
-const planner = new VerifiedUninstallPlanner();
+// These unit tests isolate the injected filesystem state machine. Native application and durable
+// cursor behavior are exercised by native-action.test.ts and authority-safety.test.ts.
+const planner = new VerifiedUninstallPlanner(inspectPath, undefined, async () => undefined);
+const applyUninstallPlan = (plan: Parameters<typeof applyPlan>[0], options: Parameters<typeof applyPlan>[1]) =>
+  applyPlan(plan, { ...options, fs: nodeRemovalFileSystem });
 
 describe("applyUninstallPlan removals", () => {
   test("removes a file whose fingerprint matched at plan and apply time", async () => {

@@ -1,4 +1,4 @@
-import type { AbsolutePath, CaptureCompleteness, Privilege } from "../../types";
+import type { AbsolutePath, CaptureCompleteness, OwnedKind, Privilege } from "../../types";
 import type { BackupPolicy } from "./normalize";
 import type { Journal } from "./events";
 
@@ -20,7 +20,17 @@ export type CaptureStartOptions = {
 /** An active observation window; `stop` closes it and returns the collected journal. */
 export type CaptureSession = {
   readonly backend: string;
+  readonly beforeImages?: ReadonlyMap<string, Uint8Array>;
+  readonly baseline?: readonly CaptureBaselineEntry[];
   stop(): Promise<Journal>;
+};
+
+export type CaptureBaselineEntry = {
+  path: string;
+  kind: OwnedKind;
+  hash?: string;
+  mode?: number;
+  linkTarget?: string;
 };
 
 /**

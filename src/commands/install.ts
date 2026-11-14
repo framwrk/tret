@@ -1,32 +1,38 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, CaptureSettings, Diff, RecordV3 } from "../types";
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
 import { DEFAULT_BACKUP_POLICY, FileStorage, collectUnreferencedBlobs } from "../lib/store";
-import { EXIT_BLOCKED, EXIT_USAGE } from "../constants";
-import { VerifiedUninstallPlanner, formatUninstallPlan } from "../lib/uninstall-planner";
+import { EXIT_BLOCKED, EXIT_ERROR, EXIT_USAGE } from "../constants";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
 import { caseSensitiveForPaths, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
 import { confirm, extractUrl, fetchScript, log, readLine, validateUrl } from "../lib/utilities";
-import { delegatedRemovalBlocks, delegatedScopes, recordTarget } from "../lib/record-target";
+import { delegatedRemovalBlocks, recordTarget } from "../lib/record-target";
 import { describeManagedInstall, detectManagedInstall, withoutManagedInstallPaths } from "../lib/managed-install";
 import { describeManagedPackage, detectManagedPackage, withoutManagedGlobalPaths } from "../lib/package-manager";
 import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
-import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
+import type { ApplianceOutcome } from "../lib/removal";
 import type { CaptureBackend } from "../lib/capture/backend";
+import type { CaptureSession } from "../lib/capture/backend";
+import type { DurableOperation } from "../lib/operation-log";
 import type { Journal } from "../lib/capture/events";
+import type { NativeActionReceipt } from "../lib/native-action";
 import type { Platform } from "../lib/platform";
 import type { SessionCoverage } from "../lib/session";
+import type { UninstallPlan } from "../lib/uninstall-planner";
 import { adoptedEntries } from "../lib/adoption";
+import { buildCleanupPlan } from "../lib/cleanup-plan";
 import { diff } from "../lib/diff";
 import { fail } from "../lib/failure";
 import { formatCoverage } from "../lib/session";
+import { formatUninstallPlan } from "../lib/uninstall-planner";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { runInstaller } from "../lib/installer";
 import { runLogPhase } from "../lib/runlog";
+import { runStoreOperation } from "../lib/command-operation";
 import { snapshot } from "../lib/snapshot";
 import { unverifiedShellEdits } from "../lib/shellconfig";
 
@@ -184,6 +190,7 @@ export async function install(
   }
 
   const storage = new FileStorage({ backups });
+  if (!storage.inOperation) return runStoreOperation(storage, () => install(url, force, scriptArgs, options));
   let records: RecordV3[];
   try {
     records = await storage.loadRecords();
@@ -224,6 +231,24 @@ export async function install(
     log(`the script at ${url} changed since ${existing.name} was last installed`);
   }
 
+  const platform = currentPlatform();
+  // Every path the window can record sits under one of the observation roots, so the record's
+  // single case flag is resolved from the roots themselves (D10). The same flag keys the capture
+  // backend's path comparison, so its journal and normalization agree on path identity.
+  const roots = options.roots ?? installObservationRoots(platform, options.observe);
+  const caseSensitive = caseSensitiveForPaths(platform, roots);
+
+  const recordId = options.replaceId ?? randomUUID();
+  const provisional: RecordV3 = {
+    id: recordId, name: recordDisplayName(options.name, existing?.name, undefined, url, scriptSha256),
+    source: "install", url, installedAt: new Date(clock()).toISOString(), executable: "", scriptSha256,
+    ...(scriptArgs.length ? { scriptArgs } : {}),
+    captureSettings: { enabled: options.capture ?? true, backups, ...(options.observe ? { observe: options.observe } : {}) },
+    capture: { backend: "pending", completeness: "partial", segments: [{ kind: "install", startedAt: new Date(clock()).toISOString(), partialReason: "operation not captured to completion" }] },
+    privilege: processPrivilege(), caseSensitive, owned: [], mutated: [], deleted: [],
+  };
+  const execution = { recordId, roots, scriptSha256 };
+
   // Show the source and its identity before anything runs (plan 03 item 6). The preview is bounded,
   // so a long installer cannot flood the terminal; the full text stays in the run log.
   log(`installer script: ${url}`);
@@ -247,24 +272,50 @@ export async function install(
 
   // A --force reinstall is an uninstall then install: the old tool and its record go first through
   // the same verified planner an explicit uninstall uses, so no stale owned path survives it.
+  let operation!: DurableOperation;
   if (existing && force) {
     runLogPhase("remove-previous");
-    await removePrevious(storage, existing, records);
+    await removePrevious(storage, existing, records, async (plan) => {
+      await storage.prepareCurrentFormat();
+      operation = storage.operations.begin("replace", [existing]);
+      operation = storage.operations.checkpoint(operation, {
+        stage: "applying", checkpoint: provisional, execution,
+        application: { plan, outcomes: [], nextAction: 0 },
+      });
+    }, (plan, outcomes, nextAction, native) => {
+      operation = storage.operations.checkpoint(operation, { application: {
+        ...operation.application, plan, outcomes, nextAction,
+        ...(native ? { native: { ...operation.application?.native, [native.index]: native.receipt } } : {}),
+      } });
+    });
+  } else {
+    await storage.prepareCurrentFormat();
+    operation = storage.operations.begin("install");
+    operation = storage.operations.checkpoint(operation, { checkpoint: provisional, execution });
   }
-
-  const platform = currentPlatform();
-  // Every path the window can record sits under one of the observation roots, so the record's
-  // single case flag is resolved from the roots themselves (D10). The same flag keys the capture
-  // backend's path comparison, so its journal and normalization agree on path identity.
-  const roots = options.roots ?? installObservationRoots(platform, options.observe);
-  const caseSensitive = caseSensitiveForPaths(platform, roots);
 
   // The installer runs inside a bounded capture window. With capture on, the journal is the sole
   // effects source, so no global snapshot runs. `--no-capture` (or a backend that cannot attach)
   // falls back to the legacy snapshot/diff; its added paths are fingerprinted from disk at record
   // time, while mutations and deletions stay detect-only without before-images.
   runLogPhase("run-installer");
-  const window = await observeInstall(platform, script, scriptArgs, options, backups, roots, caseSensitive);
+  const beforeRun = async (session?: CaptureSession) => {
+    operation = storage.operations.checkpoint(operation, {
+      pins: [...(session?.beforeImages?.keys() ?? [])],
+      ...(session?.baseline ? { baseline: session.baseline } : {}),
+    });
+    for (const [id, bytes] of session?.beforeImages ?? []) {
+      const stored = await storage.putBlob(bytes);
+      if (stored.id !== id) throw new Error("capture before-image does not match its content address");
+    }
+    operation = storage.operations.checkpoint(operation, { stage: "running", unknownSince: new Date().toISOString() });
+  };
+  const window = await observeInstall(platform, script, scriptArgs, options, backups, roots, caseSensitive, beforeRun);
+  const captured = window.journal ? {
+    backend: window.journal.backend, completeness: window.journal.completeness,
+    events: window.journal.events, ...(window.journal.partialReason ? { partialReason: window.journal.partialReason } : {}),
+  } : { backend: "disabled", completeness: "partial" as const, events: [] };
+  operation = storage.operations.checkpoint(operation, { stage: "captured", capture: captured, execution: { ...execution, exitCode: window.exitCode } });
   log(
     window.coverage
       ? `observed the install with ${formatCoverage(window.coverage)}`
@@ -283,6 +334,7 @@ export async function install(
   // A no-executable install that changed observed paths still keeps a partial record, so its files
   // are never untracked leftovers; one that changed nothing has nothing to record and fails as before.
   if (missingExecutable && effectCount === 0) {
+    storage.operations.checkpoint(operation, { stage: "partial", reason: "installer added no executable; captured effects or an unknown interval remain" });
     fail("install-executable", `install script added no executable command: ${url}`);
   }
 
@@ -312,12 +364,10 @@ export async function install(
   // Store the before-image bytes the window captured, then drop any restore claim storage did not
   // actually land, so the record never advertises a blob `getBlob` cannot return (D2). Runs after the
   // shared-state filter so a dropped path's before-image is never stored as an orphan blob.
-  await storeBeforeImages(effects, window.journal, storage, backups);
-
   const record: RecordV3 = {
     // A tracked-tool update keeps the record's stable id, so a selector a script already holds
     // still resolves after the update; a fresh install gets a new id.
-    id: options.replaceId ?? randomUUID(),
+    id: recordId,
     name,
     source: "install",
     url,
@@ -341,8 +391,11 @@ export async function install(
     ...(managedBy === undefined ? {} : { managedBy }),
     ...(managedInstall === undefined ? {} : { managedInstall }),
   };
+  operation = storage.operations.checkpoint(operation, { checkpoint: record });
+  await storeBeforeImages(effects, window.journal, storage, backups);
   runLogPhase("save-record");
   await storage.saveRecord(record);
+  storage.operations.checkpoint(operation, { stage: failed ? "partial" : "completed", checkpoint: record });
 
   // A replacement dropped the previous record's claims, so its before-images may now be
   // unreferenced. Sweep after the new record is durable; the helper never fails this install.
@@ -359,7 +412,7 @@ export async function install(
   }
 
   log(`installed ${name}`);
-  log(`\towned ${effects.owned.length} files and folders`);
+  log(`\tobserved ${effects.owned.length} candidate additions; cleanup requires explicit object approval`);
   log(`\tmutated ${effects.mutated.length}`);
   log(`\tdeleted ${effects.deleted.length}`);
   if (managedBy !== undefined)
@@ -426,9 +479,11 @@ async function observeInstall(
   backups: BackupPolicy,
   roots: AbsolutePath[],
   caseSensitive: boolean,
+  beforeRun: (session?: CaptureSession) => Promise<void>,
 ): Promise<InstallWindow> {
   if (!(options.capture ?? true)) {
     const before = snapshot();
+    await beforeRun();
     const exitCode = await runInstaller(script, scriptArgs);
     return { exitCode, fallback: diff(before, snapshot()) };
   }
@@ -442,6 +497,7 @@ async function observeInstall(
     roots,
     fallbackRoots: heuristicFallbackRoots(roots),
     backups,
+    beforeRun,
     run: () => runInstaller(script, scriptArgs),
     onPrimaryFailure: (error) =>
       log(`capture unavailable (${message(error)}); observing the install with a heuristic window`),
@@ -453,6 +509,7 @@ async function observeInstall(
     // Both backends failed before the installer started, so it has not run yet. Keep the legacy
     // snapshot/diff path for the install instead of running it unwatched with no observation at all.
     const before = snapshot();
+    await beforeRun();
     const exitCode = await runInstaller(script, scriptArgs);
     return { exitCode, fallback: diff(before, snapshot()) };
   }
@@ -586,33 +643,21 @@ function buildCapture(window: InstallWindow, failed: boolean, clock: () => numbe
  * A run the planner cannot finish keeps a reduced record so `tret uninstall <name>` can retry, and
  * stops the reinstall rather than stacking a second record on top of live paths.
  */
-async function removePrevious(storage: FileStorage, existing: RecordV3, records: RecordV3[]): Promise<void> {
+async function removePrevious(
+  storage: FileStorage,
+  existing: RecordV3,
+  records: RecordV3[],
+  beforeApply: (plan: UninstallPlan) => Promise<void>,
+  checkpoint: (plan: UninstallPlan, outcomes: ApplianceOutcome[], nextAction: number, native?: { index: number; receipt: NativeActionReceipt }) => void,
+): Promise<void> {
   log(`reinstalling ${existing.name}: removing the previous install first`);
-  const planner = new VerifiedUninstallPlanner();
-  const delegated = recordTarget(existing);
-  const target = delegated.record;
-  const conflicts = findDelegatedRemovalConflicts(delegatedScopes(delegated), records, existing, Bun.env.HOME);
-  if (conflicts.length > 0) {
-    fail("install-delegated-conflict", conflicts.map(formatDelegatedRemovalConflict).join("\n\t"), EXIT_BLOCKED);
-  }
-  const blocked = delegatedRemovalBlocks(delegated);
-  if (blocked.length > 0) {
-    fail("install-delegated-unverified", `${blocked.join("; ")}; previous install is unchanged`, EXIT_BLOCKED);
-  }
-
-  const blockedShell = unverifiedShellEdits(target);
-  if (blockedShell.length > 0) {
-    fail("install-shell-unverified", `shell edits have no supported edit provenance or before-image: ${blockedShell.join(", ")}; manual reconciliation is required; previous install is unchanged`, EXIT_BLOCKED);
-  }
-
-  const plan = await planner.plan(target, {
-    otherRecords: records,
-    force: true,
-    // A shared parent directory another tool has since written into is a safe leftover during a
-    // replacement: the old tool's own files are removed, but the directory and the other files are
-    // never recursed into. Ordinary uninstall keeps its blocking `not-empty` conflict.
-    skipNonEmptyOwnedDirectories: true,
+  const { target: delegated, plan, conflicts, blocked, blockedShell } = await buildCleanupPlan(existing, records, {
+    force: true, getBlob: (id) => storage.getBlob(id),
   });
+  const target = delegated.record;
+  if (conflicts.length) fail("install-delegated-conflict", conflicts.join("\n\t"), EXIT_BLOCKED);
+  if (blocked.length) fail("install-delegated-unverified", `${blocked.join("; ")}; previous install is unchanged`, EXIT_BLOCKED);
+  if (blockedShell.length) fail("install-shell-unverified", `shell edits have no supported edit provenance or before-image: ${blockedShell.join(", ")}; manual reconciliation is required; previous install is unchanged`, EXIT_BLOCKED);
 
   // Show the same labeled plan as uninstall before a forced reinstall removes anything (D11).
   for (const line of formatUninstallPlan(plan, "apply")) {
@@ -623,12 +668,21 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   // The previous install and its record are left exactly as they were,
   // so a replacement never deletes the old executable and then strands a parent-directory record.
   if (plan.incomplete) {
-    log("Error");
-    log("\tprevious install is unchanged; resolve the conflicts above, then retry the forced reinstall");
-    process.exit(1);
+    fail("install-previous-blocked", "previous install is unchanged; resolve the conflicts above, then retry the forced reinstall", EXIT_BLOCKED);
   }
+  if (plan.requiresSudo && process.getuid?.() !== 0) fail("install-privilege", "previous cleanup requires root privileges; previous install is unchanged", EXIT_BLOCKED);
 
-  const result = await applyUninstallPlan(plan, { storage });
+  await beforeApply(plan);
+  let completed: ApplianceOutcome[] = [];
+  const result = await applyUninstallPlan(plan, {
+    storage,
+    beforeAction: async (index) => checkpoint(plan, completed, index),
+    afterAction: async (index, outcomes) => {
+      completed = [...outcomes];
+      checkpoint(plan, completed, index + 1);
+    },
+    nativeCheckpoint: async (index, receipt) => checkpoint(plan, completed, index, { index, receipt }),
+  });
 
   const announced = new Set(
     plan.actions
@@ -648,14 +702,12 @@ async function removePrevious(storage: FileStorage, existing: RecordV3, records:
   if (incomplete) {
     const reduced = reduceRecordForRetry(target, result);
     const remaining = reduced.owned.length + reduced.mutated.length + reduced.deleted.length;
-    if (remaining === 0) await storage.removeRecord(reduced.id);
+    if (remaining === 0) await storage.removeRecord(reduced.id, reduced.revision);
     else await storage.saveRecord(reduced);
-    log("Error");
-    log("\tprevious install could not be fully removed; run tret uninstall <name>, then tret install <URL> --force");
-    process.exit(1);
+    fail("install-previous-incomplete", "previous install could not be fully removed; run tret recover to inspect the interrupted operation and reconcile retained files before planning cleanup again", EXIT_ERROR);
   }
 
-  await storage.removeRecord(existing.id);
+  await storage.removeRecord(existing.id, existing.revision);
 }
 
 /** Joins two optional coverage reasons; either side may be absent. */

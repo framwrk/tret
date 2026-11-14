@@ -16,6 +16,7 @@ import { clearUpdateCheck } from "../lib/updatecheck";
 import { fail } from "../lib/failure";
 import { install } from "./install";
 import { runInstaller } from "../lib/installer";
+import { runStoreOperation } from "../lib/command-operation";
 
 /**
  * The command entry. A bare `tret update` updates Tret itself; a selector updates one tracked tool
@@ -32,12 +33,19 @@ export async function update(tool?: string, yes = false): Promise<void> {
 
 /** Re-runs the published Tret install script and clears the cached update-check result. */
 export async function updateTret(): Promise<void> {
+  const storage = new FileStorage();
+  if (!storage.inOperation) return runStoreOperation(storage, () => updateTret());
   const script = await fetchScript(UPDATE_SCRIPT_URL);
   if (script === undefined) {
     fail("update-fetch", `could not download the update script: ${UPDATE_SCRIPT_URL}`);
   }
 
+  await storage.prepareCurrentFormat();
+  let operation = storage.operations.begin("metadata");
+  const execution = { recordId: "tret-self", roots: [storage.homeDir], scriptSha256: new Bun.CryptoHasher("sha256").update(script).digest("hex") };
+  operation = storage.operations.checkpoint(operation, { stage: "running", execution, unknownSince: new Date().toISOString(), reason: "self-update runner; binary activation is not transactional" });
   const exitCode = await runInstaller(script);
+  storage.operations.checkpoint(operation, { stage: exitCode === 0 ? "completed" : "partial", execution: { ...execution, exitCode } });
   if (exitCode !== 0) {
     fail("update-script", `update script exited with code ${exitCode}`);
   }
@@ -56,9 +64,11 @@ export async function updateTret(): Promise<void> {
  * the working install untouched; a failure during removal keeps a reduced record to retry.
  */
 export async function updateTrackedTool(selector: string, yes: boolean): Promise<void> {
+  const storage = new FileStorage();
+  if (!storage.inOperation) return runStoreOperation(storage, () => updateTrackedTool(selector, yes));
   let records: RecordV3[];
   try {
-    records = await new FileStorage().loadRecords();
+    records = await storage.loadRecords();
   } catch (error) {
     fail("update-records", `could not read the install records: ${message(error)}`);
   }

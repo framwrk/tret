@@ -9,7 +9,7 @@
     <title>Tret — A CLI tool that installs other CLI tools</title>
     <meta
       name="description"
-      content="Tret installs CLI tools from their install scripts, records what each install changes in a bounded capture window, and removes them cleanly later. Free and open source for macOS and Linux."
+      content="Tret installs CLI tools from their install scripts, records bounded installer observations, and requires explicit object approvals for verified cleanup. Free and open source for macOS and Linux."
     />
     <meta
       name="theme-color"
@@ -392,7 +392,7 @@
           <p class="lead mt-4">A CLI tool that installs other CLI tools.</p>
           <p class="mt-6">
             Tret runs a tool's installer inside a bounded capture window, records what it creates, overwrites, or deletes
-            there, and uninstalls cleanly later — a path is touched only while its recorded fingerprint still matches.
+            there as observations. Cleanup needs explicit approval for each object and verifies its identity and fingerprint again.
           </p>
           <div class="code mt-6">
             <code><span class="prompt">$ </span>curl -fsSL https://tret.framwrk.com/scripts/install.sh | bash</code>
@@ -435,7 +435,7 @@
             <div class="card">
               <div class="card-title">Uninstall</div>
               <div class="card-desc">
-                Removes owned files and symlinks only while their recorded fingerprints match; divergent paths are kept.
+                Removes explicitly approved objects after identity and fingerprint checks; unresolved effects stay tracked.
                 Package-manager and recursive managed-install cleanup stay blocked for manual reconciliation.
                 Shell edits without a recorded before-image stay blocked too; markers do not prove a line was added.
               </div>

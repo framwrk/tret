@@ -24,6 +24,7 @@ import { fail } from "../lib/failure";
 import { installObservationRoots } from "../lib/platform/roots";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { runProgram } from "../lib/installer";
+import { runStoreOperation } from "../lib/command-operation";
 
 /** Why a path the trace saw was not merged into the record. */
 export type TraceSkipReason = "already-tracked" | "claimed-by-other";
@@ -144,6 +145,7 @@ export async function trace(
   }
 
   const storage = options.storage ?? new FileStorage();
+  if (storage instanceof FileStorage && !storage.inOperation) return runStoreOperation(storage, () => trace(selector, yes, options));
   let records: RecordV3[];
   try {
     records = await storage.loadRecords();
@@ -190,6 +192,10 @@ export async function trace(
   const platform = currentPlatform();
   const roots = options.roots ?? installObservationRoots(platform);
   const run = options.run ?? (() => runProgram(record.executable));
+  if (storage instanceof FileStorage) await storage.prepareCurrentFormat();
+  const operationLog = storage instanceof FileStorage ? storage.operations : undefined;
+  let operation = operationLog?.begin("trace", [record]);
+  if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: record, execution: { recordId: record.id, roots, executable: record.executable } });
 
   // Capture starts before the tool runs and the tool is a descendant of this process, so the whole
   // invocation is inside the observed tree. A backend that cannot attach throws before `run`, so the
@@ -203,6 +209,15 @@ export async function trace(
     roots,
     fallbackRoots: heuristicFallbackRoots(roots),
     kind: "trace",
+    beforeRun: async (session) => {
+      if (!operation || !operationLog) return;
+      operation = operationLog.checkpoint(operation, { pins: [...(session.beforeImages?.keys() ?? [])], ...(session.baseline ? { baseline: session.baseline } : {}) });
+      for (const [id, bytes] of session.beforeImages ?? []) {
+        const stored = await storage.putBlob(bytes);
+        if (stored.id !== id) throw new Error("capture before-image does not match its content address");
+      }
+      operation = operationLog.checkpoint(operation, { stage: "running", unknownSince: new Date().toISOString() });
+    },
     run,
     ...(options.now === undefined ? {} : { now: options.now }),
     onPrimaryFailure: (error) =>
@@ -215,6 +230,12 @@ export async function trace(
     );
   }
   const window = attempt.session;
+  if (operation && operationLog) {
+    operation = operationLog.checkpoint(operation, { stage: "captured", capture: {
+      backend: window.journal.backend, completeness: window.journal.completeness,
+      events: window.journal.events, ...(window.journal.partialReason ? { partialReason: window.journal.partialReason } : {}),
+    } });
+  }
 
   const effects = normalizeJournal({
     journal: window.journal,
@@ -229,7 +250,9 @@ export async function trace(
     ...merged.record,
     capture: { ...record.capture, segments: [...(record.capture.segments ?? []), segment] },
   };
-  await storage.saveRecord(updated);
+  if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: updated });
+  await storage.saveRecord(updated, "trace");
+  if (operation && operationLog) operationLog.checkpoint(operation, { stage: window.error !== undefined || window.value !== 0 ? "partial" : "completed" });
 
   const exitCode = window.value ?? 1;
   if (isJsonMode()) {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -27,6 +28,7 @@ async function runCliOutput(
   home: string,
   extraEnv: Record<string, string> = {},
 ): Promise<{ code: number; output: string }> {
+  await approveFixtureCandidates(home, args);
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, ...extraEnv, HOME: home },
     stdin: "ignore",
@@ -64,7 +66,7 @@ describe("find", () => {
       version: number;
       records: StoredRecord[];
     };
-    expect(file.version).toBe(3);
+    expect(file.version).toBe(4);
     const record = file.records.find((entry) => entry.name === "adoptme");
     expect(record).toBeDefined();
     expect(record?.source).toBe("find");
@@ -107,7 +109,7 @@ describe("find", () => {
     // reports the edit, and never deletes the folder around it.
     writeFileSync(edited, "user edit\n");
     const dryRun = await runCliOutput(["uninstall", name, "--dry-run"], home);
-    expect(dryRun.code).toBe(0);
+    expect(dryRun.code).toBe(5);
     expect(dryRun.output).toContain(`would remove ${state}`);
     expect(dryRun.output).toContain(`conflict ${edited} (modified)`);
     expect(dryRun.output).toContain(`conflict ${folder} (not-empty)`);

@@ -27,8 +27,8 @@ JSON help and version output each contain one document; neither checks for updat
 
 Execution consent grants permission to run the selected script. It does not prove
 that subsequently observed paths belong to the installer or approve broader
-cleanup. Separate weaker-capture consent and per-path cleanup authority remain
-open implementation work.
+cleanup. Per-path cleanup requires a separate explicit approval. Separate weaker-capture
+consent remains open implementation work.
 
 ## Classification
 
@@ -40,9 +40,9 @@ change does not add separate weaker-capture consent or fix strace readiness.
 Fanotify is available only to development code that explicitly injects
 `attachFanotify` into `LinuxCaptureBackend` with a chosen helper path. Its journal
 always reports partial coverage. Its event fidelity is unverified, and the partial
-label currently does not block ordinary fingerprint-based cleanup of its records.
-The packaged helper remains for experiments. Full per-effect gating of
-legacy records, child-launch tracing and real-kernel fidelity tests remain open.
+label grants no cleanup authority; its candidates require the same explicit approvals.
+The packaged helper remains for experiments. Every record now requires per-effect
+cleanup approval; child-launch tracing and real-kernel fidelity tests remain open.
 
 On Linux, requesting `O_CREAT` does not establish that a file was created: it may
 open an existing file. Only a successful exclusive-create observation can produce
@@ -67,23 +67,26 @@ ancestor chain, including existing platform aliases such as macOS `/var`.
 Replacing a parent with a symlink or replacing a file with identical bytes
 invalidates the plan. An unreadable ancestor makes inspection unverifiable.
 
-These checks detect substitutions before revalidation; path-based filesystem
-operations still have a race between the last check and the syscall. They do not
-provide an atomic directory-relative removal guarantee or protect against a
-malicious concurrent process with the same privileges. Ordinary directory removal
+Approved target application pins a parent descriptor, captures the candidate in
+private staging with no-replace rename, verifies the captured object, and only then
+removes/restores it. A substituted object is rolled back or retained for recovery;
+restoration cannot overwrite a concurrently reoccupied name. This protects object
+identity and namespace boundaries, not writes through already-open descriptors or
+hostile same-user tampering. Private-state persistence still has path-based limits.
+Ordinary directory removal
 is non-recursive. Tret does not invoke package managers or recursively delete
 recognized managed-install roots during cleanup. A marker, launcher, package name,
 matching fingerprint, or old `complete` label cannot authorize all descendants or
 manager lifecycle hooks. No verified adapter currently supplies that authority.
 
-Uninstall, its dry-run, forced reinstall, and tracked update refuse these scopes
+Full recorded-scope uninstall, its dry-run, forced reinstall and tracked update refuse these scopes
 with exit 5 before cleanup or replacement execution. `--yes` and `--force` do not
 bypass the refusal. `inspect` marks the plan incomplete and reports the blocked
 scope. Shared-claim conflicts remain visible. Launchers, payloads, and records stay
 intact for manual reconciliation; `forget` only discards tracking, not the files.
 Recognizing a layout from a legacy executable can block unsafe cleanup but never
 authorizes a fresh removal scope. This containment does not implement a verified
-payload inventory, package lifecycle adapter, or recovery workflow.
+payload inventory, package lifecycle adapter, or automatic delegated recovery.
 
 `--force` can permit a known content/link mismatch already present in a preview.
 It cannot override another record's claim, including shell-config claims, or a
@@ -96,7 +99,7 @@ owned path. Those lines may predate the installer even when the final profile ha
 matches. The name-based line editor is disabled.
 
 Recorded shell mutations/deletions without a before-image remain unresolved.
-Uninstall, its dry-run, forced reinstall, repeated install and tracked update exit
+Full recorded-scope uninstall, its dry-run, forced reinstall, repeated install and tracked update exit
 5 before cleanup or replacement execution; profiles, executables and records are
 preserved for manual reconciliation. `--yes` and `--force` cannot grant edit
 provenance. `inspect` marks the plan incomplete and lists `shell.blocked`, including
@@ -106,15 +109,18 @@ only authorizes refusal, never a write.
 Matching uses normalized recorded spellings and the declared platform table; it
 does not resolve symlink aliases. Equivalent target spellings, symlinked homes or
 profiles, and undeclared locations such as Linux `/etc/profile` or Darwin
-`~/.zshrc.d` can miss this guard and retain the existing detect-only limitations.
-Broader identity-aware scope reporting and retained receipts remain open work.
+`~/.zshrc.d` can miss this shell-specific guard. They still require explicit
+per-effect cleanup approval. Broader identity-aware shell scope reporting remains
+open work; operation receipts retain unresolved recorded effects.
 Because backups default to off, an install that edits a declared profile will
 usually remain blocked until manual reconciliation and an explicit tracking
 discard. Repeating the installer or adding `--force` does not resolve that state.
 
 Before-images remain with the ordinary file planner's whole-file restoration
-checks. This containment does not establish attribution from a backup or implement
-precise edit reversal, three-way merging, broader per-effect authority or recovery.
+checks and require explicit restoration approval. A backup does not establish
+attribution. Precise edit reversal and three-way merging remain pending; the
+per-effect approval and recovery boundaries are described in
+[authority-and-operations.md](authority-and-operations.md).
 `forget` discards tracking without editing a profile or removing the executable.
 
 ## Backup privacy
@@ -126,11 +132,25 @@ observation roots do not override those content exclusions. Name-based exclusion
 cannot identify every secret. Size limits apply to returned bytes as well as the
 pre-read stat; aggregate and streaming resource limits remain separate work.
 
+## Explicit authority and receipts
+
+V4 normalization gives legacy records no approvals. `approve` binds one remove or
+regular-file restore to the current object, parent chain and content/link state;
+this is user authorization, not process attribution. Default cleanup preflights all
+recorded effects. `--approved-only` explicitly selects an approved subset and keeps
+other effects/scopes visible and tracked after the executable is gone. Protected
+roots, hard-link aliases, unsupported nodes, missing parents, missing/corrupt blobs
+and stale approvals remain blocked. Directory approval is non-recursive.
+
+Whole-command kernel leases, record revisions, durable operations and native action
+cursors retain available evidence across interruption. Resume never reruns an
+installer or blindly repeats a completed restore. See [authority and operations](authority-and-operations.md)
+and [recovery](recovery.md) for commands, supported scope and current limits.
+
 ## Remaining implementation work
 
-The safety plan also requires per-effect cleanup authority, retained receipts,
-explicit weaker-capture consent, durable operations, race-resistant filesystem
-primitives, bounded recovery storage, verified delegation, precise restoration,
+The safety plan still requires explicit weaker-capture consent, live capture checkpoints,
+aggregate recovery/capture budgets, verified delegation, richer precise restoration,
 and native acceptance/release gates. Until these are implemented and verified,
 heuristic fingerprints and a successful uninstall are not proof that every effect
 belonged to the installer or that an installation was fully reversed.

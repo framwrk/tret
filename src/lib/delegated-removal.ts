@@ -1,6 +1,9 @@
 import type { AbsolutePath, RecordV3 } from "../types";
 import { resolve, sep } from "node:path";
+import { canonicalCandidate } from "./cleanup-authority";
 import { managedPackageRemovalScope } from "./package-manager";
+import { nativeParent } from "./native-filesystem";
+import { realpathSync } from "node:fs";
 
 /** One record path that would be affected by a delegated removal. */
 export type DelegatedRemovalConflict = {
@@ -14,6 +17,32 @@ type RecordClaim = {
   /** Managed scopes claim their whole subtree, so a parent scope also overlaps its descendants. */
   recursive?: boolean;
 };
+
+/** One exact/ancestor/managed-scope claim policy for approval, planning and recovery. */
+export function cleanupClaimChecker(records: readonly RecordV3[], self: RecordV3, home = process.env.HOME): (path: string) => boolean {
+  const others = records.filter((record) => record.id !== self.id);
+  const resolvedScope = (path: string): string => {
+    try { return realpathSync(path); } catch { return canonicalCandidate(path); }
+  };
+  const canonical = others.map((record) => ({
+    ...record,
+    owned: record.owned.map((entry) => ({ ...entry, path: canonicalCandidate(entry.path) })),
+    mutated: record.mutated.map((entry) => ({ ...entry, path: canonicalCandidate(entry.path) })),
+    deleted: record.deleted.map((entry) => ({ ...entry, path: canonicalCandidate(entry.path) })),
+    ...(record.managedInstall ? { managedInstall: { ...record.managedInstall, root: resolvedScope(record.managedInstall.root) } } : {}),
+    ...(record.managedBy?.globalRoot ? { managedBy: { ...record.managedBy, globalRoot: resolvedScope(record.managedBy.globalRoot) } } : {}),
+  }));
+  const nodeKey = (path: string): string | undefined => {
+    try {
+      const { directory, name } = nativeParent(path);
+      try { const node = directory.inspect(name); return node ? `${node.dev}:${node.ino}:${node.kind}` : undefined; }
+      finally { directory.close(); }
+    } catch { return undefined; }
+  };
+  const nodes = new Set(others.flatMap((record) => [...record.owned, ...record.mutated, ...record.deleted]).map((entry) => nodeKey(entry.path)).filter((key) => key !== undefined));
+  return (path) => nodes.has(nodeKey(path) ?? "") || findDelegatedRemovalConflicts([path], others, self, home).length > 0
+    || findDelegatedRemovalConflicts([canonicalCandidate(path)], canonical, self, home ? resolvedScope(home) : undefined).length > 0;
+}
 
 /** Finds the first claim from another record inside each delegated removal scope. */
 export function findDelegatedRemovalConflicts(

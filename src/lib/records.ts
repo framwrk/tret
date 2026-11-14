@@ -1,11 +1,8 @@
 import type { MutatedEntry, OwnedEntry, RecordFileV3, RecordV3, ToolRecord } from "../types";
 
-// Records v3 and the explicit v2 -> v3 migration (plan section 7).
-//
-// The pre-rewrite v2 writers (`saveRecord`/`removeRecord`) are **disabled**: version 3 is the only
-// format any code path may write, so a late legacy call can never drop a migrated file back to v2
-// and mix record shapes. Every persisted record goes through `FileStorage`. The pure
-// migration functions below are retained, because `FileStorage` reads v2 files through them.
+// Historical v2/v3 validation and pure v2 -> v3 normalization. Production writes version 4
+// through FileStorage; records-v4.ts adds evidence/revision semantics. Legacy mutation APIs fail
+// instead of downgrading a current store or mixing record shapes.
 //
 // Migration is a pure transformation: it reads no files and writes nothing. Callers persist the
 // result, so a malformed file throws instead of producing an empty one, and no entry is dropped or
@@ -14,7 +11,7 @@ import type { MutatedEntry, OwnedEntry, RecordFileV3, RecordV3, ToolRecord } fro
 /** Raised when a retired pre-rewrite v2 writer is invoked; nothing may write v2 any more. */
 export class LegacyRecordWriteError extends Error {
   constructor(name: string) {
-    super(`refusing to write the legacy v2 record for ${name}; tret persists version 3 records only`);
+    super(`refusing to write the legacy v2 record for ${name}; tret persists current-version records only`);
     this.name = "LegacyRecordWriteError";
   }
 }

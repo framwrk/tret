@@ -1,4 +1,5 @@
 // Types shared across Tret's commands and library code.
+import type { CleanupApproval } from "./lib/cleanup-authority";
 
 // Units
 
@@ -55,21 +56,14 @@ export type RecordFile = {
 
 /**
  * How much of an install's filesystem activity a capture backend could attribute.
- * `complete` proves the process tree was observed end to end; `partial` observed it but lost
+ * `complete` reports no known capture loss within the bounded scope; `partial` reports lost
  * coverage (daemonized descendants, a uid transition); `heuristic` infers changes without PID
  * attribution. Records carry this so a heuristic macOS record and a complete Linux one stay
  * distinguishable in `tret list` and uninstall output.
  */
 export type CaptureCompleteness = "complete" | "partial" | "heuristic";
 
-/**
- * How much a record proves about the paths it holds (D11). `proven` means the capture
- * attributed the paths to the installer's observed process tree; `observed` means they were only seen
- * to differ across a bounded observation window, where unrelated activity is indistinguishable from
- * installer output. It is derived from `CaptureInfo.completeness` by
- * `src/lib/ownership.ts::ownershipConfidence` and never stored, so a record's label and its paths
- * cannot drift apart.
- */
+/** Historical display labels. Window completeness alone now yields `observed`, never authority. */
 export type OwnershipConfidence = "proven" | "observed";
 
 /** Privilege an install ran under; recorded explicitly instead of implied per platform (D8). */
@@ -109,13 +103,13 @@ export type CaptureSettings = {
 };
 
 /**
- * The kind of node an install owns. Symlinks are recorded by target, never followed.
+ * The kind of a candidate node. Symlinks are recorded by target, never followed.
  * `"unknown"` is reserved for migrated v2 records, which stored paths without a kind; it is never
  * produced by a capture backend, and uninstall treats it as non-removable rather than guessing.
  */
 export type OwnedKind = "file" | "directory" | "symlink" | "unknown";
 
-/** A path an install created or now owns, with the content fingerprint to verify before removal. */
+/** A historical "owned" candidate and its installed fingerprint; neither field supplies cleanup authority. */
 export type OwnedEntry = {
   path: AbsolutePath;
   kind: OwnedKind;
@@ -145,17 +139,17 @@ export type DeletedEntry = {
   mode?: number;
 };
 
-/** A package manager whose global mode Tret can delegate package removal to. */
+/** A recognized package-manager layout; recognition does not authorize manager execution. */
 export type PackageManagerId = "bun" | "npm" | "pnpm" | "yarn";
 
 /**
  * A global package an install registered through a package manager's global mode. Its shared
  * `node_modules` root, lockfile, and manifest are never owned (they are updated by every global
- * install), so uninstall asks the manager to remove the package instead of deleting them.
+ * install), so these scopes remain unresolved without a verified adapter.
  */
 export type ManagedPackage = {
   manager: PackageManagerId;
-  /** Package spec passed to the manager's remove command, e.g. `@scope/name`. */
+  /** Package identifier for reporting, e.g. `@scope/name`; never passed to a manager by cleanup. */
   package: string;
   /**
    * Absolute shared root the package's global state lives under (the directory containing the
@@ -167,12 +161,9 @@ export type ManagedPackage = {
 };
 
 /**
- * A tool installed through its own first-party "managed install" layout rather than a package
- * manager: a marker file inside an install root declares the layout, and the installer owns that
- * root plus a launcher. The root's payload is a full `node_modules` tree, which capture deliberately
- * skips everywhere, so the shared payload is never owned. Uninstall verifies the marker and delegates
- * the whole root to a recursive removal before removing the remaining owned paths, so the untracked
- * payload can no longer leave the root `not-empty` and strand the record (see `src/lib/managed-install.ts`).
+ * Recognition metadata for a first-party managed layout. It supplies no payload inventory or
+ * recursive removal authority. Unknown payload stays unresolved; only separately approved ordinary
+ * objects outside that scope can participate in an explicitly narrower cleanup request.
  */
 export type ManagedInstall = {
   /** Marker kind that identifies the layout, e.g. `pi-managed-install`. */
@@ -192,6 +183,10 @@ export type ManagedInstall = {
 export type RecordV3 = {
   /** Stable identifier for the record, independent of the tool name. */
   id: string;
+  /** Present on v4 storage snapshots; zero denotes evidence read from a legacy file. */
+  revision?: number;
+  /** Absent on historical records; read normalization supplies unapproved candidate evidence. */
+  evidence?: EffectEvidence[];
   name: string;
   source: "install" | "find";
   url: string;
@@ -214,13 +209,12 @@ export type RecordV3 = {
   deleted: DeletedEntry[];
   /**
    * Set when the executable was put on disk by a package manager's global mode. The shared global
-   * state stays out of `owned`; uninstall delegates removal to the manager (see `src/lib/package-manager.ts`).
+   * state stays out of `owned`; full-scope cleanup refuses unverified manager effects.
    */
   managedBy?: ManagedPackage;
   /**
-   * Set when the tool installed itself through a first-party managed layout (a marker file under
-   * `root`). The root and its untracked payload stay out of `owned`; uninstall delegates the whole
-   * root to a recursive removal before removing the rest (see `src/lib/managed-install.ts`).
+   * Set when a first-party managed layout is recognized. The root/payload remain unresolved;
+   * recognizing a marker never authorizes recursive removal.
    */
   managedInstall?: ManagedInstall;
 };
@@ -229,6 +223,29 @@ export type RecordV3 = {
 export type RecordFileV3 = {
   version: 3;
   records: RecordV3[];
+};
+
+/** A candidate effect, separate from any future object-bound cleanup authorization. */
+export type EffectEvidence = {
+  id: string;
+  path: AbsolutePath;
+  section: "owned" | "mutated" | "deleted";
+  origin: "legacy-v2" | "legacy-v3" | "capture" | "trace" | "find" | "adoption";
+  attribution: "unknown" | "observed";
+  beforeImage: "referenced" | "unavailable";
+} & ({ authority: "none" } | { authority: "user-approved"; approval: CleanupApproval });
+
+/** Semantic storage boundary: v3 readers must refuse this wrapper. */
+export type RecordV4 = RecordV3 & {
+  revision: number;
+  evidence: EffectEvidence[];
+};
+
+export type RecordFileV4 = {
+  version: 4;
+  /** Monotonic across saves and removals, so delete/recreate cannot revive a stale revision. */
+  sequence: number;
+  records: RecordV4[];
 };
 
 // Update check

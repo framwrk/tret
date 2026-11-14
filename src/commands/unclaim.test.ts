@@ -2,6 +2,7 @@ import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../con
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { RecordV3 } from "../types";
+import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -26,6 +27,7 @@ afterEach(() => {
 });
 
 async function runCliResult(args: string[], home: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  await approveFixtureCandidates(home, args);
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",

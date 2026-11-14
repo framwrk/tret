@@ -15,6 +15,7 @@ import type { RecordV3 } from "../types";
 import { fail } from "../lib/failure";
 import { log } from "../lib/utilities";
 import { resolve } from "node:path";
+import { runStoreOperation } from "../lib/command-operation";
 import { unclaimSharedPath } from "../lib/uninstall-planner";
 
 /** Drops one record's claim on a shared path without touching disk or the other record. */
@@ -24,6 +25,7 @@ export async function unclaim(selector: string | undefined, rawPath: string | un
   }
 
   const storage = new FileStorage();
+  if (!storage.inOperation) return runStoreOperation(storage, () => unclaim(selector, rawPath));
   let records: RecordV3[];
   try {
     records = await storage.loadRecords();

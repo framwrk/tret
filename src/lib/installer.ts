@@ -1,9 +1,10 @@
 import { chmodSync, mkdtempSync, rmSync, writeSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { currentOperationDescriptor } from "./operation-lease";
 import { isJsonMode } from "./json-output";
 import { join } from "node:path";
 import { runLogOutput } from "./runlog";
 import { spawn } from "node:child_process";
-import { tmpdir } from "node:os";
 import { ttyOutput } from "./utilities";
 
 const TEMP_PREFIX = "tret-install-";
@@ -35,7 +36,16 @@ export async function runProgram(program: string, args: string[] = []): Promise<
   return await new Promise<number>((resolve) => {
     // Keep stderr attached to the terminal when it is one, so programs still see the same TTY.
     // In non-interactive runs, pipe it to retain the failure tail and forward synchronously.
-    const child = spawn(program, args, { stdio: ["inherit", "pipe", process.stderr.isTTY ? "inherit" : "pipe"] });
+    const lease = currentOperationDescriptor(join(process.env.HOME ?? homedir(), ".tret"));
+    // A foreground supervisor holds the operation's kernel lease even if Tret is killed. Its
+    // child gets fd 3 closed, so daemonized descendants cannot accidentally retain the lease.
+    // Arguments remain positional data; none are evaluated as shell source.
+    const supervisor = 'trap ":" INT QUIT TERM HUP; "$@" 3>&-; code=$?; exit "$code"';
+    const child = lease === undefined
+      ? spawn(program, args, { stdio: ["inherit", "pipe", process.stderr.isTTY ? "inherit" : "pipe"] })
+      : spawn("/bin/sh", ["-c", supervisor, "tret-supervisor", program, ...args], {
+          stdio: ["inherit", "pipe", process.stderr.isTTY ? "inherit" : "pipe", lease],
+        });
     child.stdout?.on("data", (chunk: Buffer) => {
       writeOutput(chunk);
       runLogOutput(chunk);

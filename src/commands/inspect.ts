@@ -10,16 +10,15 @@ import type { CaptureCompleteness, CaptureSegment, OwnedKind, OwnershipConfidenc
 import { EXIT_AMBIGUOUS, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import type { UninstallPlanner, UninstallVerification } from "../lib/uninstall-planner";
 import { VerifiedUninstallPlanner, inspectPath } from "../lib/uninstall-planner";
-import { delegatedRemovalBlocks, delegatedScopes, recordTarget } from "../lib/record-target";
 import { emitJson, isJsonMode } from "../lib/json-output";
-import { findDelegatedRemovalConflicts, formatDelegatedRemovalConflict } from "../lib/delegated-removal";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
+import { operationMatches, operationSummary } from "../lib/operation-log";
 import { FileStorage } from "../lib/store";
+import { buildCleanupPlan } from "../lib/cleanup-plan";
 import { fail } from "../lib/failure";
 import { formatWindow } from "../lib/session";
 import { log } from "../lib/utilities";
 import { ownershipConfidence } from "../lib/ownership";
-import { unverifiedShellEdits } from "../lib/shellconfig";
 
 /** One owned path and what the on-disk state says about it. */
 export type InspectOwned = {
@@ -89,6 +88,7 @@ export type InspectReport = {
 
 /** Seams for tests: the path inspector and the planner can both be replaced. */
 export type InspectOptions = {
+  getBlob?: (id: string) => Promise<Uint8Array | undefined>;
   inspect?: (path: string) => UninstallVerification;
   planner?: UninstallPlanner;
   home?: string | undefined;
@@ -104,17 +104,10 @@ export async function buildInspectReport(
 ): Promise<InspectReport> {
   const inspect = options.inspect ?? ((path: string) => inspectPath(path));
   const home = options.home ?? Bun.env.HOME;
-  const target = recordTarget(record, home);
-  const planner = options.planner ?? new VerifiedUninstallPlanner(inspect);
-  const plan = await planner.plan(target.record, {
-    otherRecords: records,
+  const { target, plan, conflicts, blocked, blockedShell } = await buildCleanupPlan(record, records, {
+    home, planner: options.planner ?? new VerifiedUninstallPlanner(inspect),
+    ...(options.getBlob ? { getBlob: options.getBlob } : {}),
   });
-
-  const conflicts = findDelegatedRemovalConflicts(delegatedScopes(target, home), records, record, home).map(
-    (conflict) => formatDelegatedRemovalConflict(conflict),
-  );
-  const blocked = delegatedRemovalBlocks(target);
-  const blockedShell = unverifiedShellEdits(target.record, undefined, home);
 
   const owned: InspectOwned[] = target.record.owned.map((entry) => {
     const verification = inspect(entry.path);
@@ -133,7 +126,7 @@ export async function buildInspectReport(
     return {
       path: entry.path,
       exists: verification.exists,
-      restorable: entry.beforeBlob !== undefined,
+      restorable: plan.actions.some((action) => action.path === entry.path && action.action === "restore"),
       changedSinceInstall:
         !verification.exists ||
         (entry.installedHash !== undefined && verification.hash !== entry.installedHash),
@@ -145,7 +138,7 @@ export async function buildInspectReport(
     return {
       path: entry.path,
       exists: verification.exists,
-      restorable: entry.beforeBlob !== undefined,
+      restorable: plan.actions.some((action) => action.path === entry.path && action.action === "restore"),
       // A path recorded as deleted that exists again was recreated after the install.
       changedSinceInstall: verification.exists,
     };
@@ -280,6 +273,15 @@ export async function inspect(selector: string | undefined): Promise<void> {
     if (selection.reason === "ambiguous") {
       for (const candidate of formatSelectionCandidates(selection)) log(`\t${candidate}`);
       fail("inspect-ambiguous", selection.message, EXIT_AMBIGUOUS);
+    }
+    const receipts = new FileStorage().operations.list().filter((operation) => operationMatches(operation, selector));
+    if (receipts.length) {
+      if (isJsonMode()) emitJson({ ok: true, command: "inspect", tool: { name: selector, state: "receipt-only", receipts: receipts.map(operationSummary) } });
+      else {
+        log(`recovery evidence for ${selector}; no active record remains`);
+        for (const receipt of receipts) log(`\t${receipt.id}: ${receipt.stage}; inspect with tret recover ${receipt.id}`);
+      }
+      return;
     }
     fail("inspect-not-found", selection.message, EXIT_NOT_FOUND);
   }

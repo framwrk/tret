@@ -2,7 +2,7 @@
 
 # Tret
 
-**Install and uninstall CLI tools with verified ownership.**
+**Observe CLI installs. Approve and verify cleanup.**
 
 [![Release](https://img.shields.io/github/v/release/framwrk/tret?sort=semver&label=release)](https://github.com/framwrk/tret/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -94,13 +94,48 @@ tret uninstall opencode --dry-run
 
 ## Uninstall
 
-- `tret uninstall <tool>` removes only files whose fingerprints still match.
-- Shell changes without a recorded before-image stay unresolved: uninstall, dry-run and replacement refuse with exit `5`, preserving profiles, executables and records. Tool names, PATH mentions, markers and final hashes do not prove which lines an installer added. `inspect` reports these paths under `shell.blocked`; `--force` does not bypass the refusal.
-- `tret uninstall <tool> --dry-run` prints the plan.
-- `tret uninstall <tool> --yes` skips confirmation.
-- Package-manager and recursive managed-install cleanup are blocked with exit `5`, including with `--force`. Recognition is not removal authority; `inspect` reports the unresolved package or managed root. Targets and records stay intact for manual reconciliation.
-- `tret unclaim <tool> <path>` resolves a `shared-owner` conflict without `--force`.
-- `tret forget <tool>` stops tracking a tool without deleting files.
+Capture and `find` record candidates. A fingerprint, backup or `complete` label
+supplies no cleanup authority, including for older records. Approve each supported
+object explicitly before removing or restoring it:
+
+```bash
+tret inspect opencode
+tret approve opencode ~/.local/bin/opencode --remove --yes
+tret uninstall opencode --approved-only --dry-run
+tret uninstall opencode --approved-only --yes
+tret recover
+```
+
+- `approve <tool> <path> --remove|--restore` binds one action to the current object,
+  its parents and content/link state. It is user authorization, not process proof.
+  JSON/noninteractive approval requires `--yes`. Directories grant no authority over descendants.
+  `approve <tool> <path> --revoke --yes` withdraws a decision without reading or changing
+  the target, so later user work can stay outside an approved cleanup scope.
+- Default uninstall requests **all recorded effects**. Missing approvals, unavailable
+  restoration, shared claims and unsupported scopes refuse before any target changes
+  (exit `5`). `--approved-only` explicitly narrows the scope and names retained effects;
+  those effects and their record remain available after the executable is gone.
+- A dry-run uses the same preflight as apply. Restore requires a valid before-image;
+  a stored reference alone is insufficient. Native application uses pinned directory
+  descriptors, private staging and no-replace renames. Unsupported capabilities refuse work.
+- `--force` permits a previewed installed-fingerprint mismatch only when the exact
+  current object has a valid cleanup approval. It never grants authority, bypasses
+  shared claims or accepts a changed object/ancestor.
+- Shell lines are never removed by names, PATH mentions or markers. Unsupported shell
+  edits and package/managed payloads stay unresolved; no manager or recursive cleanup runs.
+  A narrower approved scope may remove an explicitly approved launcher while retaining
+  its unresolved profile or managed payload for manual reconciliation.
+- `tret unclaim <tool> <path>` drops a shared claim without editing files.
+- `tret forget <tool>` drops active tracking without deleting files. Recovery evidence
+  and legacy originals can still retain blob references.
+- `tret recover [operation-id]` reads operation/receipt summaries. `--resume --yes`
+  reconciles supported checkpoints without rerunning external code; `--discard --yes`
+  relinquishes evidence and blob pins. Discard leaves target and staging files intact
+  and retains their locations for manual reconciliation.
+
+Exit `0` verifies the named cleanup scope, not machine-wide or historical reversal.
+A failure during apply exits `1` with retained evidence. Unfinished operations or
+retained native objects block new mutations until explicitly reconciled/discarded.
 
 ### Shared paths
 
@@ -138,10 +173,10 @@ rm -rf ~/.tret
 - Capture covers bounded observation roots under `$HOME`; `--observe` and `--observe-exclude` adjust them.
 - Tool updates preserve capture enablement, backup policy and size limit, and observation additions/exclusions. Older records without saved settings use the install defaults.
 - Backups store only files at or below the per-file limit.
-- With backups off, non-shell mutations and deletions are detect-only; declared shell changes instead block cleanup with exit `5` as described under Uninstall.
+- Without a permitted before-image, mutations and deletions remain unresolved. Default cleanup refuses them; an explicitly approved subset retains them by name.
 - `complete` means the tracer observed the full process tree with no known blind spot; otherwise the window is `partial`.
 - Known Linux gaps: cross-root renames, `openat2` creates, mmap writes, xattr/ownership changes, and hard links.
-- The CLI never selects fanotify automatically, even as root or with an adjacent helper / `TRET_FANOTIFY`. Development code must inject it explicitly; it always reports `partial`. Its records still use existing fingerprint-based cleanup: the partial label does not block removal. Per-effect authority gating and native event fidelity remain unfinished.
+- The CLI never selects fanotify automatically, even as root or with an adjacent helper / `TRET_FANOTIFY`. Development code must inject it explicitly; it always reports `partial`. Its observations have no automatic removal authority. Native event fidelity remains unverified.
 - macOS change detection is stamp-based and can miss edits that preserve size, mtime, and inode.
 
 ### Trust boundary
@@ -152,7 +187,7 @@ rm -rf ~/.tret
 - Use HTTPS sources you trust.
 - See [capture and removal safety](docs/safety-contract.md) for classification,
   filesystem revalidation, backup exclusions, and remaining limits.
-- Legacy record reads do not persist migration. The first mutation preserves the original; see [record storage and recovery](docs/recovery.md) for retained evidence, lock behavior, and current limits.
+- Legacy record reads do not persist migration. Version 4 stores add per-effect decisions and monotonic revisions; older binaries refuse them. Before external work, the format barrier and durable intent are written. The first migration preserves the exact original; see [record storage and recovery](docs/recovery.md) for retained evidence, lock behavior, and current limits.
 
 ## JSON and exit codes
 

@@ -4,6 +4,7 @@ import { emitJson, enableJsonMode } from "./src/lib/json-output";
 import { extractBackupSizeFlag, extractNameFlag, install, parseObserveFlags } from "./src/commands/install";
 import { log, info as printInfo } from "./src/lib/utilities";
 import { openRunLog, watchRunLog } from "./src/lib/runlog";
+import { approve } from "./src/commands/approve";
 import { checkForUpdate } from "./src/lib/updatecheck";
 import { fail } from "./src/lib/failure";
 import { find } from "./src/commands/find";
@@ -11,6 +12,7 @@ import { forget } from "./src/commands/forget";
 import { inspect } from "./src/commands/inspect";
 import { list } from "./src/commands/list";
 import { normalizeCliArgs } from "./src/lib/cli-args";
+import { recover } from "./src/commands/recover";
 import { trace } from "./src/commands/trace";
 import { unclaim } from "./src/commands/unclaim";
 import { uninstall } from "./src/commands/uninstall";
@@ -94,7 +96,7 @@ switch (command) {
   case "unadd":
   case "remove":
   case "uninstall":
-    await uninstall(ownArgs[1], ownArgs.includes("--dry-run"), ownArgs.includes("--yes"), ownArgs.includes("--force"));
+    await uninstall(ownArgs[1], ownArgs.includes("--dry-run"), ownArgs.includes("--yes"), ownArgs.includes("--force"), ownArgs.includes("--approved-only"));
     break;
 
   case "show":
@@ -121,6 +123,21 @@ switch (command) {
   case "unclaim":
     await unclaim(ownArgs[1], ownArgs[2]);
     break;
+
+  case "approve": {
+    const remove = ownArgs.includes("--remove");
+    const restore = ownArgs.includes("--restore");
+    const revoke = ownArgs.includes("--revoke");
+    if (Number(remove) + Number(restore) + Number(revoke) !== 1) fail("approve-usage", "approve requires exactly one of --remove, --restore or --revoke", EXIT_USAGE);
+    await approve(ownArgs[1], ownArgs[2], revoke ? "revoke" : restore ? "restore" : "remove", ownArgs.includes("--yes"));
+    break;
+  }
+
+  case "recover": {
+    if (ownArgs.includes("--resume") && ownArgs.includes("--discard")) fail("recover-usage", "select one of --resume or --discard", EXIT_USAGE);
+    await recover(ownArgs[1], ownArgs.includes("--resume") ? "resume" : ownArgs.includes("--discard") ? "discard" : "inspect", ownArgs.includes("--yes"));
+    break;
+  }
 
   case "update":
     // `tret update <tool>` updates one tracked tool by re-running its recorded installer; a bare
@@ -160,7 +177,7 @@ function help(): void {
   info(`Usage`);
   info(`\t${SCRIPT_NAME.toLowerCase()} [--version] [--json] <command> [arguments]`);
   info("");
-  info(`${SCRIPT_NAME} wraps installers and remembers what they added, so you can cleanly remove them later.`);
+  info(`${SCRIPT_NAME} records bounded installer observations; cleanup requires explicit object approvals.`);
   info("");
   info(
     `Each install runs inside a bounded capture window. ${SCRIPT_NAME} reports when the window was open and how completely it covered the installer's process tree; it never runs the installed tool itself to discover lazy writes.`,
@@ -182,8 +199,10 @@ function help(): void {
   );
   info(`\tlist              Show the tools Tret is tracking (alias: show)`);
   info(`\tinspect <tool>    Show what Tret recorded for a tool without changing anything: capture confidence, owned paths, changed files, and what uninstall would do`);
-  info(`\tfind <tool>       Find the files and folders an already-installed command owns and record them for uninstall`);
+  info(`\tfind <tool>       Record candidate paths for an installed command; cleanup requires separate approval`);
   info(`\ttrace <tool>      Run a tracked tool in a bounded observation window and append what it writes to the record (asks first; --yes when non-interactive)`);
+  info(`\tapprove <tool> <path> --remove|--restore|--revoke  Grant/withdraw one object approval (--yes when noninteractive)`);
+  info(`\trecover [id]     Inspect durable operations; --resume or --discard with --yes makes an explicit recovery decision`);
   info(`\tforget <tool>     Stop tracking a tool without touching its files (escape hatch for detect-only leftovers)`);
   info(`\tupdate [tool]     Update Tret to the latest release; with a tool name, re-run that tool's recorded installer`);
   info("");
@@ -196,7 +215,7 @@ function help(): void {
   info(`\t-h, --help    Show this help and exit`);
   info(`\t--version     Print the running version and exit`);
   info(
-    `\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, forget, unclaim, uninstall, update)`,
+    `\t--json        Emit one JSON document on stdout instead of human text (install, list, inspect, trace, approve, recover, forget, unclaim, uninstall, update)`,
   );
   info(`\t              --json works before or after the command; after -- it is passed to the install script`);
   info(`\t              Human text and installer output go to the terminal or stderr, so a piped run stays valid JSON`);
@@ -215,13 +234,14 @@ function help(): void {
   info(`\t--observe <path>          install: also observe this absolute path in the install's capture window (repeatable)`);
   info(`\t--observe-exclude <path>  install: drop one of the default capture roots for this install (repeatable)`);
   info(`\t--name <name> install: record the tool under this display name instead of the installed command's basename`);
-  info(`\t--dry-run     uninstall: preview what would be removed without deleting anything`);
+  info(`\t--dry-run     uninstall: preview the same preflight without changing targets (blocked scope exits 5)`);
+  info(`\t--approved-only uninstall: request only explicitly approved effects; retain and report other candidates`);
   info(`\t--yes         install: required when noninteractive; otherwise skip the installer confirmation`);
   info(`\t              uninstall, trace, update <tool>: skip the confirmation prompt`);
   info(`\t              install, uninstall, trace, and update <tool> require --yes in JSON mode`);
   info(`\t              Unsupported shell mutations/deletions refuse cleanup with exit 5 and retain the record; --force cannot bypass this`);
   info(`\t              Shell lines are never deleted by matching tool names, PATH text or markers; inspect reports unresolved profiles`);
-  info(`\t              Other detect-only effects retain their documented limits; tret forget drops tracking without deleting target files`);
+  info(`\t              Every cleanup action needs separate object approval; tret forget drops active tracking without deleting target files`);
   info(`\t--            install: every flag after this goes to the install script itself`);
   info("");
   info(`Exit codes (for automation; stable)`);
@@ -230,7 +250,7 @@ function help(): void {
   info(`\t2  the command line was wrong`);
   info(`\t3  no tracked install matched the selector`);
   info(`\t4  several tracked installs matched; select one by record id`);
-  info(`\t5  the command refused to proceed without explicit consent or force`);
+  info(`\t5  the command refused for missing consent/authority, unsafe scope, conflict or recovery requirements`);
   info("");
   info(`Examples`);
   info(`\t${SCRIPT_NAME.toLowerCase()} install curl -fsSL https://example.com/install.sh | bash`);

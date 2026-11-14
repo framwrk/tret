@@ -1,16 +1,20 @@
 import { FakeFsInspector, MemoryBaseline, captureBaseline } from "./capture/linux/inspect";
+import { applyUninstallPlan as applyPlan, nodeRemovalFileSystem } from "./removal";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { expect, test } from "bun:test";
 import { MacosHeuristicCaptureBackend } from "./capture/macos/backend";
 import type { RecordV3 } from "../types";
 import { VerifiedUninstallPlanner } from "./uninstall-planner";
-import { applyUninstallPlan } from "./removal";
 import { filesystemIdentity } from "./filesystem-identity";
 import { join } from "node:path";
 import { normalizeJournal } from "./journal/normalize";
 import { reconstruct } from "./capture/linux/reconstruct";
 import { tmpdir } from "node:os";
 
+// Injected-filesystem regressions retain the earlier parent-creation bookkeeping checks;
+// production native identity/race coverage lives in native-action.test.ts.
+const applyUninstallPlan = (plan: Parameters<typeof applyPlan>[0], options: Parameters<typeof applyPlan>[1]) =>
+  applyPlan(plan, { ...options, fs: nodeRemovalFileSystem });
 const hash = (text: string): string => new Bun.CryptoHasher("sha256").update(text).digest("hex");
 function record(path: string): RecordV3 {
   return {
@@ -85,7 +89,7 @@ test("a parent symlink substitution cannot redirect removal of identical bytes",
     mkdirSync(sentinel);
     writeFileSync(join(parent, "tool"), "same bytes");
     writeFileSync(join(sentinel, "tool"), "same bytes");
-    const plan = await new VerifiedUninstallPlanner().plan(record(join(parent, "tool")));
+    const plan = await new VerifiedUninstallPlanner(undefined, undefined, async () => undefined).plan(record(join(parent, "tool")));
     renameSync(parent, join(root, "original-parent"));
     symlinkSync(sentinel, parent);
     const result = await applyUninstallPlan(plan, { storage: { getBlob: async () => undefined } });
@@ -113,7 +117,7 @@ test("an identical-byte replacement is a different object after planning", async
   try {
     const path = join(root, "tool");
     writeFileSync(path, "same bytes");
-    const plan = await new VerifiedUninstallPlanner().plan(record(path));
+    const plan = await new VerifiedUninstallPlanner(undefined, undefined, async () => undefined).plan(record(path));
     writeFileSync(join(root, "replacement"), "same bytes");
     renameSync(join(root, "replacement"), path);
     const result = await applyUninstallPlan(plan, { storage: { getBlob: async () => undefined } });
@@ -129,7 +133,7 @@ test("two deleted siblings restore under parents created by the same plan", asyn
   try {
     const paths = [join(root, "a/b/one"), join(root, "a/b/two")];
     const target = { ...record(paths[0]!), owned: [], deleted: paths.map((path) => ({ path, beforeBlob: hash(path) })) };
-    const plan = await new VerifiedUninstallPlanner().plan(target);
+    const plan = await new VerifiedUninstallPlanner(undefined, undefined, async () => undefined).plan(target);
     const result = await applyUninstallPlan(plan, {
       storage: {
         getBlob: async (id) => {
@@ -164,7 +168,7 @@ test("restoration still rejects substitution of a parent created by an earlier a
     const outside = join(root, "unrelated");
     mkdirSync(outside);
     const target = { ...record(first), owned: [], deleted: [first, second].map((path) => ({ path, beforeBlob: hash(path) })) };
-    const plan = await new VerifiedUninstallPlanner().plan(target);
+    const plan = await new VerifiedUninstallPlanner(undefined, undefined, async () => undefined).plan(target);
     const result = await applyUninstallPlan(plan, {
       storage: {
         getBlob: async (id) => {

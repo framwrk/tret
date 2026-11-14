@@ -1,5 +1,5 @@
 // The filesystem-backed `Storage` implementation (plan section 4, phase 6): content-addressed
-// before-image blobs under `~/.tret/objects/` and a validated, atomically written v3 records file.
+// before-image blobs under `~/.tret/objects/` and a validated, atomically written v4 records file.
 //
 // Safety properties this layer owns:
 // - Blobs are named by the sha256 of their bytes, written atomically, deduplicated by content, and
@@ -10,11 +10,12 @@
 // - Reads interpret legacy records without rewriting them. The first mutation preserves the raw
 //   original before committing a migrated file under the records lock.
 // - Updates serialize their read/modify/write step under an exclusive lease. Age never steals a
-//   lease; this is not yet an operation-wide lock or protection against stale same-record updates.
+//   lease inside the kernel operation lease; writes also compare record revisions.
 // - Command GC preserves blobs when recovery entries leave references unknown. A grace window
-//   reduces unpublished-blob races but does not replace durable active-operation pins.
+//   remains an extra retention policy; durable operations pin unpublished before-images first.
 
 import type { BlobId, BlobRef, Storage } from "./storage";
+import type { EffectEvidence, RecordFileV4, RecordV3, RecordV4 } from "../types";
 import { OBJECTS_PATH, RECORDS_PATH } from "../constants";
 import {
   PRIVATE_FILE_MODE,
@@ -28,11 +29,13 @@ import {
   writeFileAtomic,
   writeFileExclusive,
 } from "./atomic";
-import type { RecordFileV3, RecordV3 } from "../types";
-import { RecordMigrationError, isV3Record, migrateRecordFileV2ToV3 } from "./records";
+import { RecordMigrationError, isV3Record } from "./records";
 import { basename, dirname, join } from "node:path";
+import { currentOperationToken, withOperationLease } from "./operation-lease";
+import { observedRecord, readRecordFile, validateRecordFileV4 } from "./records-v4";
 import { readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import type { BackupPolicy } from "./capture/normalize";
+import { OperationLog } from "./operation-log";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { referencedBlobs } from "./storage";
@@ -122,6 +125,13 @@ export class RecordsLockedError extends Error {
   }
 }
 
+export class RecordRevisionError extends Error {
+  constructor(readonly id: string) {
+    super(`record changed after it was read: ${id}; reload and rebuild the plan`);
+    this.name = "RecordRevisionError";
+  }
+}
+
 export type FileStorageOptions = {
   /** Directory whose `.tret` subdirectory holds records and blobs; defaults to `$HOME`. */
   homeDir?: string;
@@ -148,10 +158,11 @@ export class FileStorage implements Storage {
   readonly homeDir: string;
   /** The backup policy in force; `enabled` is false unless the caller opted in (D2). */
   readonly backups: BackupPolicy;
-  /** Absolute path of the v3 records file. */
+  /** Absolute path of the current records file. */
   readonly recordsPath: string;
   /** Absolute path of the content-addressed blob directory. */
   readonly objectsDir: string;
+  readonly operations: OperationLog;
 
   private readonly gcGraceMs: number;
   private readonly lockTimeoutMs: number;
@@ -165,6 +176,20 @@ export class FileStorage implements Storage {
     this.now = options.now ?? Date.now;
     this.recordsPath = join(this.homeDir, RECORDS_PATH);
     this.objectsDir = join(this.homeDir, OBJECTS_PATH);
+    this.operations = new OperationLog(dirname(this.recordsPath));
+  }
+
+  get inOperation(): boolean {
+    return currentOperationToken(dirname(this.recordsPath)) !== undefined;
+  }
+
+  /** Call before the command's record read; nested update/install/cleanup calls reuse the lease. */
+  async withOperation<T>(work: () => Promise<T>, recovery = false): Promise<T> {
+    if (this.inOperation) return work();
+    return withOperationLease(dirname(this.recordsPath), async () => {
+      if (!recovery) this.operations.requireReconciled();
+      return work();
+    }, this.lockTimeoutMs);
   }
 
   /** Whether before-image content is captured (D2). */
@@ -177,10 +202,14 @@ export class FileStorage implements Storage {
    * records; a file that cannot be parsed or migrated raises `RecordsCorruptionError` and is left
    * untouched, so a corrupt read never becomes a silent erase.
    */
-  async loadRecords(): Promise<RecordV3[]> {
+  async loadRecords(): Promise<RecordV4[]> {
+    return (await this.loadFile()).records;
+  }
+
+  private async loadFile(): Promise<RecordFileV4> {
     assertDirectoryIfExists(dirname(this.recordsPath));
     const raw = readFileIfExists(this.recordsPath);
-    if (raw === undefined) return [];
+    if (raw === undefined) return { version: 4, sequence: 0, records: [] };
 
     let parsed: unknown;
     try {
@@ -189,9 +218,9 @@ export class FileStorage implements Storage {
       throw new RecordsCorruptionError(this.recordsPath, "file is not valid JSON");
     }
 
-    let file: RecordFileV3;
+    let file: RecordFileV4;
     try {
-      file = migrateRecordFileV2ToV3(parsed);
+      file = readRecordFile(parsed);
     } catch (error) {
       if (error instanceof RecordMigrationError) {
         throw new RecordsCorruptionError(this.recordsPath, error.message, error.issues);
@@ -199,31 +228,51 @@ export class FileStorage implements Storage {
       throw error;
     }
 
-    return file.records;
+    return file;
+  }
+
+  /** Commit the incompatible format barrier before external work; older readers then refuse it. */
+  async prepareCurrentFormat(): Promise<void> {
+    await this.withOperation(() => this.withRecordsLock(async () => {
+      const file = await this.loadFile();
+      const raw = readFileIfExists(this.recordsPath);
+      if (raw && isVersion4File(JSON.parse(new TextDecoder().decode(raw)))) return;
+      this.writeRecords(file.records, file.sequence);
+    }));
   }
 
   /**
-   * Atomically persists one record, replacing any record with the same id. Runs under the records
-   * lock, so a concurrent save or removal cannot be lost between this read and write.
+   * Atomically persists one record after comparing its revision with the current snapshot. New ids
+   * require an absent expected revision; existing ids require the exact revision read earlier.
    */
-  async saveRecord(record: RecordV3): Promise<void> {
+  async saveRecord(record: RecordV3, origin: EffectEvidence["origin"] = record.source === "find" ? "find" : "capture"): Promise<RecordV4> {
     if (!isV3Record(record)) throw new InvalidRecordError();
-    await this.withRecordsLock(async () => {
-      const records = await this.loadRecords();
-      const next = records.filter((existing) => existing.id !== record.id);
-      next.push(record);
-      this.writeRecords(next);
-    });
+    return this.withOperation(() => this.withRecordsLock(async () => {
+      const file = await this.loadFile();
+      const existing = file.records.find((candidate) => candidate.id === record.id);
+      if (existing ? existing.revision !== record.revision : record.revision !== undefined) throw new RecordRevisionError(record.id);
+      const sequence = file.sequence + 1;
+      if (!Number.isSafeInteger(sequence)) throw new Error("record revision sequence is exhausted");
+      const saved = observedRecord(record, sequence, origin, true);
+      const next = file.records.filter((candidate) => candidate.id !== record.id);
+      next.push(saved);
+      this.writeRecords(next, sequence);
+      return saved;
+    }));
   }
 
   /** Removes one record by id under the records lock; an unknown id is a no-op and leaves the file untouched. */
-  async removeRecord(id: string): Promise<void> {
-    await this.withRecordsLock(async () => {
-      const records = await this.loadRecords();
-      const next = records.filter((existing) => existing.id !== id);
-      if (next.length === records.length) return;
-      this.writeRecords(next);
-    });
+  async removeRecord(id: string, expectedRevision?: number): Promise<void> {
+    await this.withOperation(() => this.withRecordsLock(async () => {
+      const file = await this.loadFile();
+      const existing = file.records.find((candidate) => candidate.id === id);
+      if (!existing) {
+        if (expectedRevision !== undefined) throw new RecordRevisionError(id);
+        return;
+      }
+      if (existing.revision !== expectedRevision) throw new RecordRevisionError(id);
+      this.writeRecords(file.records.filter((candidate) => candidate.id !== id), file.sequence + 1);
+    }));
   }
 
   /**
@@ -262,7 +311,7 @@ export class FileStorage implements Storage {
    * time makes an interrupted run consistent and safely retriable: a live blob is never in the
    * sweep set, so re-running only finishes what was left.
    */
-  async gc(keep: Iterable<BlobId>): Promise<BlobId[]> {
+  private async sweep(keep: Iterable<BlobId>): Promise<BlobId[]> {
     this.assertBlobDirectories();
     const kept = new Set(keep);
     const removed: BlobId[] = [];
@@ -292,13 +341,26 @@ export class FileStorage implements Storage {
    * makes, so only blobs no record references are ever deleted.
    */
   async gcUnreferenced(): Promise<BlobId[]> {
-    return this.withRecordsLock(async () => {
+    return this.gc([]);
+  }
+
+  async gc(extraKeep: Iterable<BlobId>): Promise<BlobId[]> {
+    return this.withOperation(() => this.withRecordsLock(async () => {
       // Corrupt recovery entries can contain references validation cannot recover. Never mistake
       // that unknown graph for an empty store. Legacy v2 originals cannot reference v3 blobs.
       const base = basename(this.recordsPath);
       if (readdirSync(dirname(this.recordsPath)).some((name) => name.startsWith(`${base}.corrupt-`))) return [];
-      return this.gc(referencedBlobs(await this.loadRecords()));
-    });
+      const keep = new Set([...extraKeep, ...referencedBlobs(await this.loadRecords()), ...this.operations.pinnedBlobs()]);
+      for (const name of readdirSync(dirname(this.recordsPath))) {
+        if (!name.startsWith(`${base}.legacy-v3-`)) continue;
+        const bytes = readFileIfExists(join(dirname(this.recordsPath), name));
+        if (!bytes) return [];
+        try {
+          for (const id of referencedBlobs(readRecordFile(JSON.parse(new TextDecoder().decode(bytes))).records)) keep.add(id);
+        } catch { return []; }
+      }
+      return this.sweep(keep);
+    }), true);
   }
 
   /**
@@ -320,7 +382,7 @@ export class FileStorage implements Storage {
   async quarantineCorruptRecords(): Promise<string | undefined> {
     assertDirectoryIfExists(dirname(this.recordsPath));
     if (readFileIfExists(this.recordsPath) === undefined) return undefined;
-    return this.withRecordsLock(async () => {
+    return this.withOperation(() => this.withRecordsLock(async () => {
       try {
         await this.loadRecords();
         return undefined;
@@ -335,7 +397,7 @@ export class FileStorage implements Storage {
       renameSync(this.recordsPath, target);
       flushDirectory(dirname(this.recordsPath));
       return target;
-    });
+    }), true);
   }
 
   /** Whether a stored blob for `id` exists and its bytes still hash to that address. */
@@ -353,10 +415,13 @@ export class FileStorage implements Storage {
     return this.gcGraceMs > 0 && statSync(path).mtimeMs > cutoff;
   }
 
-  private writeRecords(records: RecordV3[]): void {
+  private writeRecords(records: RecordV4[], sequence: number): void {
     const original = readFileIfExists(this.recordsPath);
-    if (original !== undefined && !isVersion3File(JSON.parse(new TextDecoder().decode(original)))) {
-      const backup = `${this.recordsPath}.legacy-v2-${hashContent(original)}.json`;
+    const previous: unknown = original === undefined ? undefined : JSON.parse(new TextDecoder().decode(original));
+    if (original !== undefined && !isVersion4File(previous)) {
+      const version = typeof previous === "object" && previous !== null && "version" in previous ? previous.version : undefined;
+      if (version !== 2 && version !== 3) throw new RecordsCorruptionError(this.recordsPath, "unsupported migration source");
+      const backup = `${this.recordsPath}.legacy-v${version}-${hashContent(original)}.json`;
       try {
         writeFileExclusive(backup, original, PRIVATE_FILE_MODE);
       } catch (error) {
@@ -368,7 +433,7 @@ export class FileStorage implements Storage {
         flushFile(backup);
       }
     }
-    const file: RecordFileV3 = { version: 3, records };
+    const file = validateRecordFileV4({ version: 4, sequence, records });
     writeFileAtomic(this.recordsPath, JSON.stringify(file, null, 2), PRIVATE_FILE_MODE);
   }
 
@@ -380,9 +445,18 @@ export class FileStorage implements Storage {
    * requires explicit recovery. Contention past `lockTimeoutMs` fails closed.
    */
   private async withRecordsLock<T>(work: () => Promise<T>): Promise<T> {
+    // Once the incompatible barrier is committed, all supported writers hold the operation lease.
+    // Do not create a second persistent lease that SIGKILL could strand during an ordinary save.
+    // The old exclusive protocol is needed only while migrating an older/absent store.
+    const raw = readFileIfExists(this.recordsPath);
+    if (raw !== undefined) {
+      let file: unknown;
+      try { file = JSON.parse(new TextDecoder().decode(raw)); } catch { /* Corruption is handled by work(). */ }
+      if (isVersion4File(file)) return work();
+    }
     const lockPath = `${this.recordsPath}.lock`;
     ensurePrivateDir(dirname(this.recordsPath));
-    const deadline = this.now() + this.lockTimeoutMs;
+    const deadline = performance.now() + this.lockTimeoutMs;
     const owner = `${process.pid}\n${randomUUID()}\n`;
 
     for (;;) {
@@ -391,7 +465,7 @@ export class FileStorage implements Storage {
         break;
       } catch (error) {
         if (!isErrno(error, "EEXIST")) throw error;
-        if (this.now() >= deadline) throw new RecordsLockedError(lockPath);
+        if (performance.now() >= deadline) throw new RecordsLockedError(lockPath);
         await Bun.sleep(RECORDS_LOCK_RETRY_MS);
       }
     }
@@ -445,8 +519,8 @@ function hashContent(bytes: Uint8Array): string {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 
-function isVersion3File(value: unknown): boolean {
-  return typeof value === "object" && value !== null && (value as { version?: unknown }).version === 3;
+function isVersion4File(value: unknown): boolean {
+  return typeof value === "object" && value !== null && (value as { version?: unknown }).version === 4;
 }
 
 /** A filename-safe UTC timestamp for quarantined files. */

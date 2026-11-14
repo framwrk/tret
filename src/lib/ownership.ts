@@ -1,21 +1,14 @@
 import type { CaptureCompleteness, OwnershipConfidence } from "../types";
 
-// Ownership confidence (D11).
-//
-// A record's `capture.completeness` says how much evidence a capture provides. This module turns it
-// into the one label a user needs when Tret proposes a destructive action: whether the capture
-// attributes a path to the installer's process tree, or whether the path is only observed and not
-// proven to belong to the tool. The latter also covers `find` records, which have no install window
-// or journal. Nothing here changes what Tret is allowed to remove; verification decides that and
-// treats both labels identically. The label only keeps the evidence honest in the output.
-//
-// Deriving it instead of storing it keeps one source of truth: a record whose completeness is edited
-// cannot keep claiming a confidence its evidence no longer supports. A `partial` window is `observed`
-// because attribution was lost somewhere in the tree, even though the paths it did see were watched.
+// Window completeness is coverage evidence, never object ownership or disposal authority.
+// The historical `proven` display value is retained for compatibility with injected reports;
+// current captures report observations, while per-effect approval is checked by the planner.
 
-/** The confidence a capture's completeness label supports. Only a `complete` window proves ownership. */
+/** No record-wide coverage label proves that a particular current object is disposable. */
 export function ownershipConfidence(completeness: CaptureCompleteness): OwnershipConfidence {
-  return completeness === "complete" ? "proven" : "observed";
+  // A window-wide label supplies no per-object causality or disposal authority.
+  void completeness;
+  return "observed";
 }
 
 /**
