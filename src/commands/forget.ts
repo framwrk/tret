@@ -13,6 +13,7 @@ import { formatSelectionCandidates, selectRecord } from "../lib/record-selection
 import type { RecordV3 } from "../types";
 import { fail } from "../lib/failure";
 import { log } from "../lib/utilities";
+import { runStoreOperation } from "../lib/command-operation";
 
 /** Drops one record; `selector` is a display name or a stable record id. */
 export async function forget(selector: string | undefined): Promise<void> {
@@ -20,9 +21,11 @@ export async function forget(selector: string | undefined): Promise<void> {
     fail("forget-usage", "forget requires a tool name or record id: tret forget <tool>", EXIT_USAGE);
   }
 
+  const storage = new FileStorage();
+  if (!storage.inOperation) return runStoreOperation(storage, () => forget(selector));
   let records: RecordV3[];
   try {
-    records = await new FileStorage().loadRecords();
+    records = await storage.loadRecords();
   } catch (error) {
     fail("forget-records", `could not read the install records: ${message(error)}`);
   }
@@ -37,7 +40,7 @@ export async function forget(selector: string | undefined): Promise<void> {
   }
 
   const record = selection.record;
-  await new FileStorage().removeRecord(record.id);
+  await storage.removeRecord(record.id, record.revision);
   // The dropped record no longer keeps its before-images alive; collect them after the fact, and
   // never fail the completed forget if cleanup does.
   await collectUnreferencedBlobs();

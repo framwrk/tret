@@ -21,6 +21,7 @@ import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, r
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { Stats } from "node:fs";
+import { approveFixtureCandidates } from "../src/lib/fixtures/approve-candidates";
 
 const ROOT = resolve(import.meta.dir, "..");
 const REAL_HOME = process.env.HOME ?? homedir();
@@ -180,7 +181,7 @@ async function runProcess(
   }
 }
 
-function runTret(
+async function runTret(
   home: string,
   args: string[],
   binary: string,
@@ -190,6 +191,7 @@ function runTret(
     resolve(home) !== resolve(REAL_HOME),
     `refusing to run the acceptance binary against the real HOME (${REAL_HOME})`,
   );
+  await approveFixtureCandidates(home, args, [binary]);
   return runProcess([binary, ...args], { ...childEnvironment(home), ...extraEnv });
 }
 
@@ -313,6 +315,8 @@ function contextFor(label: string): ScenarioContext {
   const home = join(root, "home");
   const work = join(root, "work");
   mkdirSync(home, { recursive: true });
+  mkdirSync(join(home, ".local/bin"), { recursive: true });
+  mkdirSync(join(home, ".config"), { recursive: true });
   mkdirSync(work, { recursive: true });
   return { home, work };
 }
@@ -650,7 +654,7 @@ async function scenarioSharedParentReplacement(binary: string): Promise<void> {
       "shared-a did not own the shared parent directory",
     );
 
-    expectSuccess(await runTret(ctx.home, ["install", "--yes", urlA, "--force"], binary), "force reinstall shared-a");
+    expectExit(await runTret(ctx.home, ["install", "--yes", urlA, "--force"], binary), 5, "refuse replacement with unresolved shared-parent children");
 
     assertEqual(readFileSync(aFile, "utf8"), "a\n", "shared-a file after forced replacement");
     assertEqual(readFileSync(bFile, "utf8"), "b\n", "shared-b file after forced replacement");
@@ -658,7 +662,7 @@ async function scenarioSharedParentReplacement(binary: string): Promise<void> {
     const records = readRecords(ctx.home);
     const aRecords = records.filter((record) => record.name === "shared-a");
     assertEqual(aRecords.length, 1, "shared-a record count");
-    assert(aRecords[0]?.id !== previousA.id, "shared-a record was not replaced");
+    assert(aRecords[0]?.id === previousA.id, "refused replacement changed the shared-a record id");
     assertEqual(aRecords[0]?.executable, join(ctx.home, ".local", "bin", "shared-a"), "shared-a executable");
     assert(
       aRecords[0]?.owned.some((entry) => entry.path === aFile),
@@ -940,12 +944,11 @@ async function scenarioBackupBlobGc(binary: string): Promise<void> {
     utimesSync(goneObject, past, past);
     utimesSync(keepObject, past, past);
 
-    // A later record mutation runs GC. The keep record still references its blob; the aged orphan
-    // from the uninstalled tool must be reclaimed.
+    // A receipt still pins the removed install's evidence, even after the grace window.
     expectSuccess(await runTret(ctx.home, ["install", "--yes", triggerUrl], binary), "install gctrigger");
     expectSuccess(await runTret(ctx.home, ["uninstall", "gctrigger", "--yes"], binary), "uninstall gctrigger");
 
-    assert(!existsSync(goneObject), "aged unreferenced blob was not reclaimed after a later command");
+    assert(existsSync(goneObject), "GC reclaimed a blob retained by an uninstall receipt");
     assert(existsSync(keepObject), "GC reclaimed a blob still referenced by a record");
     assertEqual(readFileSync(join(ctx.home, ".config", "gctool", "keep.conf"), "utf8"), "keep-new\n", "keep.conf before uninstall");
 

@@ -1,8 +1,13 @@
-import type { AbsolutePath, DeletedEntry, MutatedEntry, OwnedEntry, OwnedKind, OwnershipConfidence, RecordV3 } from "../types";
-import { lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import type { AbsolutePath, DeletedEntry, EffectEvidence, MutatedEntry, OwnedEntry, OwnedKind, OwnershipConfidence, RecordV3 } from "../types";
+import { type CleanupApproval, type CleanupSnapshot, cleanupSnapshot, protectedCleanupPath, sameApprovedSnapshot } from "./cleanup-authority";
+import { lstatSync, readdirSync } from "node:fs";
 import { ownershipConfidence, ownershipMarker, ownershipNote } from "./ownership";
 import type { BlobId } from "./storage";
+import { FileStorage } from "./store";
 import type { FilesystemIdentity } from "./filesystem-identity";
+import type { Storage } from "./storage";
+import { candidateEffects } from "./records-v4";
+import { cleanupClaimChecker } from "./delegated-removal";
 import { filesystemIdentity } from "./filesystem-identity";
 import { join } from "node:path";
 
@@ -18,6 +23,7 @@ export type UninstallVerification = {
   uid?: number;
   /** Object and ancestor identity; absent only for injected inspectors. */
   identity?: FilesystemIdentity;
+  snapshot?: CleanupSnapshot;
 };
 
 /** Why a path is skipped without changing it. */
@@ -32,6 +38,12 @@ export type UninstallConflictReason =
   | "unreadable"
   /** A fingerprinted path recorded before the rewrite (`kind: "unknown"`) or without a hash; never removed (D4). */
   | "unverified"
+  | "unapproved"
+  | "approval-changed"
+  | "protected-root"
+  | "missing-blob"
+  | "restoration-unavailable"
+  | "scope-unverified"
   /** An owned directory that still holds entries this record does not own; never recursively deleted. */
   | "not-empty";
 
@@ -48,7 +60,7 @@ export type UninstallDetectedKind = "mutated" | "deleted";
  * reported but never blocks). `remove`, `restore`, and `skip` round out the shapes the planner emits.
  */
 export type UninstallAction =
-  | { action: "remove"; path: AbsolutePath; kind: OwnedKind; plannedState: UninstallVerification }
+  | { action: "remove"; path: AbsolutePath; kind: OwnedKind; plannedState: UninstallVerification; approval?: CleanupApproval }
   | {
       action: "restore";
       path: AbsolutePath;
@@ -58,6 +70,7 @@ export type UninstallAction =
       mode?: number;
       /** Snapshot checked by the planner; the applier requires this exact state before writing. */
       plannedState: UninstallVerification;
+      approval?: CleanupApproval;
     }
   | { action: "skip"; path: AbsolutePath; reason: UninstallSkipReason }
   | { action: "detected"; path: AbsolutePath; kind: UninstallDetectedKind }
@@ -65,6 +78,9 @@ export type UninstallAction =
 
 /** A conservative, side-effect-free uninstall plan; applying it lands in phase 7. */
 export type UninstallPlan = {
+  scope?: "recorded-effects" | "approved-effects";
+  retained?: Array<{ path: string; reason: string }>;
+  force?: boolean;
   recordId: string;
   tool: string;
   actions: UninstallAction[];
@@ -87,6 +103,8 @@ export type UninstallPlan = {
 
 /** Inputs the planner verifies against before deciding anything. */
 export type UninstallPlanContext = {
+  getBlob?: Storage["getBlob"];
+  home?: string;
   /** Other records that also claim paths, for shared-ownership detection (D4); paths are compared under each record's case behavior (D10). */
   otherRecords?: RecordV3[];
   /**
@@ -122,54 +140,27 @@ export interface UninstallPlanner {
   plan(record: RecordV3, context?: UninstallPlanContext): Promise<UninstallPlan>;
 }
 
-/** sha256 hex of `bytes`, matching the content-address hashing used across the rewrite. */
-function sha256Hex(bytes: Uint8Array): string {
-  return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-}
-
-/**
- * Reads one path's current state without following symlinks: a symlink reports its target, a file
- * reports its content hash, and a directory reports only its kind. An unreadable file still reports
- * `exists` with `hash` unset, so the planner treats it as unverifiable rather than absent. A node
- * that is neither a regular file, directory, nor symlink (a FIFO, socket, or device) reports
- * `exists` with no kind and is never read: opening a FIFO could block, and no fingerprint of such a
- * node exists, so every planner treats it as unverifiable and never removable.
- */
+/** Descriptor-based inspection streams regular content and never reads special nodes. */
 export function inspectPath(path: AbsolutePath): UninstallVerification {
   const identity = filesystemIdentity(path);
-  if (identity === undefined) return { exists: true };
-  let stats;
+  if (!identity) return { exists: true };
   try {
-    stats = lstatSync(path);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    // Only a missing path proves absence. Permission and I/O errors must keep the path
-    // unverified so uninstall retains its record instead of silently forgetting it.
-    return { exists: code !== "ENOENT" && code !== "ENOTDIR", identity };
-  }
-
-  if (stats.isSymbolicLink()) {
-    let linkTarget: AbsolutePath | undefined;
-    try {
-      linkTarget = readlinkSync(path);
-    } catch {
-      // Keep the entry but leave the target unknown; the planner treats it as unverified.
-    }
-    return { exists: true, kind: "symlink", linkTarget, uid: stats.uid, identity };
-  }
-
-  if (stats.isDirectory()) {
-    return { exists: true, kind: "directory", uid: stats.uid, identity };
-  }
-
-  if (!stats.isFile()) {
-    return { exists: true, uid: stats.uid, identity };
-  }
-
-  try {
-    return { exists: true, kind: "file", hash: sha256Hex(readFileSync(path)), uid: stats.uid, identity };
+    const snapshot = cleanupSnapshot(path);
+    const node = snapshot.node;
+    if (!node) return { exists: false, identity, snapshot };
+    return {
+      exists: true, kind: node.kind === "unsupported" ? undefined : node.kind,
+      uid: Number(node.uid), identity, snapshot,
+      ...(snapshot.hash ? { hash: snapshot.hash } : {}),
+      ...(snapshot.linkTarget !== undefined ? { linkTarget: snapshot.linkTarget } : {}),
+    };
   } catch {
-    return { exists: true, kind: "file", uid: stats.uid, identity };
+    try {
+      const node = lstatSync(path);
+      return { exists: true, uid: node.uid, identity,
+        ...(node.isFile() ? { kind: "file" as const } : node.isDirectory() ? { kind: "directory" as const } : node.isSymbolicLink() ? { kind: "symlink" as const } : {}),
+      };
+    } catch (error) { return { exists: (error as NodeJS.ErrnoException).code !== "ENOENT", identity }; }
   }
 }
 
@@ -303,6 +294,8 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
   constructor(
     private readonly inspect: (path: AbsolutePath) => UninstallVerification = inspectPath,
     private readonly list: (path: AbsolutePath) => AbsolutePath[] = listChildren,
+    /** Trusted dependency seam for policy unit tests; command callers always use the default. */
+    private readonly eligibility?: (record: RecordV3, section: EffectEvidence["section"], path: string, verification: UninstallVerification) => Promise<UninstallConflictReason | undefined>,
   ) {}
 
   async plan(record: RecordV3, context: UninstallPlanContext = {}): Promise<UninstallPlan> {
@@ -311,8 +304,38 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     const force = context.force ?? false;
     const skipNonEmptyOwnedDirectories = context.skipNonEmptyOwnedDirectories ?? false;
     const claims = claimedByOthers(context.otherRecords ?? [], record.id);
-    const isShared = (path: AbsolutePath): boolean => sharedClaim(claims, path, record.caseSensitive);
+    const canonicalClaims = cleanupClaimChecker(context.otherRecords ?? [], record, context.home);
+    const isShared = (path: AbsolutePath): boolean => sharedClaim(claims, path, record.caseSensitive) || canonicalClaims(path);
     const actions: UninstallAction[] = [];
+    const candidates = new Map<string, ReturnType<typeof candidateEffects>>();
+    for (const candidate of candidateEffects(record)) {
+      const key = `${candidate.section}\0${candidate.path}`;
+      candidates.set(key, [...(candidates.get(key) ?? []), candidate]);
+    }
+    const evidence = new Map(record.evidence?.map((entry) => [entry.id, entry]));
+    const beforeHashes = new Map([...record.mutated, ...record.deleted].map((entry) => [entry.path, entry.beforeHash]));
+    const getBlob = context.getBlob ?? ((id: string) => new FileStorage({ homeDir: context.home }).getBlob(id));
+    const checked = async (action: UninstallAction, section: EffectEvidence["section"], verification: UninstallVerification): Promise<UninstallAction> => {
+      if (action.action !== "remove" && action.action !== "restore" && action.action !== "detected") return action;
+      const matching = candidates.get(`${section}\0${action.path}`) ?? [];
+      const decision = matching.length === 1 ? evidence.get(matching[0]!.id) : undefined;
+      let reason: UninstallConflictReason | undefined;
+      if (this.eligibility) reason = await this.eligibility(record, section, action.path, verification);
+      else if (action.action === "detected") reason = "restoration-unavailable";
+      else if (action.action === "restore" && action.mode !== undefined && (action.mode & 0o7000) !== 0) reason = "restoration-unavailable";
+      else if (action.action === "restore" && beforeHashes.get(action.path) !== undefined && beforeHashes.get(action.path) !== action.beforeBlob) reason = "restoration-unavailable";
+      else if (protectedCleanupPath(action.path, context.home)) reason = "protected-root";
+      else if (decision?.authority !== "user-approved" || decision.approval.action !== action.action) reason = "unapproved";
+      else if (!verification.snapshot || !sameApprovedSnapshot(decision.approval.current, verification.snapshot)) reason = "approval-changed";
+      else if (action.action === "restore") {
+        try {
+          const bytes = await getBlob(action.beforeBlob);
+          if (!bytes || new Bun.CryptoHasher("sha256").update(bytes).digest("hex") !== action.beforeBlob) reason = "missing-blob";
+        } catch { reason = "missing-blob"; }
+      }
+      if (reason) return { action: "conflict", path: action.path, reason };
+      return action.action !== "detected" && decision?.authority === "user-approved" ? { ...action, approval: decision.approval } : action;
+    };
     // Paths the plan will leave absent: this plan's own removals plus any managed root whose whole
     // subtree is delegated to a recursive removal, so ancestors of a delegated root are not
     // mistaken for `not-empty` against payload the record never owned.
@@ -361,11 +384,15 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
           sudoNeeded,
           () => (requiresSudo = true),
         );
+        const directoryAction = actions.pop()!;
+        const authorized = await checked(directoryAction, "owned", verification);
+        actions.push(authorized);
+        if (authorized.action !== "remove") gone.delete(entry.path);
         continue;
       }
 
       if (entry.kind === "symlink") {
-        const action = planSymlink(entry, verification, force);
+        const action = await checked(planSymlink(entry, verification, force), "owned", verification);
         actions.push(action);
         if (action.action === "remove") {
           gone.add(entry.path);
@@ -374,7 +401,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
         continue;
       }
 
-      const action = planFile(entry, verification, force);
+      const action = await checked(planFile(entry, verification, force), "owned", verification);
       actions.push(action);
       if (action.action === "remove") {
         gone.add(entry.path);
@@ -386,7 +413,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     // Without a before-image the change is detect-only: report it, never block on it (D2).
     for (const entry of record.mutated) {
       const verification = inspect(entry.path);
-      const action = planMutation(entry, verification, isShared);
+      const action = await checked(planMutation(entry, verification, isShared), "mutated", verification);
       actions.push(action);
       if (action.action === "restore" && sudoNeeded(verification)) requiresSudo = true;
     }
@@ -395,7 +422,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
     // deletion with no before-image is likewise detect-only.
     for (const entry of record.deleted) {
       const verification = inspect(entry.path);
-      actions.push(planDeletion(entry, verification, isShared));
+      actions.push(await checked(planDeletion(entry, verification, isShared), "deleted", verification));
     }
 
     return {
@@ -403,6 +430,7 @@ export class VerifiedUninstallPlanner implements UninstallPlanner {
       tool: record.name,
       actions,
       confidence: ownershipConfidence(record.capture.completeness),
+      ...(force ? { force: true } : {}),
       requiresSudo,
       // Only actionable conflicts block; a `detected` (non-restorable) change never does.
       incomplete: actions.some((action) => action.action === "conflict"),

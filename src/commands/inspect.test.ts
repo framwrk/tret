@@ -137,9 +137,9 @@ describe("buildInspectReport", () => {
     });
   });
 
-  test("a complete capture is reported as proven, a partial one as observed", async () => {
+  test("window completeness never supplies per-object ownership proof", async () => {
     for (const [completeness, confidence] of [
-      ["complete", "proven"],
+      ["complete", "observed"],
       ["partial", "observed"],
       ["heuristic", "observed"],
     ] as const) {
@@ -227,14 +227,14 @@ describe("buildInspectReport", () => {
     });
 
     expect(report.mutated).toEqual([
-      { path: "/h/m-unchanged", exists: true, restorable: true, changedSinceInstall: false },
-      { path: "/h/m-diverged", exists: true, restorable: true, changedSinceInstall: true },
+      { path: "/h/m-unchanged", exists: true, restorable: false, changedSinceInstall: false },
+      { path: "/h/m-diverged", exists: true, restorable: false, changedSinceInstall: true },
       { path: "/h/m-gone", exists: false, restorable: false, changedSinceInstall: true },
       // Present with no recorded installed hash and no before-image: nothing proves a change.
       { path: "/h/m-no-hash", exists: true, restorable: false, changedSinceInstall: false },
     ]);
     expect(report.deleted).toEqual([
-      { path: "/h/d-still-gone", exists: false, restorable: true, changedSinceInstall: false },
+      { path: "/h/d-still-gone", exists: false, restorable: false, changedSinceInstall: false },
       // A path recorded as deleted that exists again was recreated after the install.
       { path: "/h/d-recreated", exists: true, restorable: false, changedSinceInstall: true },
     ]);
@@ -324,7 +324,7 @@ describe("buildInspectReport", () => {
       expect(report.actions).toContainEqual({ path, action: "conflict", reason: "not-empty" });
       expect(report.actions.some((action) => action.path === path && action.action === "remove")).toBe(false);
     }
-    expect(report.counts.removable).toBe(2);
+    expect(report.counts.removable).toBe(0);
     expect(report.incomplete).toBe(true);
     expect(report.delegated.blocked).toHaveLength(1);
     expect(readFileSync(join(root, "user-data.txt"), "utf8")).toBe("untracked payload");

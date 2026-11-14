@@ -2,6 +2,7 @@ import type { AbsolutePath, FileStamp, Snapshot } from "../types";
 import { EXCLUDED_DIR_NAMES, EXCLUDED_DIR_NAME_PATTERN, EXCLUDED_PATHS } from "../constants";
 import { currentPlatform } from "./platform";
 import { lstatSync } from "node:fs";
+import { privateStateFilter } from "./capture/self-state";
 import { scanDir } from "./scan";
 
 export function snapshot(): Snapshot {
@@ -10,23 +11,24 @@ export function snapshot(): Snapshot {
 
   const entries: Snapshot = new Map();
   const excluded = new Set(EXCLUDED_PATHS.map((path) => `${home}/${path}`));
-  snapshotDir(home, entries, excluded);
-  for (const root of currentPlatform().scopeRoots) snapshotDir(root, entries);
+  const privateState = privateStateFilter(home);
+  snapshotDir(home, entries, excluded, privateState);
+  for (const root of currentPlatform().scopeRoots) snapshotDir(root, entries, new Set(), privateState);
   return entries;
 }
 
-function snapshotDir(dir: AbsolutePath, entries: Snapshot, excluded: Set<string> = new Set()): void {
+function snapshotDir(dir: AbsolutePath, entries: Snapshot, excluded: Set<string>, privateState: (path: string) => boolean): void {
   const scan = scanDir(dir);
   if (!scan) return;
 
   for (const name of scan.names) {
     const path = `${dir}/${name}`;
     const isSubdir = scan.subdirs.has(name);
-    if (excluded.has(path) || (isSubdir && (EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name)))) continue;
+    if (privateState(path) || excluded.has(path) || (isSubdir && (EXCLUDED_DIR_NAMES.has(name) || EXCLUDED_DIR_NAME_PATTERN.test(name)))) continue;
     const stamp = stampEntry(path);
     if (!stamp) continue;
     entries.set(path, stamp);
-    if (isSubdir) snapshotDir(path, entries, excluded);
+    if (isSubdir) snapshotDir(path, entries, excluded, privateState);
   }
 }
 

@@ -17,7 +17,7 @@ export function filesystemIdentity(path: string): FilesystemIdentity | undefined
     for (;;) {
       let node;
       try {
-        node = lstatSync(current);
+        node = lstatSync(current, { bigint: true });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         components[current] = null;
@@ -26,8 +26,8 @@ export function filesystemIdentity(path: string): FilesystemIdentity | undefined
         const target = node.isSymbolicLink() ? readlinkSync(current) : undefined;
         // A dangling ancestor cannot safely be traversed. Keep its resolution failure distinct
         // from a missing directory, rather than letting mkdir during restore follow it.
-        const resolved = node.isSymbolicLink() && current !== path ? statSync(current) : node;
-        components[current] = JSON.stringify([node.dev, node.ino, node.mode & 0o170000, target, resolved.dev, resolved.ino]);
+        const resolved = node.isSymbolicLink() && current !== path ? statSync(current, { bigint: true }) : node;
+        components[current] = JSON.stringify([String(node.dev), String(node.ino), String(node.mode & 0o170000n), target, String(resolved.dev), String(resolved.ino)]);
       }
       const parent = dirname(current);
       if (parent === current) break;

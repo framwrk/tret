@@ -4,8 +4,10 @@ import { basename, dirname, join } from "node:path";
 import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
 import type { BackupPolicy } from "../normalize";
 import type { BlobId } from "../../storage";
+import type { CaptureBaselineEntry } from "../backend";
 import { createHash } from "node:crypto";
 import { normalizeAbsolutePath } from "./paths";
+import { privateStateFilter } from "../self-state";
 
 /**
  * The before/after metadata `reconstruct.ts` needs for one path. It mirrors the journal metadata
@@ -185,6 +187,18 @@ export class MemoryBaseline implements Baseline {
     this.entries.set(path, kind);
   }
 
+  snapshot(): CaptureBaselineEntry[] {
+    return [...this.entries].map(([path, entry]) => {
+      if (typeof entry === "string") return { path, kind: entry };
+      return {
+        path, kind: kindOf(entry),
+        ...("mode" in entry && entry.mode !== undefined ? { mode: entry.mode } : {}),
+        ...(entry.kind === "file" && entry.hash ? { hash: entry.hash } : {}),
+        ...(entry.kind === "symlink" ? { linkTarget: entry.target } : {}),
+      };
+    });
+  }
+
   /** Records full pre-window metadata (only a backups-enabled walk does this). */
   setNode(path: AbsolutePath, info: Exclude<NodeInfo, { kind: "missing" }>): void {
     this.entries.set(path, info);
@@ -224,6 +238,7 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
   const beforeImages = new Map<BlobId, Uint8Array>();
   const visited = new Set<AbsolutePath>();
   const excluded = excludedPathsUnderRoots(roots);
+  const privateState = privateStateFilter();
   const backups = options.backups;
   const backup: BackupCapture | undefined =
     backups?.enabled === true
@@ -231,7 +246,7 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
       : undefined;
 
   for (const root of roots) {
-    if (visited.has(root)) continue;
+    if (visited.has(root) || privateState(root)) continue;
     const info = await inspector.inspect(root, { hash: false });
     if (info.kind === "missing") continue;
     if (info.kind === "file" && backup !== undefined) {
@@ -240,7 +255,7 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
     } else {
       baseline.set(root, kindOf(info));
     }
-    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited, excluded);
+    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited, excluded, privateState);
     else visited.add(root);
   }
   return { baseline, beforeImages };
@@ -273,6 +288,7 @@ async function walk(
   backup: BackupCapture | undefined,
   visited: Set<AbsolutePath>,
   excluded: ReadonlySet<AbsolutePath>,
+  privateState: (path: string) => boolean,
 ): Promise<void> {
   if (visited.has(dir)) return;
   visited.add(dir);
@@ -285,12 +301,12 @@ async function walk(
   }
   for (const entry of entries) {
     const path = join(dir, entry.name);
-    if (visited.has(path) || excluded.has(path)) continue;
+    if (visited.has(path) || excluded.has(path) || privateState(path)) continue;
     if (entry.isDirectory()) {
       baseline.set(path, "directory");
       // Record excluded directories but never descend, so shared churn trees cost one entry and no
       // before-image reads. An explicit root nested below this directory can still be walked separately.
-      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited, excluded);
+      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited, excluded, privateState);
       else visited.add(path);
     } else {
       visited.add(path);

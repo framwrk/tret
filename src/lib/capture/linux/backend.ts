@@ -8,6 +8,7 @@ import type { BlobId } from "../../storage";
 import type { Journal } from "../events";
 import type { TracerResult } from "./raw";
 import { attachStrace } from "./tracer";
+import { excludePrivateState } from "../self-state";
 import { reconstruct } from "./reconstruct";
 
 /**
@@ -71,6 +72,8 @@ export class LinuxCaptureBackend implements CaptureBackend {
 
     return {
       backend: tracer.name,
+      beforeImages: resolved.beforeImages,
+      ...(resolved.baseline instanceof MemoryBaseline ? { baseline: resolved.baseline.snapshot() } : {}),
       stop: async (): Promise<Journal> => this.stop(tracer, options.roots, resolved, options.pid),
     };
   }
@@ -124,7 +127,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     // Present only when the walk actually read bytes (backups enabled), so a caller's
     // `availableBeforeImages` stays empty and no record advertises an unrestorable before-image.
     if (resolved.beforeImages.size > 0) journal.beforeImages = resolved.beforeImages;
-    return journal;
+    return excludePrivateState(journal, process.env.HOME, rootPid);
   }
 
   private async resolveBaseline(options: CaptureStartOptions): Promise<ResolvedBaseline> {

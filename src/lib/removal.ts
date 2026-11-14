@@ -1,4 +1,5 @@
 import type { AbsolutePath, RecordV3 } from "../types";
+import { type NativeActionReceipt, applyNativeAction } from "./native-action";
 import { PRIVATE_FILE_MODE, writeFileAtomicPreservingParents } from "./atomic";
 import type { UninstallAction, UninstallDetectedKind, UninstallPlan, UninstallVerification } from "./uninstall-planner";
 import { dirname, join } from "node:path";
@@ -22,7 +23,7 @@ export type RemovalFileSystem = {
   writeFile(path: AbsolutePath, bytes: Uint8Array, mode?: number): void;
 };
 
-/** The real filesystem, used when an applier caller does not inject one. */
+/** Path-based adapter retained for injected filesystem tests; production uses native-action. */
 export const nodeRemovalFileSystem: RemovalFileSystem = {
   removeFile(path) {
     rmSync(path);
@@ -71,6 +72,10 @@ export type ApplyUninstallOptions = {
   list?: (path: AbsolutePath) => AbsolutePath[];
   /** Filesystem primitives; defaults to the real filesystem. */
   fs?: RemovalFileSystem;
+  /** Durable barrier before each candidate action and checkpoint after its observed outcome. */
+  beforeAction?: (index: number) => Promise<void>;
+  afterAction?: (index: number, outcomes: readonly ApplianceOutcome[]) => Promise<void>;
+  nativeCheckpoint?: (index: number, receipt: NativeActionReceipt) => Promise<void>;
 };
 
 /**
@@ -93,7 +98,8 @@ export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUnin
   const failed: AbsolutePath[] = [];
   const createdParents = new Map<string, string>();
 
-  for (const action of plan.actions) {
+  for (const [index, action] of plan.actions.entries()) {
+    await options.beforeAction?.(index);
     switch (action.action) {
       case "skip":
         outcomes.push({ path: action.path, outcome: "skipped", reason: action.reason });
@@ -112,13 +118,16 @@ export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUnin
         break;
 
       case "remove":
-        applyRemove(action, inspect, list, fs, outcomes, removed, conflicts, failed);
+        if (options.fs) applyRemove(action, inspect, list, fs, outcomes, removed, conflicts, failed);
+        else await nativeApply(action, index);
         break;
 
       case "restore":
-        await applyRestore(action, options.storage, inspect, fs, outcomes, restored, conflicts, failed, createdParents);
+        if (options.fs) await applyRestore(action, options.storage, inspect, fs, outcomes, restored, conflicts, failed, createdParents);
+        else await nativeApply(action, index);
         break;
     }
+    await options.afterAction?.(index, outcomes);
   }
 
   return {
@@ -131,6 +140,36 @@ export async function applyUninstallPlan(plan: UninstallPlan, options: ApplyUnin
     failed,
     incomplete: conflicts.length > 0 || failed.length > 0,
   };
+
+  async function nativeApply(action: Extract<UninstallAction, { action: "remove" | "restore" }>, index: number): Promise<void> {
+    if (!action.approval || !options.nativeCheckpoint) {
+      outcomes.push({ path: action.path, outcome: "conflict", reason: "object approval and a durable native action cursor are required" });
+      conflicts.push(action.path);
+      return;
+    }
+    try {
+      let bytes: Uint8Array | undefined;
+      if (action.action === "restore") {
+        bytes = await options.storage.getBlob(action.beforeBlob);
+        if (!bytes || new Bun.CryptoHasher("sha256").update(bytes).digest("hex") !== action.beforeBlob) throw new Error("required before-image is missing or corrupt");
+      }
+      await applyNativeAction({
+        approval: action.approval, bytes,
+        mode: action.action === "restore" ? action.mode : undefined,
+        checkpoint: (receipt) => options.nativeCheckpoint!(index, receipt),
+      });
+      if (action.action === "remove") {
+        removed.push(action.path);
+        outcomes.push({ path: action.path, outcome: "removed" });
+      } else {
+        restored.push(action.path);
+        outcomes.push({ path: action.path, outcome: "restored" });
+      }
+    } catch (error) {
+      failed.push(action.path);
+      outcomes.push({ path: action.path, outcome: "failed", reason: message(error) });
+    }
+  }
 }
 
 /** Removes one path if it still looks safe, using only non-recursive primitives. */
@@ -264,10 +303,11 @@ function message(error: unknown): string {
  * restored or removed path is never re-verified on the next run and reported as a false conflict.
  */
 export function reduceRecordForRetry(record: RecordV3, result: ApplyUninstallResult): RecordV3 {
-  const removed = new Set(result.removed);
+  const removed = new Set([...result.removed, ...result.outcomes.filter((outcome) => outcome.outcome === "skipped" && outcome.reason === "absent").map((outcome) => outcome.path)]);
   const restored = new Set(result.restored);
   return {
     ...record,
+    executable: removed.has(record.executable) ? "" : record.executable,
     owned: record.owned.filter((entry) => !removed.has(entry.path)),
     mutated: record.mutated.filter((entry) => !restored.has(entry.path)),
     deleted: record.deleted.filter((entry) => !restored.has(entry.path)),

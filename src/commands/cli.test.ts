@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { RecordV3 } from "../types";
 import { VERSION } from "../constants";
+import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -22,7 +23,10 @@ function makeDir(prefix: string): string {
 }
 
 function makeHome(): string {
-  return makeDir("tret-cli-global-");
+  const home = makeDir("tret-cli-global-");
+  mkdirSync(join(home, ".local/bin"), { recursive: true });
+  mkdirSync(join(home, ".config"), { recursive: true });
+  return home;
 }
 
 afterEach(() => {
@@ -34,6 +38,7 @@ async function runCliResult(
   home: string,
   options: { extraEnv?: Record<string, string>; preload?: string } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+  await approveFixtureCandidates(home, args);
   const spawnArgs =
     options.preload === undefined ? [BUN, TRET, ...args] : [BUN, "--preload", options.preload, TRET, ...args];
   const proc = Bun.spawn(spawnArgs, {
@@ -249,7 +254,7 @@ chmod +x "$HOME/.local/bin/updatetool"
     }
   });
 
-  test("successive updates retain backups, size limits, and observation additions and exclusions", async () => {
+  test.each([8, 32])("updates retain capture settings and refuse unsupported reversal (budget %d)", async (limit) => {
     const home = makeHome();
     const extra = makeDir("tret-update-observe-");
     const small = join(extra, "small.conf");
@@ -281,7 +286,7 @@ printf 'excluded\\n' >> "$HOME/.capture-excluded"
           "--json",
           "--backup",
           "--backup-size",
-          "8",
+          String(limit),
           "--observe",
           extra,
           "--observe-exclude",
@@ -300,6 +305,13 @@ printf 'excluded\\n' >> "$HOME/.capture-excluded"
 
       for (let iteration = 0; iteration < 2; iteration++) {
         const updated = await runCliResult(["update", original.id, "--json", "--yes"], home, options);
+        if (limit === 8) {
+          expect(updated.code).toBe(5);
+          expect(readRecords(home).records[0]?.captureSettings?.backups.sizeLimitBytes).toBe(8);
+          expect(readRecords(home).records[0]?.mutated.find((entry) => entry.path === large)?.beforeBlob).toBeUndefined();
+          expect(readFileSync(large, "utf8")).toBe("oversized-before\nmore\n");
+          break;
+        }
         expect(updated.code).toBe(0);
         expect(JSON.parse(updated.stdout)).toMatchObject({ ok: true, command: "update", id: original.id });
         const records = readRecords(home).records;
@@ -309,7 +321,7 @@ printf 'excluded\\n' >> "$HOME/.capture-excluded"
         expect(saved.deleted.find((entry) => entry.path === deleted)?.beforeBlob).toBe(sha256("gone\n"));
         const oversized = saved.mutated.find((entry) => entry.path === large);
         expect(oversized).toBeDefined();
-        expect(oversized?.beforeBlob).toBeUndefined();
+        expect(oversized?.beforeBlob).toBe(sha256("oversized-before\n"));
         expect(saved.owned.some((entry) => entry.path === owned)).toBe(true);
         expect([...saved.owned, ...saved.mutated, ...saved.deleted].some((entry) => entry.path === excluded)).toBe(false);
         expect(saved).toMatchObject({
@@ -319,14 +331,14 @@ printf 'excluded\\n' >> "$HOME/.capture-excluded"
           scriptArgs: ["--flavor", "strict"],
           captureSettings: {
             enabled: true,
-            backups: { enabled: true, sizeLimitBytes: 8 },
+            backups: { enabled: true, sizeLimitBytes: limit },
             observe: { include: [extra], exclude: [home] },
           },
         });
         expect(readFileSync(saved.executable, "utf8")).toContain("--flavor strict");
       }
 
-      const removed = await runCliResult(["uninstall", original.id, "--json", "--yes"], home);
+      const removed = await runCliResult(["uninstall", original.id, "--json", "--yes", ...(limit === 8 ? ["--approved-only"] : [])], home);
       expect(removed.code).toBe(0);
       expect(readFileSync(small, "utf8")).toBe("before\n");
       expect(readFileSync(deleted, "utf8")).toBe("gone\n");
@@ -389,7 +401,7 @@ describe("uninstall selector output", () => {
     expect(result.code).toBe(0);
     expect(existsSync(binary)).toBe(false);
     const output = runLogText(home);
-    expect(output).toContain("removed mytool-human");
+    expect(output).toContain("completed recorded-effects cleanup for mytool-human");
     expect(output).not.toContain("removed rec-human");
   });
 

@@ -7,7 +7,9 @@ const aliases = new Map([
 
 const options: Record<string, readonly string[]> = {
   install: ["--yes", "--force", "--backup", "--no-capture"],
-  uninstall: ["--yes", "--force", "--dry-run"],
+  uninstall: ["--yes", "--force", "--dry-run", "--approved-only"],
+  approve: ["--yes", "--remove", "--restore", "--revoke"],
+  recover: ["--yes", "--resume", "--discard"],
   trace: ["--yes"],
   update: ["--yes"],
   list: [],
@@ -67,7 +69,7 @@ export function normalizeCliArgs(args: string[], hasScriptSeparator: boolean): {
       return { error: "install takes one URL or a pasted curl/wget command; put script arguments after --" };
     }
   } else {
-    const maximum = command === "list" || command === "help" ? 0 : command === "unclaim" ? 2 : 1;
+    const maximum = command === "list" || command === "help" ? 0 : command === "unclaim" || command === "approve" ? 2 : 1;
     if (positional.length > maximum)
       return { error: `${command} takes at most ${maximum} argument${maximum === 1 ? "" : "s"}` };
   }

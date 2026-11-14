@@ -8,6 +8,7 @@ import type { ScopedSnapshot } from "./scoped";
 import { isSensitiveBackupPath } from "../../../constants";
 import { isVolatileChurnPath } from "./scope";
 import { macosHomeRootBounds } from "./homeScope";
+import { privateStateFilter } from "../self-state";
 
 /** Identifier stored in `record.capture.backend` for the macOS heuristic fallback (D1). */
 export const MACOS_HEURISTIC_BACKEND = "macos-heuristic";
@@ -66,8 +67,10 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
     const roots = options.roots.length > 0 ? options.roots : (this.roots ?? []);
     const caseSensitive = this.caseSensitive;
     const rootBounds = this.homeRootBounds(roots);
+    const privateState = privateStateFilter(this.home);
+    const skip = (path: string) => privateState(path) || isVolatileChurnPath(path);
     const before: ScopedSnapshot | undefined =
-      roots.length > 0 ? scanScopedRoots(roots, { caseSensitive, skip: isVolatileChurnPath, rootBounds }) : undefined;
+      roots.length > 0 ? scanScopedRoots(roots, { caseSensitive, skip, rootBounds }) : undefined;
     // When backups are enabled the start snapshot keeps each pre-existing file's bytes (within the
     // size limit) alongside its hash, so an overwrite or deletion later still has something to
     // restore. This is the one place content is read before the installer runs; off by default (D2).
@@ -75,6 +78,10 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
 
     return {
       backend: this.name,
+      beforeImages,
+      baseline: [...(before?.entries.values() ?? [])].map(({ path, kind, hash, mode, linkTarget }) => ({
+        path, kind, ...(hash ? { hash } : {}), mode, ...(linkTarget ? { linkTarget } : {}),
+      })),
       stop: async (): Promise<Journal> => {
         if (before === undefined) {
           return {
@@ -85,7 +92,7 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
           };
         }
 
-        const after = scanScopedRoots(roots, { caseSensitive, skip: isVolatileChurnPath, rootBounds });
+        const after = scanScopedRoots(roots, { caseSensitive, skip, rootBounds });
         const hashErrors: AbsolutePath[] = [];
         for (const path of filesToHash(before, after)) {
           const hash = await this.hash(path);

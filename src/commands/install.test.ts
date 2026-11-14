@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { extractBackupSizeFlag, parseObserveFlags, recordDisplayName } from "./install";
 import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
+import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { heuristicFallbackRoots } from "../lib/capture/fallback";
 import { install } from "./install";
 import { join } from "node:path";
@@ -40,6 +41,8 @@ const homes: string[] = [];
 function makeHome(): string {
   const dir = mkdtempSync(join(tmpdir(), "tret-cli-"));
   homes.push(dir);
+  mkdirSync(join(dir, ".local/bin"), { recursive: true });
+  mkdirSync(join(dir, ".config"), { recursive: true });
   return dir;
 }
 
@@ -54,6 +57,7 @@ afterEach(() => {
 
 /** Runs the CLI from source as a child process so its `process.exit` never kills the test runner. */
 async function runCli(args: string[], home: string, extraEnv: Record<string, string> = {}): Promise<number> {
+  await approveFixtureCandidates(home, args);
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, ...extraEnv, HOME: home },
     stdin: "ignore",
@@ -69,6 +73,7 @@ async function runCliResult(
   home: string,
   extraEnv: Record<string, string> = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+  await approveFixtureCandidates(home, args);
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, ...extraEnv, HOME: home },
     stdin: "ignore",
@@ -313,7 +318,7 @@ describe("install -> list -> uninstall", () => {
       expect(installed).toBe(0);
 
       const file = readStore(home);
-      expect(file.version).toBe(3);
+      expect(file.version).toBe(4);
       const record = file.records.find((entry) => entry.name === "mytool");
       expect(record).toBeDefined();
       expect(record?.source).toBe("install");
@@ -333,7 +338,7 @@ describe("install -> list -> uninstall", () => {
       expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
 
       const after = readStore(home);
-      expect(after.version).toBe(3);
+      expect(after.version).toBe(4);
       expect(after.records).toHaveLength(0);
     } finally {
       await server.stop();
@@ -378,7 +383,7 @@ describe("install -> list -> uninstall", () => {
       expect(await runCli(["install", "--yes", server.url, "--no-capture"], home)).toBe(0);
 
       const file = readStore(home);
-      expect(file.version).toBe(3);
+      expect(file.version).toBe(4);
       const record = file.records.find((entry) => entry.name === "nct");
       expect(record).toBeDefined();
       expect(record?.capture.backend).toBe("none");
@@ -422,11 +427,11 @@ describe("install -> list -> uninstall", () => {
 
       const result = await runCliResult(["uninstall", "nct", "--yes"], home);
 
-      expect(result.code).toBe(1);
+      expect(result.code).toBe(5);
       expect(readFileSync(executable, "utf8")).toBe("changed by the user\n");
       expect(readlinkSync(link)).toBe("elsewhere");
-      expect(result.stderr).toContain(`keep ${executable} (modified)`);
-      expect(result.stderr).toContain(`keep ${link} (modified)`);
+      expect(result.stderr).toContain(`conflict ${executable} (modified)`);
+      expect(result.stderr).toContain(`conflict ${link} (modified)`);
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
       expect(records[0]?.owned.map((entry) => entry.path)).toEqual(expect.arrayContaining([executable, link]));
@@ -465,8 +470,8 @@ describe("install -> list -> uninstall", () => {
     for (const extra of [[], ["--force"]] as string[][]) {
       const result = await runCliResult(["uninstall", "legacy", "--yes", ...extra], home);
 
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain(`keep ${legacy} (unverified)`);
+      expect(result.code).toBe(5);
+      expect(result.stderr).toContain(`conflict ${legacy} (unverified)`);
       expect(existsSync(legacy)).toBe(true);
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
@@ -481,7 +486,7 @@ describe("install -> list -> uninstall", () => {
       expect(await runCli(["install", "--yes", server.url], home)).not.toBe(0);
 
       const file = readStore(home);
-      expect(file.version).toBe(3);
+      expect(file.version).toBe(4);
       const record = file.records.find((entry) => entry.name === "badtool");
       expect(record).toBeDefined();
       expect(record?.capture.completeness).toBe("partial");
@@ -503,6 +508,7 @@ describe("install -> list -> uninstall", () => {
     const recordsPath = join(home, ".tret", "records.json");
     try {
       expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
+      await approveFixtureCandidates(home, ["install", server.url, "--force"]);
       const previousRecords = readFileSync(recordsPath, "utf8");
 
       expect(await runCli(["install", "--yes", server.url, "--force"], home)).not.toBe(0);
@@ -624,7 +630,7 @@ describe("install -> list -> uninstall", () => {
     }
   });
 
-  test("--force replaces a tool whose created parent directory a second tool now shares", async () => {
+  test("--force refuses a previous scope containing another tool's untracked children", async () => {
     const home = makeHome();
     const serverA = serve(SHARED_PARENT_A_SCRIPT);
     const serverB = serve(SHARED_PARENT_B_SCRIPT);
@@ -640,7 +646,7 @@ describe("install -> list -> uninstall", () => {
       expect(previousA).toBeDefined();
       expect(previousA?.owned.some((entry) => entry.path === sharedParent)).toBe(true);
 
-      expect(await runCli(["install", "--yes", serverA.url, "--force"], home)).toBe(0);
+      expect(await runCli(["install", "--yes", serverA.url, "--force"], home)).toBe(5);
 
       // The replacement removed A's own files, but the shared directory and B's file survive.
       expect(readFileSync(aFile, "utf8")).toBe("a\n");
@@ -650,10 +656,10 @@ describe("install -> list -> uninstall", () => {
       expect(after.filter((entry) => entry.name === "shared-b")).toHaveLength(1);
       const aRecords = after.filter((entry) => entry.name === "shared-a");
       expect(aRecords).toHaveLength(1);
-      expect(aRecords[0]?.id).not.toBe(previousA?.id);
+      expect(aRecords[0]?.id).toBe(previousA?.id);
       expect(aRecords[0]?.executable).toBe(join(home, ".local", "bin", "shared-a"));
       expect(aRecords[0]?.owned.some((entry) => entry.path === aFile)).toBe(true);
-      expect(after.some((entry) => entry.id === previousA?.id)).toBe(false);
+      expect(after.some((entry) => entry.id === previousA?.id)).toBe(true);
     } finally {
       await serverA.stop();
       await serverB.stop();
@@ -668,6 +674,7 @@ describe("install -> list -> uninstall", () => {
     const recordsPath = join(home, ".tret", "records.json");
     try {
       expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
+      await approveFixtureCandidates(home, ["install", server.url, "--force"]);
       const previousRecords = readFileSync(recordsPath, "utf8");
       const previousExecutable = readFileSync(executable, "utf8");
 
@@ -754,7 +761,8 @@ describe("install -> list -> uninstall", () => {
     const server = serve(ZERO_EFFECT_SCRIPT);
     try {
       expect(await runCli(["install", "--yes", server.url], home)).not.toBe(0);
-      expect(existsSync(join(home, ".tret", "records.json"))).toBe(false);
+      expect(readStore(home).records).toEqual([]);
+      expect(readStore(home).version).toBe(4);
     } finally {
       await server.stop();
     }

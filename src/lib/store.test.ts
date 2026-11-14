@@ -92,8 +92,8 @@ describe("FileStorage records", () => {
     const home = makeHome();
     const storage = new FileStorage({ homeDir: home });
 
-    await storage.saveRecord(v3Record());
-    await storage.saveRecord(v3Record({ name: "renamed" }));
+    const saved = await storage.saveRecord(v3Record());
+    await storage.saveRecord({ ...saved, name: "renamed" });
 
     const loaded = await storage.loadRecords();
     expect(loaded).toHaveLength(1);
@@ -104,24 +104,24 @@ describe("FileStorage records", () => {
     const home = makeHome();
     const storage = new FileStorage({ homeDir: home });
 
-    await storage.saveRecord(v3Record({ id: "a" }));
+    const savedA = await storage.saveRecord(v3Record({ id: "a" }));
     await storage.saveRecord(v3Record({ id: "b", name: "other" }));
-    await storage.removeRecord("a");
+    await storage.removeRecord("a", savedA.revision);
     await storage.removeRecord("missing");
 
     expect((await storage.loadRecords()).map((record) => record.id)).toEqual(["b"]);
   });
 
-  test("writes the records file as version 3 through a rename with no temp left behind", async () => {
+  test("writes the records file as version 4 through a rename with no temp left behind", async () => {
     const home = makeHome();
     const storage = new FileStorage({ homeDir: home });
 
     await storage.saveRecord(v3Record());
 
     const raw = JSON.parse(readFileSync(recordsPath(home), "utf8"));
-    expect(raw.version).toBe(3);
+    expect(raw.version).toBe(4);
     expect(raw.records).toHaveLength(1);
-    expect(readdirSync(join(home, ".tret"))).toEqual(["records.json"]);
+    expect(readdirSync(join(home, ".tret"))).toEqual(["operation.lock", "records.json"]);
   });
 
   test("sets owner-only permissions on the records file and its directory", async () => {
@@ -283,9 +283,9 @@ describe("FileStorage records lock", () => {
     const home = makeHome();
     const storage = new FileStorage({ homeDir: home });
     await storage.saveRecord(v3Record({ id: "keep" }));
-    await storage.saveRecord(v3Record({ id: "gone", name: "gone" }));
+    const gone = await storage.saveRecord(v3Record({ id: "gone", name: "gone" }));
 
-    await Promise.all([storage.saveRecord(v3Record({ id: "added", name: "added" })), storage.removeRecord("gone")]);
+    await Promise.all([storage.saveRecord(v3Record({ id: "added", name: "added" })), storage.removeRecord("gone", gone.revision)]);
 
     expect((await storage.loadRecords()).map((record) => record.id).sort()).toEqual(["added", "keep"]);
   });

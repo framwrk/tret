@@ -51,7 +51,7 @@ function planFor(
     skipNonEmptyOwnedDirectories?: boolean;
   } = {},
 ): Promise<UninstallPlan> {
-  const planner = new VerifiedUninstallPlanner(inspector(state), lister(options.list ?? {}));
+  const planner = new VerifiedUninstallPlanner(inspector(state), lister(options.list ?? {}), async () => undefined);
   return planner.plan(record, {
     force: options.force,
     otherRecords: options.otherRecords,
@@ -619,7 +619,7 @@ describe("dry-run parity", () => {
     ]);
   });
 
-  test("a complete capture plans the same actions without the observed caveat", async () => {
+  test("a complete window still cannot supply per-object ownership proof", async () => {
     const target = {
       ...record(),
       capture: { backend: "linux-fanotify", completeness: "complete" as const, segments: [] },
@@ -628,11 +628,11 @@ describe("dry-run parity", () => {
 
     const plan = await planFor(target, { "/h/bin/tool": { exists: true, kind: "file", hash: h("b") } });
 
-    expect(plan.confidence).toBe("proven");
+    expect(plan.confidence).toBe("observed");
     expect(plan.actions).toEqual([
       { action: "remove", path: "/h/bin/tool", kind: "file", plannedState: { exists: true, kind: "file", hash: h("b") } },
     ]);
-    expect(formatUninstallPlan(plan, "dry-run")).toEqual(["would remove /h/bin/tool"]);
+    expect(formatUninstallPlan(plan, "dry-run")).toEqual(["note: these paths are observed, not proven to belong to this tool", "would remove /h/bin/tool (observed, not proven)"]);
   });
 
   test("an observed plan with no destructive actions omits the caveat", async () => {

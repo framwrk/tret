@@ -1,4 +1,4 @@
-import { EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND } from "../constants";
+import { EXIT_BLOCKED, EXIT_NOT_FOUND } from "../constants";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import type { RecordV3 } from "../types";
+import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -42,6 +43,7 @@ async function runCliResult(
   home: string,
   extraEnv: Record<string, string> = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+  await approveFixtureCandidates(home, args);
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, ...extraEnv, HOME: home },
     stdin: "ignore",
@@ -118,7 +120,7 @@ describe("uninstall record lifecycle", () => {
     chmodSync(dir, 0o000);
     try {
       const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
-      expect(result.code).toBe(EXIT_ERROR);
+      expect(result.code).toBe(EXIT_BLOCKED);
       expect(readRecords(home).records[0]?.owned).toEqual([
         { path: file, kind: "file", installedHash: sha256("installed") },
       ]);
@@ -163,18 +165,18 @@ describe("uninstall record lifecycle", () => {
     const other = record({ id: "rec-2", name: "other", mutated: [{ path: file }] });
     writeRecords(home, [record({ mutated: [{ path: file, installedHash: sha256(content), beforeBlob: blob }] }), other]);
     const preview = await runCliResult(["uninstall", "mytool", "--dry-run", "--json"], home);
-    expect(preview.code).toBe(0);
+    expect(preview.code).toBe(EXIT_BLOCKED);
     expect(JSON.parse(preview.stdout).actions).toContainEqual({ action: "conflict", path: file, reason: "shared-owner" });
     const result = await runCliResult(["uninstall", "mytool", "--yes", "--force", "--json"], home);
-    expect(result.code).toBe(EXIT_ERROR);
-    expect(JSON.parse(result.stdout).error.code).toBe("uninstall-incomplete");
+    expect(result.code).toBe(EXIT_BLOCKED);
+    expect(JSON.parse(result.stdout).error.code).toBe("uninstall-preflight");
     expect(readFileSync(file, "utf8")).toBe(content);
     expect(readRecords(home).records).toHaveLength(2);
     expect(readRecords(home).records).toContainEqual(other);
     expect(readFileSync(join(home, ".tret/objects", blob), "utf8")).toBe(before);
   });
 
-  test("detect-only churn is reported but does not block; owned paths go and the record drops", async () => {
+  test("an explicitly approved scope removes its binary and retains unresolved churn", async () => {
     const home = makeHome();
     const binary = join(home, ".local", "bin", "mytool");
     const churn = join(home, ".raycast", "db-wal");
@@ -194,14 +196,15 @@ describe("uninstall record lifecycle", () => {
       }),
     ]);
 
-    expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
+    expect(await runCli(["uninstall", "mytool", "--yes", "--approved-only"], home)).toBe(0);
 
     // The owned binary is removed; the detect-only change and deletion are left untouched.
     expect(existsSync(binary)).toBe(false);
     expect(readFileSync(churn, "utf8")).toBe("churn");
     expect(existsSync(gone)).toBe(false);
     // Nothing actionable remained, so the record is gone rather than reduced forever.
-    expect(readRecords(home).records).toHaveLength(0);
+    expect(readRecords(home).records[0]?.mutated).toHaveLength(1);
+    expect(readRecords(home).records[0]?.deleted).toHaveLength(1);
   });
 
   test("retains marked shared PATH lines without edit provenance", async () => {
@@ -815,7 +818,7 @@ describe("uninstall ownership confidence", () => {
     expect(output).toContain(`would remove ${binary} (observed, not proven)`);
   });
 
-  test("a complete record's destructive plan carries no observed caveat", async () => {
+  test("explicit object approval does not turn complete coverage into ownership proof", async () => {
     const home = makeHome();
     const binary = join(home, ".local", "bin", "mytool");
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
@@ -839,7 +842,7 @@ describe("uninstall ownership confidence", () => {
     const output = `${result.stdout}\n${result.stderr}`;
     expect(output).toContain(`would remove ${binary}`);
     expect(output).not.toContain("only observed");
-    expect(output).not.toContain("(observed, not proven)");
+    expect(output).toContain("(observed, not proven)");
   });
 });
 
@@ -888,7 +891,7 @@ describe("uninstall JSON mode", () => {
     expect(readRecords(home).records).toHaveLength(0);
   });
 
-  test("--json reports an incomplete removal as a structured error and keeps the record", async () => {
+  test("--json reports preflight refusal as a structured error and keeps the record", async () => {
     const home = makeHome();
     const file = join(home, "tool");
     writeFileSync(file, "changed");
@@ -896,10 +899,10 @@ describe("uninstall JSON mode", () => {
 
     const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
 
-    expect(result.code).toBe(EXIT_ERROR);
+    expect(result.code).toBe(EXIT_BLOCKED);
     const doc = JSON.parse(result.stdout);
     expect(doc.ok).toBe(false);
-    expect(doc.error.code).toBe("uninstall-incomplete");
+    expect(doc.error.code).toBe("uninstall-preflight");
     expect(readFileSync(file, "utf8")).toBe("changed");
     expect(readRecords(home).records).toHaveLength(1);
   });

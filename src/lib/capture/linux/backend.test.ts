@@ -78,7 +78,7 @@ describe("linux capture backend", () => {
     expect(session.backend).toBe("linux-strace");
     expect(journal.backend).toBe("linux-strace");
     expect(journal.completeness).toBe("complete");
-    expect(ownershipConfidence(journal.completeness)).toBe("proven");
+    expect(ownershipConfidence(journal.completeness)).toBe("observed");
     expect(journal.partialReason).toBeUndefined();
     expect(journal.events.map((event) => event.type)).toEqual(["mkdir"]);
   });

@@ -1,7 +1,7 @@
+import { BeforeExecutionError, runBoundedSession } from "../session";
 import type { BoundedSessionOptions, BoundedSessionResult } from "../session";
 import type { AbsolutePath } from "../../types";
 import type { CaptureBackend } from "./backend";
-import { runBoundedSession } from "../session";
 
 /**
  * One pre-run capture attempt: either a completed session (possibly from the fallback backend), or a
@@ -61,6 +61,7 @@ export async function runCaptureFallback<T>(options: CaptureFallbackOptions<T>):
       usedFallback: false,
     };
   } catch (primaryError) {
+    if (primaryError instanceof BeforeExecutionError) throw primaryError;
     onPrimaryFailure?.(primaryError);
     try {
       return {
@@ -73,6 +74,7 @@ export async function runCaptureFallback<T>(options: CaptureFallbackOptions<T>):
         primaryError,
       };
     } catch (fallbackError) {
+      if (fallbackError instanceof BeforeExecutionError) throw fallbackError;
       onFallbackFailure?.(fallbackError);
       return { session: undefined, usedFallback: false, primaryError, fallbackError };
     }

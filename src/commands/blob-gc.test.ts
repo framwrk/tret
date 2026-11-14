@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import type { RecordV3 } from "../types";
+import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
+import { observedRecord } from "../lib/records-v4";
 import { tmpdir } from "node:os";
 
 // End-to-end cover for post-command blob collection (plan step 9): a record that stops referencing a
@@ -26,6 +28,7 @@ afterEach(() => {
 });
 
 async function runCliResult(args: string[], home: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  await approveFixtureCandidates(home, args);
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
@@ -68,7 +71,7 @@ function ageBlob(home: string, id: string): void {
 
 function writeRecords(home: string, records: RecordV3[]): void {
   mkdirSync(join(home, ".tret"), { recursive: true });
-  writeFileSync(join(home, ".tret", "records.json"), JSON.stringify({ version: 3, records }, null, 2));
+  writeFileSync(join(home, ".tret", "records.json"), JSON.stringify({ version: 4, sequence: records.length, records: records.map((record, index) => observedRecord(record, index + 1, "capture")) }, null, 2));
 }
 
 function readRecords(home: string): RecordV3[] {
@@ -109,10 +112,11 @@ function serve(script: string): { url: string; stop: () => Promise<void> } {
 }
 
 describe("post-command blob collection", () => {
-  test("uninstall reclaims an aged before-image but keeps a blob another record references", async () => {
+  test("uninstall retains receipt blobs until explicit discard, preserving active references", async () => {
     const home = makeHome();
     const goneBlob = writeBlob(home, "before-gone\n");
     const keptBlob = writeBlob(home, "before-kept\n");
+    mkdirSync(join(home, ".config"), { recursive: true });
     const gonePath = join(home, ".config", "gone.conf");
     const keptPath = join(home, ".config", "kept.conf");
     writeRecords(home, [
@@ -127,6 +131,11 @@ describe("post-command blob collection", () => {
     expect(result.code).toBe(0);
     // The removed record's blob was still available while the restore ran, then collected.
     expect(readFileSync(gonePath, "utf8")).toBe("before-gone\n");
+    expect(existsSync(blobPath(home, goneBlob))).toBe(true);
+    const { FileStorage } = await import("../lib/store");
+    const receipt = new FileStorage({ homeDir: home }).operations.list().find((operation) => operation.kind === "uninstall")!;
+    expect((await runCliResult(["recover", receipt.id, "--discard", "--yes", "--json"], home)).code).toBe(0);
+    await new FileStorage({ homeDir: home }).gcUnreferenced();
     expect(existsSync(blobPath(home, goneBlob))).toBe(false);
     expect(existsSync(blobPath(home, keptBlob))).toBe(true);
     expect(readRecords(home).map((entry) => entry.id)).toEqual(["rec-kept"]);
@@ -200,7 +209,7 @@ describe("post-command blob collection", () => {
     expect(readRecords(home)).toHaveLength(2);
   });
 
-  test("a forced replacement reclaims the old record's aged before-image", async () => {
+  test("a forced replacement retains the previous recovery manifest and its blob", async () => {
     const home = makeHome();
     const executable = join(home, ".local", "bin", "mytool");
     const oldConfig = join(home, ".config", "oldtool.conf");
@@ -234,7 +243,7 @@ printf 'second\\n' > "$HOME/.config/newtool.conf"
       expect(result.code).toBe(0);
       // The old install was restored before removal, and its now-unreferenced blob was collected.
       expect(readFileSync(oldConfig, "utf8")).toBe("old-original\n");
-      expect(existsSync(blobPath(home, oldBlob))).toBe(false);
+      expect(existsSync(blobPath(home, oldBlob))).toBe(true);
       const saved = readRecords(home);
       expect(saved).toHaveLength(1);
       expect(saved[0]!.id).not.toBe("rec-old");

@@ -214,6 +214,13 @@ inspect_capture strace "$HOME_STRACE" "$STRACE_NAME" "$STRACE_ENTRY" linux-strac
 # models one user who installed with sudo and then uninstalls without it.
 sudo -n chown -R "$(id -u):$(id -g)" "$HOME_STRACE"
 
+# Capture is observation, including a complete strace window. Explicitly approve only the fixture
+# objects with the shipped binary before proving privileged planning/application.
+sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$STRACE_ENTRY" --remove --yes --json >"$WORK/approve-file.json"
+sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$FIXTURE_STRACE/bin" --remove --yes --json >"$WORK/approve-dir.json"
+# Root's approval writes fresh private metadata; return that metadata to the same invoking user.
+sudo -n chown -R "$(id -u):$(id -g)" "$HOME_STRACE"
+
 echo "privileged-e2e.sh: [strace] 3/4 the non-root dry-run must report that sudo is required"
 HOME="$HOME_STRACE" "$BIN" uninstall "$STRACE_NAME" --dry-run >"$WORK/dry-run.log" 2>&1 || {
   cat "$WORK/dry-run.log" >&2
@@ -236,6 +243,14 @@ HOME="$HOME_STRACE" "$BIN" uninstall "$STRACE_NAME" --dry-run --json >"$WORK/dry
 [ -f "$STRACE_ENTRY" ] || fail "the non-root dry-run removed the root-owned $STRACE_ENTRY"
 
 echo "privileged-e2e.sh: [strace] 4/4 the root uninstall must remove the root-owned file and drop the record"
+STRACE_RECORDS_BEFORE_REFUSAL="$(sha256sum "$HOME_STRACE/.tret/records.json" | cut -d' ' -f1)"
+set +e
+HOME="$HOME_STRACE" "$BIN" uninstall "$STRACE_NAME" --yes --json >"$WORK/unprivileged-refusal.json" 2>"$WORK/unprivileged-refusal.log"
+STRACE_UNPRIVILEGED_STATUS=$?
+set -e
+[ "$STRACE_UNPRIVILEGED_STATUS" -eq 5 ] || fail "unprivileged apply must refuse before target changes (got $STRACE_UNPRIVILEGED_STATUS)"
+[ -f "$STRACE_ENTRY" ] || fail "unprivileged refusal removed the root fixture"
+[ "$(sha256sum "$HOME_STRACE/.tret/records.json" | cut -d' ' -f1)" = "$STRACE_RECORDS_BEFORE_REFUSAL" ] || fail "unprivileged refusal changed records"
 sudo -n env HOME="$HOME_STRACE" PATH="$PATH" "$BIN" uninstall "$STRACE_NAME" --yes --json >"$WORK/uninstall.json" \
   2>"$WORK/uninstall.log" || {
   cat "$WORK/uninstall.log" >&2

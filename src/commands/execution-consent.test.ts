@@ -121,6 +121,34 @@ test("tracked update without --yes preserves the executable and original record"
   }
 });
 
+for (const command of ["install", "update"]) {
+  test(`JSON ${command} emits one error document when prior cleanup is unapproved`, async () => {
+    const root = home();
+    const sentinel = join(root, "replacement-ran");
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response('#!/bin/sh\nprintf ran > "$HOME/replacement-ran"\n', {
+        headers: { "content-type": "text/plain" },
+      }),
+    });
+    try {
+      const url = `http://127.0.0.1:${server.port}/install.sh`;
+      const executable = seed(root, url);
+      const before = readFileSync(join(root, ".tret/records.json"));
+      const args = command === "install" ? ["install", url, "--force"] : ["update", "victim"];
+      const result = await run(["--json", ...args, "--yes"], root);
+      expect(result.code).toBe(5);
+      expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, error: { code: "install-previous-blocked" } });
+      expect(readFileSync(join(root, ".tret/records.json"))).toEqual(before);
+      expect(readFileSync(executable, "utf8")).toBe("original");
+      expect(existsSync(sentinel)).toBe(false);
+    } finally {
+      await server.stop(true);
+    }
+  });
+}
+
 for (const args of [
   ["uninstall", "victim", "--yes", "--forc"],
   ["uninstall", "victim", "extra", "--yes"],
@@ -167,6 +195,7 @@ for (const args of [
 test("uninstall flags before a selector preview that selector without changing it", async () => {
   const root = home();
   const executable = seed(root, "https://example.com/install.sh");
+  expect((await run(["approve", "victim", executable, "--remove", "--yes", "--json"], root)).code).toBe(0);
   const result = await run(["uninstall", "--dry-run", "victim", "--json"], root);
   expect(result.code).toBe(0);
   expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, tool: "victim" });

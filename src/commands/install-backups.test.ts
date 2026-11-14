@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -17,6 +18,8 @@ const homes: string[] = [];
 function makeHome(): string {
   const dir = mkdtempSync(join(tmpdir(), "tret-backup-"));
   homes.push(dir);
+  mkdirSync(join(dir, ".local/bin"), { recursive: true });
+  mkdirSync(join(dir, ".config"), { recursive: true });
   return dir;
 }
 
@@ -26,6 +29,7 @@ afterEach(() => {
 
 /** Runs the CLI from source as a child process so its `process.exit` never kills the test runner. */
 async function runCli(args: string[], home: string): Promise<number> {
+  await approveFixtureCandidates(home, args);
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
@@ -151,7 +155,7 @@ describe("install --backup -> uninstall restores", () => {
     }
   });
 
-  test("with backups off, changes are detect-only and uninstall still completes", async () => {
+  test("with backups off, an approved subset retains unresolved changes", async () => {
     const home = makeHome();
     seedHome(home);
     const server = serve(INSTALL_SCRIPT);
@@ -166,13 +170,14 @@ describe("install --backup -> uninstall restores", () => {
       expect(record.mutated.find((entry) => entry.path === keepPath(home))?.installedHash).toBeDefined();
 
       // Detect-only changes are reported but never block: the owned binary goes and the record drops.
-      expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
+      expect(await runCli(["uninstall", "mytool", "--yes", "--approved-only"], home)).toBe(0);
       expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
       // The detect-only files are left exactly as the install left them, mode included.
       expect(readFileSync(keepPath(home), "utf8")).toBe("installed-config\n");
       expect(modeOf(keepPath(home))).toBe(0o600);
       expect(existsSync(gonePath(home))).toBe(false);
-      expect(readStore(home).records).toHaveLength(0);
+      expect(readStore(home).records).toHaveLength(1);
+      expect(readStore(home).records[0]?.mutated).toHaveLength(1);
     } finally {
       await server.stop();
     }

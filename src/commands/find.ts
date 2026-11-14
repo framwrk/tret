@@ -10,11 +10,12 @@ import { findRelated } from "../lib/related";
 import { log } from "../lib/utilities";
 import { randomUUID } from "node:crypto";
 import { resolveCommand } from "../lib/executable";
+import { runStoreOperation } from "../lib/command-operation";
 
 /**
  * Adopts an already-installed command as a record. There is no install journal, so the record is
- * labeled `heuristic` and every path is fingerprinted from its current state; an owned file with a
- * matching hash uninstalls cleanly, and anything without one is reported rather than guessed at.
+ * labeled `heuristic` and every candidate is fingerprinted from its current state. Cleanup still
+ * needs explicit object approval; discovery and matching bytes never establish disposal authority.
  */
 export async function find(name: string | undefined): Promise<void> {
   if (!name || name.startsWith("--") || name.includes("/")) {
@@ -29,6 +30,7 @@ export async function find(name: string | undefined): Promise<void> {
   }
 
   const storage = new FileStorage();
+  if (!storage.inOperation) return runStoreOperation(storage, () => find(name));
   let records: RecordV3[];
   try {
     records = await storage.loadRecords();

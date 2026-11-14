@@ -1,4 +1,4 @@
-import type { RecordV3 } from "../types";
+import type { EffectEvidence, RecordV3, RecordV4 } from "../types";
 
 /** Content address of a stored blob: the sha256 hex of its bytes. */
 export type BlobId = string;
@@ -10,17 +10,16 @@ export type BlobRef = {
 };
 
 /**
- * Loads and persists v3 records and their content-addressed before-image blobs. The real
- * filesystem-backed implementation (atomic writes, restrictive permissions, size limits, v2→v3
- * migration) lands in phase 6; this freezes the contract so capture and uninstall can target it.
+ * Candidate records and content-addressed before-images. FileStorage normalizes legacy evidence
+ * to v4 and enforces revisions/operation leases; injected stores may omit storage-managed fields.
  */
 export interface Storage {
   /** Loads records, interpreting legacy evidence in memory without persisting migration. */
   loadRecords(): Promise<RecordV3[]>;
-  /** Atomically persists one record, replacing any record with the same id. */
-  saveRecord(record: RecordV3): Promise<void>;
-  /** Removes one record by id; an unknown id is a no-op. */
-  removeRecord(id: string): Promise<void>;
+  /** Persists a new record or compares the revision read earlier before replacing an existing id. */
+  saveRecord(record: RecordV3, origin?: EffectEvidence["origin"]): Promise<RecordV4 | void>;
+  /** Removes one record at the expected revision; an absent id is a no-op only without an expectation. */
+  removeRecord(id: string, expectedRevision?: number): Promise<void>;
   /** Stores bytes under their content address and returns the reference. */
   putBlob(content: Uint8Array): Promise<BlobRef>;
   /** Reads a blob by content address, or undefined when it is missing. */
