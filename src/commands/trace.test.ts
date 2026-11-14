@@ -10,6 +10,7 @@ import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { parentAttachRestricted } from "../lib/capture/linux/backend";
 import { tmpdir } from "node:os";
+import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
 // Cover for `tret trace` (plan 03 item 2). The merge is tested as a pure function: only what the
 // trace demonstrably wrote may be added, an already-tracked path keeps the install's original
@@ -33,7 +34,7 @@ afterEach(() => {
 });
 
 async function runCliResult(args: string[], home: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn([BUN, TRET, ...args], {
+  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args)], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
@@ -379,6 +380,7 @@ describe("trace capture fallback", () => {
     let runs = 0;
 
     await trace("mytool", true, {
+      allowWeakerCapture: true,
       storage,
       roots: [scope],
       backend: primary,
@@ -416,6 +418,7 @@ describe("trace capture fallback", () => {
     let runs = 0;
 
     await trace("mytool", true, {
+      allowWeakerCapture: true,
       storage,
       roots: [scope],
       backend: primary,
@@ -479,6 +482,7 @@ describe.skipIf(process.platform !== "darwin")("trace command (macOS heuristic c
     let ran = false;
     const storage = new FileStorage({ homeDir: home });
     await trace("mytool", true, {
+      allowWeakerCapture: true,
       storage,
       roots: [scope],
       run: async () => {

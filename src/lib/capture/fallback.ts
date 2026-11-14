@@ -30,6 +30,8 @@ export type CaptureFallbackOptions<T> = Omit<BoundedSessionOptions<T>, "backend"
   roots: AbsolutePath[];
   /** Roots for the fallback window; defaults to the primary roots. */
   fallbackRoots?: AbsolutePath[];
+  /** Separate permission before selecting weaker capture; omission refuses fallback. */
+  beforeFallback?: (error: unknown) => Promise<void>;
   /** Reports the primary attach failure before the fallback starts. */
   onPrimaryFailure?: (error: unknown) => void;
   /** Reports the fallback attach failure before the refusal is returned. */
@@ -42,7 +44,8 @@ export type CaptureFallbackOptions<T> = Omit<BoundedSessionOptions<T>, "backend"
  * has not observed anything and a different backend may still take the window. Once a backend has
  * started, every later failure is reported by the session as partial or as the work's own error; it
  * never returns here as an attach failure, so the tool is never re-run for it. If both backends
- * fail to attach, the result carries both errors and `run` was not called.
+ * fail to attach, the result carries both errors and `run` was not called. Fallback requires an
+ * explicit policy callback; without one, primary failure refuses before weaker capture starts.
  */
 export async function runCaptureFallback<T>(options: CaptureFallbackOptions<T>): Promise<CaptureFallbackResult<T>> {
   const {
@@ -50,23 +53,35 @@ export async function runCaptureFallback<T>(options: CaptureFallbackOptions<T>):
     fallback,
     roots,
     fallbackRoots,
+    beforeFallback,
     onPrimaryFailure,
     onFallbackFailure,
     ...sessionOptions
   } = options;
+  let executed = false;
+  const run = async () => {
+    executed = true;
+    return options.run();
+  };
 
   try {
     return {
-      session: await runBoundedSession({ ...sessionOptions, backend: primary, roots }),
+      session: await runBoundedSession({ ...sessionOptions, run, backend: primary, roots }),
       usedFallback: false,
     };
   } catch (primaryError) {
-    if (primaryError instanceof BeforeExecutionError) throw primaryError;
+    if (executed || primaryError instanceof BeforeExecutionError) throw primaryError;
+    if (fallback === primary)
+      return { session: undefined, usedFallback: false, primaryError, fallbackError: primaryError };
+    if (!beforeFallback)
+      return { session: undefined, usedFallback: false, primaryError, fallbackError: new Error("weaker fallback was not selected or authorized") };
+    await beforeFallback(primaryError);
     onPrimaryFailure?.(primaryError);
     try {
       return {
         session: await runBoundedSession({
           ...sessionOptions,
+          run,
           backend: fallback,
           roots: fallbackRoots ?? roots,
         }),
@@ -74,7 +89,7 @@ export async function runCaptureFallback<T>(options: CaptureFallbackOptions<T>):
         primaryError,
       };
     } catch (fallbackError) {
-      if (fallbackError instanceof BeforeExecutionError) throw fallbackError;
+      if (executed || fallbackError instanceof BeforeExecutionError) throw fallbackError;
       onFallbackFailure?.(fallbackError);
       return { session: undefined, usedFallback: false, primaryError, fallbackError };
     }

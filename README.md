@@ -58,6 +58,7 @@ curl -fsSL https://tret.framwrk.com/scripts/install.sh | bash
 | -------------------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
 | `--json`                   | all commands except `find`                | One JSON document on stdout                                               |
 | `--yes`                    | `install`, `uninstall`, `trace`, `update` | Skip the confirmation prompt                                              |
+| `--allow-weaker-capture` | `install`, `trace`, `update <tool>` | Separately accept heuristic or no-window observations for this invocation |
 | `--force`                  | `install`, `uninstall`                    | Allow known fingerprint mismatches; shared claims still block cleanup |
 | `--dry-run`                | `uninstall`                               | Preview without changing anything                                         |
 | `--backup`                 | `install`                                 | Store before-images for restore                                           |
@@ -87,6 +88,7 @@ tret uninstall opencode --dry-run
 
 - `install` names the tool from the executable it adds.
 - `install` prints the URL, script hash, preview, and asks for consent unless `--yes`. Noninteractive and JSON installs require `--yes`.
+- Before execution, capture preflight shows the selected backend, expanded roots, fallback exclusions, backup policy and known limits. Heuristic/partial capture, `--no-capture`, and fallback require a separate confirmation or `--allow-weaker-capture`, even with `--yes`. The decision is never saved or replayed on update. Known missing tracer prerequisites refuse before replacement cleanup; unexpected attach failure never authorizes a second execution.
 - A failed installer keeps a partial record of observed changes.
 - A no-executable install keeps a partial record and exits non-zero.
 - `trace` runs the real tool, so it also asks for consent.
@@ -168,7 +170,7 @@ rm -rf ~/.tret
 | Platform | Backend                                                                | Notes                                                                |
 | -------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | macOS    | `macos-heuristic`                                                      | Scoped before/after snapshot; no process attribution                 |
-| Linux    | `linux-strace`, then `linux-heuristic` fallback (also when root) | `ptrace_scope=1` forces the heuristic fallback for unprivileged runs |
+| Linux    | `linux-strace`, then explicitly accepted `linux-heuristic` fallback (also when root) | `ptrace_scope=1` prevents parent attachment for unprivileged runs |
 
 - Capture covers bounded observation roots under `$HOME`; `--observe` and `--observe-exclude` adjust them.
 - Tool updates preserve capture enablement, backup policy and size limit, and observation additions/exclusions. Older records without saved settings use the install defaults.

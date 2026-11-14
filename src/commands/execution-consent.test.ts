@@ -137,7 +137,7 @@ for (const command of ["install", "update"]) {
       const executable = seed(root, url);
       const before = readFileSync(join(root, ".tret/records.json"));
       const args = command === "install" ? ["install", url, "--force"] : ["update", "victim"];
-      const result = await run(["--json", ...args, "--yes"], root);
+      const result = await run(["--json", ...args, "--yes", "--allow-weaker-capture"], root);
       expect(result.code).toBe(5);
       expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, error: { code: "install-previous-blocked" } });
       expect(readFileSync(join(root, ".tret/records.json"))).toEqual(before);
@@ -153,6 +153,7 @@ for (const args of [
   ["uninstall", "victim", "--yes", "--forc"],
   ["uninstall", "victim", "extra", "--yes"],
   ["update", "--yess"],
+  ["update", "--allow-weaker-capture"],
   ["update", "victim", "extra", "--yes"],
   ["update", "victim", "--version"],
   ["install", "https://example.com/install.sh", "--ye"],
@@ -229,7 +230,7 @@ test("pasted curl/wget inputs preserve script arguments and require Tret's own c
       ["wget", "--quiet", "-O-", url],
     ]) {
       const root = home();
-      const result = await run(["--json", "install", ...paste, "--yes", "--", "--json", "--force"], root);
+      const result = await run(["--json", "install", ...paste, "--yes", "--allow-weaker-capture", "--", "--json", "--force"], root);
       expect(result.code).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, tool: "paste" });
       expect(readFileSync(join(root, "arguments"), "utf8")).toBe("--json --force");

@@ -23,12 +23,13 @@ import { runStoreOperation } from "../lib/command-operation";
  * by re-running its recorded installer. The two workflows are kept apart so a typo in a tool name
  * never falls through to replacing the running binary.
  */
-export async function update(tool?: string, yes = false): Promise<void> {
+export async function update(tool?: string, yes = false, allowWeakerCapture = false): Promise<void> {
   if (tool === undefined) {
+    if (allowWeakerCapture) fail("update-usage", "--allow-weaker-capture requires a tracked tool selector", EXIT_USAGE);
     await updateTret();
     return;
   }
-  await updateTrackedTool(tool, yes);
+  await updateTrackedTool(tool, yes, allowWeakerCapture);
 }
 
 /** Re-runs the published Tret install script and clears the cached update-check result. */
@@ -63,9 +64,9 @@ export async function updateTret(): Promise<void> {
  * validates the replacement before it removes anything, so a download or validation failure leaves
  * the working install untouched; a failure during removal keeps a reduced record to retry.
  */
-export async function updateTrackedTool(selector: string, yes: boolean): Promise<void> {
+export async function updateTrackedTool(selector: string, yes: boolean, allowWeakerCapture = false): Promise<void> {
   const storage = new FileStorage();
-  if (!storage.inOperation) return runStoreOperation(storage, () => updateTrackedTool(selector, yes));
+  if (!storage.inOperation) return runStoreOperation(storage, () => updateTrackedTool(selector, yes, allowWeakerCapture));
   let records: RecordV3[];
   try {
     records = await storage.loadRecords();
@@ -99,6 +100,7 @@ export async function updateTrackedTool(selector: string, yes: boolean): Promise
     name: record.name,
     commandName: "update",
     yes,
+    allowWeakerCapture,
     capture: record.captureSettings?.enabled,
     backups: record.captureSettings?.backups,
     observe: record.captureSettings?.observe,

@@ -20,6 +20,52 @@ class ThrowingStartBackend implements CaptureBackend {
 const SESSION = { pid: 1, privilege: "user" as const, roots: ["/tmp"] };
 
 describe("runCaptureFallback", () => {
+  test("a preflight-demoted single backend retains its actual attach error", async () => {
+    const backend = new FakeCaptureBackend({ name: "linux-heuristic", completeness: "heuristic" });
+    const failure = new Error("heuristic snapshot could not attach");
+    backend.start = async () => { throw failure; };
+    let permitted = false;
+    let runs = 0;
+    const result = await runCaptureFallback({
+      ...SESSION, primary: backend, fallback: backend,
+      beforeFallback: async () => { permitted = true; },
+      run: async () => { runs++; return 0; },
+    });
+    expect(result.session).toBeUndefined();
+    expect(result.primaryError).toBe(failure);
+    if (result.session !== undefined) throw new Error("expected attach refusal");
+    expect(result.fallbackError).toBe(failure);
+    expect(permitted).toBe(false);
+    expect(runs).toBe(0);
+  });
+
+  test("a post-run capture bookkeeping error never starts another execution", async () => {
+    const primary = new FakeCaptureBackend({ name: "linux-strace", completeness: "complete" });
+    const fallback = new FakeCaptureBackend({ name: "linux-heuristic", completeness: "heuristic" });
+    let clocks = 0;
+    let runs = 0;
+    await expect(runCaptureFallback({
+      ...SESSION, primary, fallback, beforeFallback: async () => {},
+      now: () => { if (++clocks === 2) throw new Error("capture close bookkeeping failed"); return 0; },
+      run: async () => { runs++; return 0; },
+    })).rejects.toThrow("capture close bookkeeping failed");
+    expect(runs).toBe(1);
+    expect(fallback.starts).toHaveLength(0);
+  });
+
+  test("an attach failure cannot silently authorize weaker capture", async () => {
+    const primary = new ThrowingStartBackend("linux-strace");
+    const fallback = new FakeCaptureBackend({ name: "linux-heuristic", completeness: "heuristic" });
+    let runs = 0;
+    const result = await runCaptureFallback({
+      ...SESSION, primary, fallback,
+      run: async () => { runs++; return 0; },
+    });
+    expect(result.session).toBeUndefined();
+    expect(fallback.starts).toHaveLength(0);
+    expect(runs).toBe(0);
+  });
+
   test("an attach failure runs the observed work exactly once under the fallback", async () => {
     const primary = new ThrowingStartBackend("linux-strace");
     const fallback = new FakeCaptureBackend({ name: "linux-heuristic", completeness: "heuristic" });
@@ -29,6 +75,7 @@ describe("runCaptureFallback", () => {
       ...SESSION,
       primary,
       fallback,
+      beforeFallback: async () => {},
       run: async () => {
         runs += 1;
         return 0;
@@ -52,6 +99,7 @@ describe("runCaptureFallback", () => {
       ...SESSION,
       primary,
       fallback,
+      beforeFallback: async () => {},
       run: async () => {
         runs += 1;
         return 0;
@@ -81,6 +129,7 @@ describe("runCaptureFallback", () => {
       ...SESSION,
       primary,
       fallback,
+      beforeFallback: async () => {},
       run: async () => {
         runs += 1;
         return 0;
@@ -99,7 +148,7 @@ describe("runCaptureFallback", () => {
     const roots = ["/opt", "/usr/bin", "/usr/local/bin"];
     const fallbackRoots = heuristicFallbackRoots(roots);
 
-    await runCaptureFallback({ ...SESSION, primary, fallback, roots, fallbackRoots, run: async () => 0 });
+    await runCaptureFallback({ ...SESSION, primary, fallback, roots, fallbackRoots, beforeFallback: async () => {}, run: async () => 0 });
 
     expect(fallback.starts[0]?.roots).toEqual(["/usr/local/bin"]);
   });

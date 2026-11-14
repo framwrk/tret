@@ -27,15 +27,30 @@ JSON help and version output each contain one document; neither checks for updat
 
 Execution consent grants permission to run the selected script. It does not prove
 that subsequently observed paths belong to the installer or approve broader
-cleanup. Per-path cleanup requires a separate explicit approval. Separate weaker-capture
-consent remains open implementation work.
+cleanup. Per-path cleanup requires a separate explicit approval.
+
+Heuristic/partial capture, disabled capture and pre-execution fallback require
+fresh weaker-capture consent. Noninteractive/JSON runs must pass
+`--allow-weaker-capture`; interactive runs can answer a separate confirmation.
+`--yes` cannot answer that question, and a recorded capture setting cannot replay
+the decision. This includes macOS's default heuristic backend and `--no-capture`.
+The flag applies to install, trace and tracked update, not bare self-update.
+Preflight reports backend, expanded roots, narrowed fallback exclusions, backups
+and known limits. Linux checks known prerequisites before baseline scanning or
+replacement cleanup; an unexpected attach failure also needs explicit permission
+before fallback. No capture failure reruns external code.
+Replacement remains non-atomic: an unexpected attach failure after approved old
+cleanup can leave that cleanup completed while replacement execution is refused.
+This returns exit 1 with a durable partial receipt, not an unchanged-target exit 5.
+The preview discloses this before cleanup. Known unavailable prerequisites refuse
+with exit 5 before touching the prior install.
 
 ## Classification
 
 The Linux CLI attempts strace, including when already root. It does not discover
 or select a fanotify helper from the executable directory, HOME or `TRET_FANOTIFY`.
-The existing labeled heuristic fallback remains when strace cannot attach; this
-change does not add separate weaker-capture consent or fix strace readiness.
+The labeled heuristic fallback requires the separate consent above. This does
+not fix strace readiness or establish assured machine-wide capture.
 
 Fanotify is available only to development code that explicitly injects
 `attachFanotify` into `LinuxCaptureBackend` with a chosen helper path. Its journal

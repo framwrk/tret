@@ -103,8 +103,8 @@ A retained cursor requires manual reconciliation and explicit evidence discard;
 discard never deletes target/staging files and keeps their locations. `inspect`
 finds related receipts when no active record remains.
 
-Broader aggregate capture/recovery budgets, in-flight capture checkpoints, separate
-weaker-capture consent, richer metadata and precise shell-edit reversal remain
+Broader aggregate capture/recovery budgets, in-flight capture checkpoints,
+richer metadata and precise shell-edit reversal remain
 pending. Legacy-original discard is currently manual. The version barrier prevents
 new older-reader commands from using the store; it cannot retroactively coordinate
 an already-running old installer. Mixed-version concurrent operations are unsupported.

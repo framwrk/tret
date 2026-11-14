@@ -5,15 +5,20 @@ import { lstatSync } from "node:fs";
 import { privateStateFilter } from "./capture/self-state";
 import { scanDir } from "./scan";
 
-export function snapshot(): Snapshot {
+export function snapshot(roots?: AbsolutePath[]): Snapshot {
   const home = Bun.env.HOME;
   if (!home) throw new Error("HOME is not set");
 
   const entries: Snapshot = new Map();
   const excluded = new Set(EXCLUDED_PATHS.map((path) => `${home}/${path}`));
   const privateState = privateStateFilter(home);
-  snapshotDir(home, entries, excluded, privateState);
-  for (const root of currentPlatform().scopeRoots) snapshotDir(root, entries, new Set(), privateState);
+  for (const root of new Set(roots ?? [home, ...currentPlatform().scopeRoots])) {
+    if (privateState(root) || excluded.has(root)) continue;
+    const stamp = stampEntry(root);
+    if (!stamp) continue;
+    if (stamp.isDir) snapshotDir(root, entries, excluded, privateState);
+    else entries.set(root, stamp);
+  }
   return entries;
 }
 
