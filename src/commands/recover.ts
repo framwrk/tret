@@ -66,7 +66,7 @@ async function runRecovery(id: string | undefined, action: RecoveryAction, yes: 
   }
   const inventory = id ? [] : storage.operations.retention.inventory();
   const originals = inventory.flatMap(entry => { const id = originalId(entry.name); return id ? [{ id, bytes: entry.size, ...(entry.kind === "corrupt" ? { interruptedDiscard: true } : {}) }] : []; });
-  const unresolved = inventory.filter(entry => (entry.kind === "corrupt" || entry.kind === "staging") && !originalId(entry.name)).map(entry => ({ path: entry.path, kind: entry.kind, bytes: entry.size }));
+  const unresolved = [...inventory.filter(entry => (entry.kind === "corrupt" || entry.kind === "staging") && !originalId(entry.name)), ...(id ? [] : storage.operations.unpublishedChunks(operations))].map(entry => ({ path: entry.path, kind: entry.kind, bytes: entry.size }));
   if (isJsonMode()) emitJson({ ok: true, command: "recover", operations: selected.map(operationSummary), originals, unresolved, limits });
   else {
     for (const operation of selected)

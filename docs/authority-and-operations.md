@@ -95,6 +95,9 @@ Private staging and pinned parents protect names/object identity; they do not
 freeze writes through existing descriptors or sandbox hostile same-user processes.
 Content verification streams 64 KiB chunks, with a 4 GiB/30-second per-file budget.
 Operation manifests are capped at 16 MiB and are read with an actual byte bound.
+Larger logical operations use verified immutable 1 MiB chunks up to a 64 MiB
+reconstructed limit; [recovery retention](recovery-retention.md) covers quotas,
+older-reader refusal, interrupted publication and explicit chunk disposal.
 
 `recover` summarizes receipts, baseline size, capture loss and unknown intervals.
 `recover <id> --resume --yes` reconciles supported filesystem cursors or publishes

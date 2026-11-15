@@ -1,5 +1,6 @@
 import { assertDirectoryIfExists, isErrno } from "./atomic";
 import { lstatSync, opendirSync } from "node:fs";
+import { chunkOwner } from "./operation-chunks";
 import { join } from "node:path";
 
 export type RecoveryLimits = { maxBytes: number; maxEntries: number; maxWorkMs: number };
@@ -42,7 +43,7 @@ export function recoveryLimits(env: Record<string, string | undefined> = process
 export type RecoveryEntry = {
   path: string;
   name: string;
-  kind: "operation" | "original" | "corrupt" | "staging";
+  kind: "operation" | "operation-chunk" | "original" | "corrupt" | "staging";
   size: number;
 };
 const ROOT_EVIDENCE = /^records\.json\.(?:legacy-|corrupt-)/;
@@ -105,7 +106,7 @@ export class RecoveryRetention {
             kind: !root
               ? entry.name.endsWith(".tmp")
                 ? "staging"
-                : "operation"
+                : chunkOwner(entry.name) ? "operation-chunk" : "operation"
               : entry.name.startsWith("records.json.corrupt-")
                 ? "corrupt"
                 : entry.name.endsWith(".tmp")

@@ -1,4 +1,5 @@
 import { type CaptureResourceReport, validCaptureResources } from "./capture/budget";
+import { OPERATION_INLINE_BYTES, type OperationEnvelope, chunkName, chunkOwner, isEnvelope, operationText, prepareEnvelope, readEnvelope, removeOperationChunks } from "./operation-chunks";
 import {
   PRIVATE_FILE_MODE,
   assertDirectoryIfExists,
@@ -6,7 +7,7 @@ import {
   writeFileAtomic,
   writeFileExclusive,
 } from "./atomic";
-import { type RecoveryLimits, RecoveryRetention, RecoveryRetentionError } from "./recovery-retention";
+import { type RecoveryEntry, type RecoveryLimits, RecoveryRetention, RecoveryRetentionError } from "./recovery-retention";
 import { dirname, join } from "node:path";
 import type { ApplianceOutcome } from "./removal";
 import type { CaptureBaselineEntry } from "./capture/backend";
@@ -75,7 +76,7 @@ export class OperationLog {
     assertDirectoryIfExists(this.directory);
     const names = this.retention.inventory().filter(entry => entry.path.startsWith(this.directory + "/")).map(entry => entry.name);
     return names
-      .filter((name) => !name.endsWith(".tmp"))
+      .filter((name) => !name.endsWith(".tmp") && !chunkOwner(name))
       .sort()
       .map((name) => {
         if (!name.endsWith(".json") || !UUID.test(name.slice(0, -5))) throw new Error(`unrecognized recovery entry: ${name}`);
@@ -90,7 +91,8 @@ export class OperationLog {
     assertDirectoryIfExists(this.directory);
     const bytes = readFileIfExists(join(this.directory, `${id}.json`), MAX_OPERATION_BYTES);
     if (!bytes) return undefined;
-    const operation: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    const stored: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    const operation: unknown = isEnvelope(stored, id) ? readEnvelope(this.directory, stored) : stored;
     if (!validOperation(operation) || operation.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
     return operation;
   }
@@ -120,7 +122,12 @@ export class OperationLog {
       priorRecords,
       pins: referencedBlobs(priorRecords),
     };
-    this.write(operation, true);
+    // Publish an addressable intent before creating any parts. A failed initial snapshot
+    // therefore has an exact id for explicit inspection/disposal, with no installer run.
+    if (Buffer.byteLength(JSON.stringify(operation)) > OPERATION_INLINE_BYTES) {
+      this.write({ ...operation, priorRecords: [], pins: [] }, true);
+      this.write(operation, false);
+    } else this.write(operation, true);
     return operation;
   }
 
@@ -137,7 +144,7 @@ export class OperationLog {
     if (operation.owner !== owner) throw new Error("operation belongs to a different lease; use explicit recovery");
     try {
       const current = this.list().find((entry) => entry.id === operation.id);
-      if (!current || JSON.stringify(current) !== JSON.stringify(operation))
+      if (!current || operationText(current) !== operationText(operation))
         throw new Error("operation checkpoint changed; reload recovery evidence");
       if (terminal(operation.stage)) throw new Error("a completed operation cannot be resumed");
       const allowed: Record<string, OperationStage[]> = {
@@ -196,6 +203,7 @@ export class OperationLog {
     delete next.application;
     delete next.execution;
     this.write(next, false, true);
+    this.removeDiscardedChunks(id);
     return next;
   }
 
@@ -222,9 +230,19 @@ export class OperationLog {
 
   /** A discarded receipt relinquishes references; all other receipts retain them. */
   pinnedBlobs(): string[] {
+    const operations = this.list();
+    const historicalPins: string[] = [];
+    for (const operation of operations) {
+      const envelope = this.envelope(operation.id);
+      if (operation.stage === "discarded") continue;
+      historicalPins.push(...(envelope?.pins ?? []));
+    }
+    const discarded = new Set(operations.filter(op => op.stage === "discarded").map(op => op.id));
+    const unknown = this.unpublishedChunks(operations).find(entry => !discarded.has(chunkOwner(entry.name)!));
+    if (unknown) throw new Error(`unpublished operation chunk pins an unknown graph: ${unknown.path}; inspect/discard its operation ${chunkOwner(unknown.name)}`);
     return [
       ...new Set(
-        this.list().flatMap((operation) =>
+        [...historicalPins, ...operations.flatMap((operation) =>
           operation.stage === "discarded"
             ? []
             : [
@@ -232,9 +250,34 @@ export class OperationLog {
                 ...referencedBlobs(operation.priorRecords),
                 ...referencedBlobs(operation.checkpoint ? [operation.checkpoint] : []),
               ],
-        ),
+        )],
       ),
     ];
+  }
+
+  unpublishedChunks(operations = this.list()): RecoveryEntry[] {
+    const known = new Set<string>();
+    for (const operation of operations)
+      for (const part of this.envelope(operation.id)?.retained ?? []) known.add(chunkName(operation.id, part.hash));
+    return this.retention.inventory().filter(entry => {
+      const owner = chunkOwner(entry.name);
+      return owner && !known.has(entry.name);
+    });
+  }
+
+  removeDiscardedChunks(id: string): void {
+    this.requireLease();
+    if (this.get(id)?.stage !== "discarded") throw new Error("only explicitly discarded operation chunks can be removed");
+    removeOperationChunks(this.directory, id, this.retention.limits.maxWorkMs);
+  }
+
+  private envelope(id: string): OperationEnvelope | undefined {
+    const bytes = readFileIfExists(join(this.directory, `${id}.json`), MAX_OPERATION_BYTES);
+    if (!bytes) return undefined;
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (isEnvelope(value, id)) return value;
+    if (!validOperation(value) || value.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
+    return undefined;
   }
 
   private requireLease(): string {
@@ -244,11 +287,19 @@ export class OperationLog {
   }
 
   private write(operation: DurableOperation, exclusive: boolean, discard = false): void {
+    const previous = exclusive ? undefined : this.envelope(operation.id);
+    // Chunked generations remain retained evidence until explicit discard; expose their
+    // conservative pins in the ordinary receipt summary as well as the GC graph.
+    if (!discard && previous?.retained.length) operation.pins = [...new Set([...previous.pins, ...operation.pins])];
     if (!validOperation(operation)) throw new Error("refusing invalid durable operation");
-    const text = JSON.stringify(operation, null, 2);
-    if (Buffer.byteLength(text) > MAX_OPERATION_BYTES) throw new Error("operation evidence exceeds the 16 MiB limit");
     assertDirectoryIfExists(dirname(this.directory));
     const path = join(this.directory, `${operation.id}.json`);
+    // Explicit discard needs no payload chunks or history, even above a lowered quota.
+    const envelope = discard
+      ? { version: 2, id: operation.id, inline: operation, bytes: Buffer.byteLength(JSON.stringify(operation)), retained: [], pins: [] }
+      : prepareEnvelope(this.directory, operation.id, operation, [...operation.pins, ...referencedBlobs(operation.priorRecords), ...referencedBlobs(operation.checkpoint ? [operation.checkpoint] : [])], previous, this.retention);
+    const text = JSON.stringify(envelope);
+    if (Buffer.byteLength(text) > MAX_OPERATION_BYTES) throw new Error("operation manifest exceeds the 16 MiB limit");
     if (discard) {
       if (exclusive && Buffer.byteLength(text) > 64 * 1024) throw new Error("new discard tombstone exceeds 64 KiB; evidence retained");
     } else this.retention.beforeWrite(path, Buffer.byteLength(text));

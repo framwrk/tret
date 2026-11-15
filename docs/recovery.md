@@ -39,7 +39,8 @@ a stale claim. A revision conflict requires a fresh read and plan.
 
 ## Durable evidence
 
-Private operation manifests under `.tret/operations/` contain prior records,
+Private operation evidence under `.tret/operations/` (manifests and their immutable
+chunks) contains prior records,
 before-image pins, baseline metadata, the last closed capture journal, normalized
 record checkpoints and per-action native cursors/outcomes. Permitted before-images
 are pinned and flushed before external execution. A persistence barrier failure
@@ -75,8 +76,9 @@ the discarded summary. JSON/noninteractive recovery decisions require `--yes`.
 
 Both GC entry points serialize their reference read and sweep with writers. Active
 records, operations, receipts and retained v3 originals keep referenced blobs alive.
-Unknown/corrupt recovery graphs prevent collection. Completed receipts shed unused
+Unknown/corrupt recovery graphs prevent collection. Completed inline receipts shed unused
 baseline-content pins while preserving their prior/current record references.
+Chunked receipts conservatively retain generation pins until explicit discard.
 `forget` drops active tracking, not historical receipts/originals. Receipt discard
 releases its pins; a later GC may collect content no other evidence references.
 
@@ -87,8 +89,10 @@ file and directory. Failed exclusive writes clean their own partial file; existi
 names survive failed exclusive opens. A post-rename directory-flush failure can
 leave replacement bytes visible; inspect current state before retrying.
 
-Manifests have a 16 MiB limit and share a bounded
-[recovery inventory](recovery-retention.md). Live checkpoints and chunked journals
+Manifests have a 16 MiB limit, with verified immutable chunks supporting logical
+operations up to 64 MiB. New physical version 2 manifests reject older readers;
+version 1 receipts remain readable without migration. Chunks and manifests share a bounded
+[recovery inventory](recovery-retention.md). Live checkpoints
 remain pending. Same-user state is not tamper-proof, and private persistence still uses
 path-based primitives. Native target application, its supported scope and further
 limits are described in [authority-and-operations.md](authority-and-operations.md).
