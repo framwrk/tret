@@ -460,7 +460,7 @@ describe("formatInspect", () => {
       "url https://example.com/install.sh",
       "privilege user; case-sensitive paths",
       "capture macos-heuristic, heuristic attribution, no process tree (observed)",
-      "\tsegment install: 2026-10-09T00:00:00.000Z → 2026-10-09T00:00:00.000Z (0.0s)",
+      "\tsegment install: 2026-10-09T00:00:00.000Z → unknown",
       "tracked 1 owned, 0 mutated, 0 deleted",
       "owned paths",
       "\t/home/.local/bin/mytool (file, present, fingerprint matches)",
@@ -506,7 +506,7 @@ describe("formatInspect", () => {
     expect(lines).toContain("capture linux-strace, process-tree coverage partial (observed)");
     expect(lines).toContain("\tsegment install: 2026-10-09T00:00:00.000Z → 2026-10-09T00:00:10.000Z (10.0s)");
     expect(lines).toContain(
-      "\tsegment trace: 2026-10-09T01:00:00.000Z → 2026-10-09T01:00:00.000Z (0.0s) (a descendant daemonized)",
+      "\tsegment trace: 2026-10-09T01:00:00.000Z → unknown (a descendant daemonized)",
     );
   });
 

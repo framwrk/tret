@@ -1,5 +1,6 @@
 import type { AbsolutePath, CaptureCompleteness } from "../../types";
 import type { BlobId } from "../storage";
+import type { CaptureDiagnostics } from "./diagnostics";
 import type { CaptureResourceReport } from "./budget";
 
 /** Metadata for a regular file at the time an event was observed. */
@@ -115,6 +116,7 @@ export type JournalEventInput = DistributiveOmit<JournalEvent, "seq" | "at">;
 
 /** The ordered events and coverage metadata one capture window produced. */
 export type Journal = {
+  normalization?: CaptureDiagnostics;
   resources?: CaptureResourceReport;
   backend: string;
   completeness: CaptureCompleteness;

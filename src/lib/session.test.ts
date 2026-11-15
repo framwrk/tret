@@ -326,3 +326,7 @@ describe("observation roots", () => {
     expect(roots).toEqual([...roots].sort());
   });
 });
+
+test("an observation window with no known end is displayed as unknown, not zero duration", () => {
+  expect(formatWindow({ kind: "trace", startedAt: "2026-11-15T23:00:00.000Z" })).toBe("2026-11-15T23:00:00.000Z → unknown");
+});

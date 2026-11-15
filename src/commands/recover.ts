@@ -69,8 +69,13 @@ async function runRecovery(id: string | undefined, action: RecoveryAction, yes: 
   const unresolved = [...inventory.filter(entry => (entry.kind === "corrupt" || entry.kind === "staging") && !originalId(entry.name)), ...(id ? [] : storage.operations.unpublishedChunks(operations))].map(entry => ({ path: entry.path, kind: entry.kind, bytes: entry.size }));
   if (isJsonMode()) emitJson({ ok: true, command: "recover", operations: selected.map(operationSummary), originals, unresolved, limits });
   else {
-    for (const operation of selected)
+    for (const operation of selected) {
       log(`${operation.id} ${operation.kind} ${operation.stage}${operation.reason ? `: ${operation.reason}` : ""}`);
+      for (const note of operation.capture?.normalization?.entries ?? [])
+        log(`\t${note.code}: ${note.message}${note.paths.length ? ` (${note.paths.join(" → ")})` : ""}`);
+      if (operation.capture?.normalization?.omitted)
+        log(`\t${operation.capture.normalization.omitted} normalization diagnostics omitted by reporting limits`);
+    }
     for (const original of originals) log(`${original.id} ${original.bytes} bytes; retained original, inspect before explicit discard`);
     for (const entry of unresolved) log(`${entry.kind} evidence at ${entry.path} (${entry.bytes} bytes); manual reconciliation required`);
   }

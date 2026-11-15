@@ -86,6 +86,17 @@ non-traversing missing tails can retain known baseline deletions. Resolution use
 the namespace available during sampling, not a historical reconstruction of alias
 changes during the installer; those changes remain a capture limitation.
 
+Normalization explanations (renames, temporary-file cancellation, unsupported
+sequences and coverage) are retained in each segment's `normalization` report and
+the operation's closed capture. `inspect` displays them; JSON includes their codes,
+messages, exact paths and omitted count. Interrupted recovery recomputes notes
+from the durable journal without executing code. Notes describe observations;
+they neither grant cleanup authority nor mean every effect can be reversed.
+Interrupted traces retain the original install metadata, append an unknown-ended
+trace segment, and apply the same shared-claim checks as a normal trace.
+Existing observation origins are preserved, new observations are labeled as
+trace-derived, and recovered candidates require fresh cleanup approval.
+
 ## Revalidation and shared claims
 
 Cleanup compares the planned content/link state and filesystem identity again

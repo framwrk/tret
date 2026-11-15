@@ -1,6 +1,7 @@
 import type { AbsolutePath, DeletedEntry, MutatedEntry, OwnedEntry, OwnedKind } from "../../types";
-import type { BackupPolicy, NormalizationDiagnostic, NormalizeInput, NormalizedEffects } from "../capture/normalize";
+import type { BackupPolicy, NormalizeInput, NormalizedEffects } from "../capture/normalize";
 import type { DirectoryMetadata, FileMetadata, NodeMetadata, RenameEvent, SymlinkMetadata } from "../capture/events";
+import { DiagnosticCollector } from "../capture/diagnostics";
 
 /**
  * One filesystem node as normalization tracks it. Hashes and sizes are optional because a backend
@@ -50,7 +51,7 @@ type PathState = {
 export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
   const { journal, backups, caseSensitive, availableBeforeImages } = input;
   const available = availableBeforeImages ?? EMPTY_BEFORE_IMAGES;
-  const diagnostics: NormalizationDiagnostic[] = [];
+  const diagnostics = new DiagnosticCollector();
   const states = new Map<string, PathState>();
 
   if (journal.completeness !== "complete") {
@@ -225,7 +226,8 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
     }
   }
 
-  return { owned, mutated, deleted, diagnostics };
+  const notes = diagnostics.report();
+  return { owned, mutated, deleted, diagnostics: notes.entries, ...(notes.omitted ? { diagnosticsOmitted: notes.omitted } : {}) };
 }
 
 /** Compares two absolute paths by code unit for a stable, locale-independent record order. */
