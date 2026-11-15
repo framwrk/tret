@@ -1,5 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { FileStorage } from "../lib/store";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
@@ -55,6 +65,101 @@ async function run(home: string, args: string[]) {
   ]);
   return { code, stdout, stderr };
 }
+
+test("explicit adoption supplies a missing symlink target without claiming process proof", async () => {
+  const { home, file, record, storage } = fixture();
+  const path = join(home, "bin/shim");
+  symlinkSync("fixture", path);
+  record.executable = path;
+  record.owned = [{ path, kind: "symlink" }];
+  await storage.saveRecord(record);
+  expect((await run(home, ["approve", "fixture", path, "--remove", "--yes"])).code).toBe(0);
+  const adopted = (await storage.loadRecords())[0]!;
+  expect(adopted.owned[0]?.linkTarget).toBe("fixture");
+  expect(adopted.evidence[0]?.origin).toBe("adoption");
+  expect((await run(home, ["uninstall", "fixture", "--yes"])).code).toBe(0);
+  expect(existsSync(path)).toBe(false);
+  expect(readFileSync(file, "utf8")).toBe("#!/bin/sh\nexit 0\n");
+});
+
+test("explicit restore adoption supplies only a missing installed hash and preserves the before-image", async () => {
+  const { home, record, storage } = fixture();
+  const path = join(home, "config");
+  writeFileSync(path, "after");
+  const blob = await storage.putBlob(new TextEncoder().encode("before"));
+  record.mutated = [{ path, beforeHash: blob.id, beforeBlob: blob.id, mode: 0o600 }];
+  await storage.saveRecord(record);
+  expect((await run(home, ["approve", "fixture", path, "--restore", "--yes"])).code).toBe(0);
+  const adopted = (await storage.loadRecords())[0]!;
+  expect(adopted.mutated[0]).toMatchObject({
+    installedHash: hash(new TextEncoder().encode("after")),
+    beforeHash: blob.id,
+    beforeBlob: blob.id,
+    mode: 0o600,
+  });
+  expect(adopted.evidence.find((entry) => entry.path === path)?.origin).toBe("adoption");
+  expect((await run(home, ["uninstall", "fixture", "--approved-only", "--yes"])).code).toBe(0);
+  expect(readFileSync(path, "utf8")).toBe("before");
+  expect((await storage.loadRecords())[0]?.owned).toHaveLength(1);
+});
+
+test.each(["type", "mutation", "absent-mutation", "reappeared-deletion"])(
+  "approval refuses %s evidence conflicts before changing records",
+  async (kind) => {
+    const { home, file, record, storage } = fixture();
+    let path = file;
+    let action: "remove" | "restore" = "remove";
+    if (kind === "type") {
+      rmSync(file);
+      symlinkSync("different-target", file);
+    } else {
+      path = join(home, "config");
+      action = "restore";
+      const blob = await storage.putBlob(new TextEncoder().encode("before"));
+      const entry = {
+        path,
+        beforeHash: blob.id,
+        beforeBlob: blob.id,
+        installedHash: hash(new TextEncoder().encode("installed")),
+        mode: 0o600,
+      };
+      if (kind === "reappeared-deletion") record.deleted = [entry];
+      else record.mutated = [entry];
+      if (kind !== "absent-mutation") writeFileSync(path, "new user data");
+    }
+    await storage.saveRecord(record);
+    const before = readFileSync(storage.recordsPath);
+    const result = await run(home, ["approve", "fixture", path, `--${action}`, "--yes"]);
+    expect(result.code).toBe(5);
+    expect(JSON.parse(result.stdout).ok).toBe(false);
+    expect(readFileSync(storage.recordsPath)).toEqual(before);
+    if (kind === "mutation" || kind === "reappeared-deletion") expect(readFileSync(path, "utf8")).toBe("new user data");
+    if (kind === "absent-mutation") expect(existsSync(path)).toBe(false);
+  },
+);
+
+test.each(["file", "unknown-file", "symlink"])(
+  "fresh %s removal approval preserves known fingerprints and still needs force for a mismatch",
+  async (kind) => {
+    const { home, file, record, storage } = fixture();
+    if (kind === "file" || kind === "unknown-file") {
+      writeFileSync(file, "changed");
+      if (kind === "unknown-file") record.owned[0]!.kind = "unknown";
+    } else {
+      rmSync(file);
+      symlinkSync("new-target", file);
+      record.owned = [{ path: file, kind: "symlink", linkTarget: "old-target" }];
+    }
+    const original = { ...record.owned[0]! };
+    await storage.saveRecord(record);
+    expect((await run(home, ["approve", "fixture", file, "--remove", "--yes"])).code).toBe(0);
+    const approved = (await storage.loadRecords())[0]!.owned[0]!;
+    expect(approved.installedHash).toBe(original.installedHash);
+    expect(approved.linkTarget).toBe(original.linkTarget);
+    expect((await run(home, ["uninstall", "fixture", "--yes"])).code).toBe(5);
+    expect((await run(home, ["uninstall", "fixture", "--yes", "--force"])).code).toBe(0);
+  },
+);
 
 test("legacy complete records and force supply no cleanup authority; an approved subset retains unresolved effects", async () => {
   const { home, file, record, storage } = fixture();

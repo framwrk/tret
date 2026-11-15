@@ -104,18 +104,52 @@ export async function approve(
   }
   if (action === "remove" && !current.node)
     fail("approve-absent", "the candidate is already absent; there is no current object to approve", EXIT_BLOCKED);
+  const selected = candidates[0]!;
+  const owned = record.owned.find((entry) => entry.path === path);
+  const mutation = record.mutated.find((entry) => entry.path === path);
+  if (action === "remove" && owned) {
+    if (owned.kind !== "unknown" && owned.kind !== current.node!.kind)
+      fail(
+        "approve-type",
+        "the current node type differs from the recorded candidate; manual reconciliation is required",
+        EXIT_BLOCKED,
+      );
+  }
+  if (action === "restore") {
+    if (selected.section === "mutated" && !current.node)
+      fail("approve-absent", "the recorded mutation is now absent; manual reconciliation is required", EXIT_BLOCKED);
+    if (selected.section === "deleted" && current.node)
+      fail("approve-reappeared", "the deleted path is occupied; its current object was preserved", EXIT_BLOCKED);
+    if (selected.section === "mutated" && mutation?.installedHash !== undefined && mutation.installedHash !== current.hash)
+      fail(
+        "approve-modified",
+        "the current object differs from its recorded fingerprint; existing evidence was preserved",
+        EXIT_BLOCKED,
+      );
+  }
   if (action === "remove") {
     const node = current.node!;
     record = observedRecord(
       {
         ...record,
         owned: record.owned.map((entry) =>
-          entry.path === path && (entry.kind === "unknown" || (entry.kind === "file" && !entry.installedHash))
+          entry.path === path &&
+          (entry.kind === "unknown" ||
+            (entry.kind === "file" && !entry.installedHash) ||
+            (entry.kind === "symlink" && entry.linkTarget === undefined))
             ? {
                 path,
                 kind: node.kind === "unsupported" ? "unknown" : node.kind,
-                ...(current.hash ? { installedHash: current.hash } : {}),
-                ...(current.linkTarget !== undefined ? { linkTarget: current.linkTarget } : {}),
+                ...(entry.installedHash !== undefined
+                  ? { installedHash: entry.installedHash }
+                  : current.hash
+                    ? { installedHash: current.hash }
+                    : {}),
+                ...(entry.linkTarget !== undefined
+                  ? { linkTarget: entry.linkTarget }
+                  : current.linkTarget !== undefined
+                    ? { linkTarget: current.linkTarget }
+                    : {}),
               }
             : entry,
         ),
@@ -139,6 +173,17 @@ export async function approve(
       fail("approve-blob", "the required before-image is missing or inconsistent", EXIT_BLOCKED);
     if (current.node && current.node.kind !== "file")
       fail("approve-type", "restoring this node type requires manual reconciliation", EXIT_BLOCKED);
+    if (selected.section === "mutated" && mutation?.installedHash === undefined) {
+      record = observedRecord(
+        {
+          ...record,
+          mutated: record.mutated.map((entry) => (entry.path === path ? { ...entry, installedHash: current.hash } : entry)),
+        },
+        record.revision!,
+        "adoption",
+        true,
+      );
+    }
     log(`restore ${path} from before-image ${entry.beforeBlob} (${bytes.byteLength} bytes)`);
   } else log(`remove the exact current ${current.node!.kind} at ${path}`);
   log("this is user-authorized cleanup; it does not prove installer ownership or historical reversal");

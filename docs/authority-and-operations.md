@@ -19,6 +19,14 @@ must reject the version 4 wrapper without changing its bytes. The first mutation
 retains the exact original, including any blob references in a v3 original.
 
 `approve --revoke` withdraws a decision without target changes.
+Explicit approval can adopt a missing file fingerprint, symlink target, or a
+backed mutation's current file hash. This records current observation, not
+installer causality; before-images and known historical fingerprints are preserved.
+Restore approval refuses known content mismatches. Approval also refuses type
+mismatches, absent mutations and reoccupied deletions before saving a decision;
+those require manual reconciliation.
+Removal approval preserves known fingerprints: changed content/link targets still
+require `--force` during cleanup in addition to a fresh object-bound approval.
 Path approval is explicit, limited to an enumerated action on one object,
 and bound to the effect, current identity, parent chain and content/link state.
 It is labeled user authorization, never process proof. Approving a directory
