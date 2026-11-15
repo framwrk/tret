@@ -99,6 +99,8 @@ check actual bytes. A read interrupted by atomic replacement retries at most twi
 when the name points at a different inode or has disappeared. Changes to the same
 inode still refuse; every attempt retains the byte and no-follow checks.
 State directories must be real directories. Atomic private
+writes stage initial operation manifests before publishing their names with a
+no-replace rename, so readers cannot observe an unfinished first write. Other private
 writes use exclusive no-follow temporary files, handle short writes and flush the
 file and directory. Failed exclusive writes clean their own partial file; existing
 names survive failed exclusive opens. A post-rename directory-flush failure can

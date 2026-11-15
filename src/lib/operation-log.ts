@@ -4,21 +4,24 @@ import {
   PRIVATE_FILE_MODE,
   assertDirectoryIfExists,
   readFileIfExists,
+  temporaryPath,
   writeFileAtomic,
   writeFileExclusive,
 } from "./atomic";
 import { type RecoveryEntry, type RecoveryLimits, RecoveryRetention, RecoveryRetentionError } from "./recovery-retention";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ApplianceOutcome } from "./removal";
 import type { CaptureBaselineEntry } from "./capture/backend";
 import type { Journal } from "./capture/events";
 import type { NativeActionReceipt } from "./native-action";
+import { NativeDirectory } from "./native-filesystem";
 import type { RecordV3 } from "../types";
 import type { UninstallPlan } from "./uninstall-planner";
 import { currentOperationToken } from "./operation-lease";
 import { isV3Record } from "./records";
 import { randomUUID } from "node:crypto";
 import { referencedBlobs } from "./storage";
+import { rmSync } from "node:fs";
 import { validCleanupApproval } from "./cleanup-authority";
 import { validNativeReceipt } from "./native-action";
 
@@ -305,8 +308,23 @@ export class OperationLog {
     if (discard) {
       if (exclusive && Buffer.byteLength(text) > 64 * 1024) throw new Error("new discard tombstone exceeds 64 KiB; evidence retained");
     } else this.retention.beforeWrite(path, Buffer.byteLength(text));
-    if (exclusive) writeFileExclusive(path, text, PRIVATE_FILE_MODE);
+    if (exclusive) publishExclusive(path, text);
     else writeFileAtomic(path, text, PRIVATE_FILE_MODE);
+  }
+}
+
+/** Publish a flushed first manifest with no visible in-place write and no replacement authority. */
+function publishExclusive(path: string, text: string): void {
+  const stage = temporaryPath(path);
+  writeFileExclusive(stage, text, PRIVATE_FILE_MODE);
+  let directory: NativeDirectory | undefined;
+  try {
+    directory = new NativeDirectory(dirname(path));
+    directory.moveExclusive(basename(stage), directory, basename(path));
+    directory.sync();
+  } finally {
+    directory?.close();
+    rmSync(stage, { force: true });
   }
 }
 
