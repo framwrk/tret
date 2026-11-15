@@ -9,7 +9,7 @@ const options: Record<string, readonly string[]> = {
   install: ["--yes", "--force", "--backup", "--no-capture", "--allow-weaker-capture"],
   uninstall: ["--yes", "--force", "--dry-run", "--approved-only"],
   approve: ["--yes", "--remove", "--restore", "--revoke"],
-  recover: ["--yes", "--resume", "--discard"],
+  recover: ["--yes", "--resume", "--discard", "--purge"],
   trace: ["--yes", "--allow-weaker-capture"],
   update: ["--yes", "--allow-weaker-capture"],
   list: [],

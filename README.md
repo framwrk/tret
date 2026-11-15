@@ -134,6 +134,9 @@ tret recover
   reconciles supported checkpoints without rerunning external code; `--discard --yes`
   relinquishes evidence and blob pins. Discard leaves target and staging files intact
   and retains their locations for manual reconciliation.
+  `--purge --yes` removes only an already-discarded receipt's metadata.
+  Retained originals have `original-v2:<sha256>` / `original-v3:<sha256>` selectors;
+  see [retention limits and explicit disposal](docs/recovery-retention.md).
 
 Exit `0` verifies the named cleanup scope, not machine-wide or historical reversal.
 A failure during apply exits `1` with retained evidence. Unfinished operations or
