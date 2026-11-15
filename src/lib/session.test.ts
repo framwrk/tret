@@ -2,6 +2,7 @@ import type { CaptureBackend, CaptureSession } from "./capture/backend";
 import { buildCaptureSegment, formatCoverage, formatWindow, runBoundedSession } from "./session";
 import { describe, expect, test } from "bun:test";
 import { installObservationRoots, observationRoots } from "./platform";
+import { CaptureBudget } from "./capture/budget";
 import { FakeCaptureBackend } from "./capture/fake";
 import type { Journal } from "./capture/events";
 import { LINUX_PLATFORM } from "./platform";
@@ -57,6 +58,36 @@ class ClosingBackend implements CaptureBackend {
 }
 
 describe("runBoundedSession", () => {
+  test("an existing backend loss summary is not repeated by the session", async () => {
+    const budget = new CaptureBudget();
+    const result = await runBoundedSession({
+      backend: new FakeCaptureBackend({ completeness: "heuristic", partialReason: "first gap; second gap" }),
+      budget, pid: 1, privilege: "user", roots: [],
+      run: async () => { budget.note("first gap"); budget.note("second gap"); },
+    });
+    expect(result.journal.partialReason).toBe("first gap; second gap");
+    expect(result.journal.resources?.losses).toEqual(["first gap", "second gap"]);
+  });
+  test("attachment lost during durable persistence closes capture without running external code", async () => {
+    let durable = false;
+    let stopped = false;
+    let ran = false;
+    const backend: CaptureBackend = {
+      name: "loss-during-barrier", completeness: "complete",
+      start: async () => ({
+        backend: "loss-during-barrier",
+        ready: async () => { expect(durable).toBe(true); throw new Error("kernel attachment lost"); },
+        stop: async () => { stopped = true; return completeJournal(); },
+      }),
+    };
+    await expect(runBoundedSession({
+      backend, pid: 1, roots: [], privilege: "user",
+      beforeRun: async () => { durable = true; },
+      run: async () => { ran = true; },
+    })).rejects.toThrow("kernel attachment lost");
+    expect(stopped).toBe(true);
+    expect(ran).toBe(false);
+  });
   test("attaches capture before the work, returns its value, and reports the journal", async () => {
     const backend = new FakeCaptureBackend();
     backend.push({ type: "create", path: "/tmp/tool", after: { kind: "file", hash: HASH } });

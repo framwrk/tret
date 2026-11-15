@@ -1,5 +1,8 @@
 import type { AbsolutePath, OwnedEntry } from "../types";
-import { inspectPath, listChildren } from "./uninstall-planner";
+import { CaptureBudget, CaptureBudgetError } from "./capture/budget";
+import { lstatSync, opendirSync, readlinkSync } from "node:fs";
+import { hashBoundedContentSync } from "./capture/content";
+import { privateStateFilter } from "./capture/self-state";
 
 /**
  * Fingerprints every adopted path and, beneath an adopted directory, every node it holds (plan 02
@@ -10,23 +13,76 @@ import { inspectPath, listChildren } from "./uninstall-planner";
  * stuck folder record. Symlinks are recorded by target and never followed, so a link out of an
  * adopted folder stays one entry rather than adopting the tree it points at.
  */
-export function adoptedEntries(paths: AbsolutePath[]): OwnedEntry[] {
+export function adoptedEntries(
+  paths: AbsolutePath[],
+  budget = new CaptureBudget(),
+  skip?: (path: string) => boolean,
+): OwnedEntry[] {
+  budget.ensurePhase();
   const entries = new Map<AbsolutePath, OwnedEntry>();
-  for (const path of paths) collectEntries(path, entries);
+  const privateState = privateStateFilter();
+  for (const path of paths) collectEntries(path, entries, budget, (path) => privateState(path) || skip?.(path) === true);
+  budget.check();
   return [...entries.values()].sort((a, b) => comparePaths(a.path, b.path));
 }
 
-function collectEntries(path: AbsolutePath, entries: Map<AbsolutePath, OwnedEntry>): void {
-  if (entries.has(path)) return;
+function collectEntries(
+  path: AbsolutePath,
+  entries: Map<AbsolutePath, OwnedEntry>,
+  budget: CaptureBudget,
+  skip: (path: string) => boolean,
+  depth = 0,
+): void {
+  budget.depth(depth);
+  if (entries.has(path) || skip(path)) return;
+  budget.inspect(path);
 
-  const verification = inspectPath(path);
-  const entry: OwnedEntry = { path, kind: verification.kind ?? "unknown" };
-  if (verification.linkTarget !== undefined) entry.linkTarget = verification.linkTarget;
-  if (verification.hash !== undefined) entry.installedHash = verification.hash;
+  let node;
+  try {
+    node = lstatSync(path);
+  } catch (error) {
+    budget.note(`adoption state unknown: ${path}: ${String(error)}`);
+  }
+  const entry: OwnedEntry = {
+    path,
+    kind: !node
+      ? "unknown"
+      : node.isFile()
+        ? "file"
+        : node.isSymbolicLink()
+          ? "symlink"
+          : node.isDirectory()
+            ? "directory"
+            : "unknown",
+  };
+  if (entry.kind === "file") entry.installedHash = hashBoundedContentSync(path, { budget });
+  if (entry.kind === "symlink") {
+    try {
+      entry.linkTarget = readlinkSync(path);
+    } catch (error) {
+      entry.kind = "unknown";
+      budget.note(`adoption link unknown: ${path}: ${String(error)}`);
+    }
+  }
+  budget.event(entry);
   entries.set(path, entry);
 
-  if (verification.kind !== "directory") return;
-  for (const child of listChildren(path)) collectEntries(child, entries);
+  if (entry.kind !== "directory") return;
+  let directory;
+  try {
+    directory = opendirSync(path, { bufferSize: 32 });
+    for (;;) {
+      budget.check();
+      const child = directory.readSync();
+      if (!child) break;
+      collectEntries(`${path}/${child.name}`, entries, budget, skip, depth + 1);
+    }
+  } catch (error) {
+    if (error instanceof CaptureBudgetError) throw error;
+    budget.note(`adoption directory unreadable: ${path}: ${String(error)}`);
+  } finally {
+    directory?.closeSync();
+  }
 }
 
 /** Compares two absolute paths by code unit for a stable, locale-independent record order. */

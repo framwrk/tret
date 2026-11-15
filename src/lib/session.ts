@@ -1,6 +1,8 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureSegment, Privilege } from "../types";
 import type { CaptureBackend, CaptureSession } from "./capture/backend";
 import type { BackupPolicy } from "./capture/normalize";
+import type { CaptureBudget } from "./capture/budget";
+import { CaptureBudgetError } from "./capture/budget";
 import type { Journal } from "./capture/events";
 
 /**
@@ -35,6 +37,7 @@ export type BoundedSessionResult<T> = {
 };
 
 export type BoundedSessionOptions<T> = {
+  budget?: CaptureBudget;
   /** The capture mechanism to attach for the window. */
   backend: CaptureBackend;
   /**
@@ -82,6 +85,7 @@ export class BeforeExecutionError extends Error {
 export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): Promise<BoundedSessionResult<T>> {
   const clock = options.now ?? Date.now;
   const startedAt = new Date(clock()).toISOString();
+  options.budget?.beginPhase();
 
   const session = await options.backend.start({
     pid: options.pid,
@@ -89,17 +93,28 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
     roots: options.roots,
     // Omit the key entirely when no policy is supplied, so a plain window's start options stay exact.
     ...(options.backups === undefined ? {} : { backups: options.backups }),
+    ...(options.budget ? { budget: options.budget } : {}),
   });
 
   try {
+    options.budget?.ensurePhase();
     await options.beforeRun?.(session);
+    options.budget?.check();
   } catch (error) {
     try { await session.stop(); } catch { /* No external work ran. Preserve the barrier failure. */ }
+    if (error instanceof CaptureBudgetError) throw error;
     throw new BeforeExecutionError(error);
+  }
+
+  try { await session.ready?.(); options.budget?.check(); }
+  catch (error) {
+    try { await session.stop(); } catch { /* Preserve the pre-execution attachment failure. */ }
+    throw error;
   }
 
   let value: T | undefined;
   let error: unknown;
+  options.budget?.pause();
   try {
     value = await options.run();
   } catch (caught) {
@@ -107,6 +122,8 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
   }
 
   let journal: Journal;
+  let budgetError: unknown;
+  try { options.budget?.beginPhase(); } catch (caught) { budgetError = caught; }
   try {
     journal = await session.stop();
   } catch (caught) {
@@ -119,6 +136,15 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
       events: [],
     };
   }
+  options.budget?.pause();
+  if (options.budget) {
+    journal.resources = options.budget.report();
+    const losses = [...options.budget.losses, ...(budgetError ? [message(budgetError)] : [])];
+    if (losses.length) {
+      if (journal.completeness === "complete") journal.completeness = "partial";
+      journal.partialReason = [...new Set([journal.partialReason, ...losses.filter((loss) => !journal.partialReason?.includes(loss))].filter(Boolean))].join("; ");
+    }
+  }
 
   const endedAt = new Date(clock()).toISOString();
   return {
@@ -129,7 +155,7 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
       backend: journal.backend,
       completeness: journal.completeness,
       ...(journal.partialReason === undefined ? {} : { partialReason: journal.partialReason }),
-      segment: buildCaptureSegment({ kind: options.kind ?? "install", startedAt, endedAt, journal }),
+      segment: { ...buildCaptureSegment({ kind: options.kind ?? "install", startedAt, endedAt, journal }), ...(options.budget ? { roots: [...options.roots] } : {}) },
       events: journal.events.length,
       roots: [...options.roots],
     },
@@ -144,6 +170,7 @@ export function buildCaptureSegment(input: {
   journal: Journal;
 }): CaptureSegment {
   const segment: CaptureSegment = { kind: input.kind, startedAt: input.startedAt, endedAt: input.endedAt };
+  if (input.journal.resources) segment.resources = input.journal.resources;
   if (input.journal.completeness !== "complete") {
     segment.partialReason = input.journal.partialReason ?? "capture reported incomplete attribution";
   }

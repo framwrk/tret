@@ -5,6 +5,7 @@ import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
 import { existsSync, readFileSync } from "node:fs";
 import type { AbsolutePath } from "../../../types";
 import type { BlobId } from "../../storage";
+import { CaptureBudget } from "../budget";
 import type { Journal } from "../events";
 import type { TracerResult } from "./raw";
 import { attachStrace } from "./tracer";
@@ -50,7 +51,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
   readonly completeness = "complete" as const;
 
   private readonly options: LinuxCaptureBackendOptions;
-  private readonly inspector: FsInspector;
+  private inspector: FsInspector;
   private readonly settleMs: number;
   private readonly processAlive: (pid: number) => boolean;
 
@@ -63,18 +64,27 @@ export class LinuxCaptureBackend implements CaptureBackend {
   }
 
   async start(options: CaptureStartOptions): Promise<CaptureSession> {
-    const attach: TracerAttachOptions = { pid: options.pid, roots: options.roots };
+    const budget = options.budget ?? new CaptureBudget();
+    budget.ensurePhase();
+    const attach: TracerAttachOptions = { pid: options.pid, roots: options.roots, budget };
     // Known host restrictions always force the install into the heuristic fallback. Check them
     // before a backups-enabled baseline reads every eligible file in the observation roots.
     const tracerFactory = this.options.tracerFactory ?? defaultTracerFactoryForCurrentHost();
-    const resolved = await this.resolveBaseline(options);
+    if (!this.options.inspector) this.inspector = new RealFsInspector({ budget });
+    const resolved = await this.resolveBaseline({ ...options, budget });
+    budget.check();
     const tracer = await tracerFactory(attach);
+    budget.pause();
 
     return {
       backend: tracer.name,
       beforeImages: resolved.beforeImages,
       ...(resolved.baseline instanceof MemoryBaseline ? { baseline: resolved.baseline.snapshot() } : {}),
-      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, resolved, options.pid),
+      ready: async () => {
+        if (!(await tracer.status()).active || (tracer.isAttached && !(await tracer.isAttached())))
+          throw new Error("strace could not attach: capture was lost before external execution");
+      },
+      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, resolved, options.pid, budget),
     };
   }
 
@@ -87,6 +97,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     roots: AbsolutePath[],
     resolved: ResolvedBaseline,
     rootPid: number,
+    budget: CaptureBudget,
   ): Promise<Journal> {
     // A live tracer at the close of the window means tracees (a daemonized or detached descendant)
     // outlived the bounded install window; their later activity is not captured. The observed root
@@ -96,15 +107,17 @@ export class LinuxCaptureBackend implements CaptureBackend {
     const beforeStopLosses = tracer.losses();
     await tracer.stop();
     const traced = await tracer.records();
+    budget.beginPhase();
     const result = await reconstruct({
       traced,
       inspector: this.inspector,
       baseline: resolved.baseline,
       roots,
       fallbackAt: Date.now(),
+      budget,
     });
 
-    const reasons = new Set<string>([...beforeStopLosses, ...tracer.losses()]);
+    const reasons = new Set<string>([...beforeStopLosses, ...tracer.losses(), ...(resolved.baseline.diagnostics ?? []), ...budget.losses]);
     if (tracer.name === "linux-fanotify") {
       reasons.add(
         "fanotify helper omits directory events (including mkdir/rmdir); full coverage has not been established by real-kernel tests",
@@ -126,11 +139,13 @@ export class LinuxCaptureBackend implements CaptureBackend {
       backend: tracer.name,
       completeness,
       events: result.events,
+      resources: budget.report(),
     };
     if (reasons.size > 0) journal.partialReason = [...reasons].join("; ");
     // Present only when the walk actually read bytes (backups enabled), so a caller's
     // `availableBeforeImages` stays empty and no record advertises an unrestorable before-image.
     if (resolved.beforeImages.size > 0) journal.beforeImages = resolved.beforeImages;
+    budget.pause();
     return excludePrivateState(journal, process.env.HOME, rootPid);
   }
 
@@ -141,7 +156,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
       // eligible file once, for its before-image (see `captureBaseline`).
       const captured: CapturedBaseline = await captureBaseline(
         options.roots,
-        options.backups === undefined ? { inspector: this.inspector } : { backups: options.backups, inspector: this.inspector },
+        { inspector: this.inspector, budget: options.budget, ...(options.backups ? { backups: options.backups } : {}) },
       );
       return captured;
     }
@@ -182,7 +197,11 @@ function selectDefaultTracer(): DefaultTracerSelection {
 /** Attaches the previously selected tracer only after the baseline has been captured. */
 async function attachDefaultTracer(attach: TracerAttachOptions, selection: DefaultTracerSelection): Promise<LinuxTracer> {
   const tracer = await attachStrace(attach, { cwd: process.cwd(), stracePath: selection.stracePath });
-  await requireAttached(tracer);
+  try { await requireAttached(tracer); }
+  catch (error) {
+    try { await tracer.stop(); } catch { /* Preserve the original attachment failure. */ }
+    throw error;
+  }
   return tracer;
 }
 
@@ -204,13 +223,14 @@ export function parentAttachRestricted(): boolean {
 }
 
 /**
- * Rejects a tracer that died before it could attach. `strace -p <parent>` is refused under the
+ * Requires kernel-confirmed attachment, rather than accepting a live tracer after a delay.
+ * `strace -p <parent>` is refused under the
  * default `ptrace_scope=1` (an unprivileged child may not trace its parent), and without this check
  * that failure is only a loss reason on a journal returned after the installer has already run
  * unwatched. Throwing here lets the caller fall back to a heuristic window *before* the install runs,
  * so the install is still attributed instead of recorded as an empty journal with no executable.
  */
-async function requireAttached(tracer: LinuxTracer, graceMs = 250): Promise<void> {
+async function requireAttached(tracer: LinuxTracer, graceMs = 5000): Promise<void> {
   const deadline = Date.now() + graceMs;
   for (;;) {
     const reasons = tracer.losses();
@@ -222,7 +242,8 @@ async function requireAttached(tracer: LinuxTracer, graceMs = 250): Promise<void
     if (!(await tracer.status()).active) {
       throw new Error(`strace could not attach: ${reasons.length > 0 ? reasons.join("; ") : "tracer exited before attaching"}`);
     }
-    if (Date.now() >= deadline) return;
+    if (await tracer.isAttached?.()) return;
+    if (Date.now() >= deadline) throw new Error("strace could not attach: kernel attachment was not confirmed before the deadline");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }

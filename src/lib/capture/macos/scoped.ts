@@ -1,6 +1,11 @@
+import { CaptureBudget, CaptureBudgetError } from "../budget";
+import { type Dir, type Stats, lstatSync, opendirSync, readlinkSync } from "node:fs";
 import type { FileMetadata, JournalEventInput } from "../events";
-import { type Stats, lstatSync, readdirSync, readlinkSync } from "node:fs";
+import { hashBoundedContent, readBoundedContent } from "../content";
+import { newScanCoverage, scanPresence } from "../scan-coverage";
 import type { AbsolutePath } from "../../../types";
+import type { ContentReadOptions } from "../content";
+import type { ScanCoverage } from "../scan-coverage";
 
 /**
  * The scoped-snapshot engine behind the macOS heuristic fallback (D1). It is deliberately small and
@@ -25,6 +30,7 @@ export type ScopedNode = {
   linkTarget?: AbsolutePath;
   /** sha256 of the content, filled for files created or whose stamps changed. */
   hash?: string;
+  childrenComplete?: boolean;
 };
 
 /** A bounded snapshot of one or more roots, plus any roots that could not be read. */
@@ -33,6 +39,8 @@ export type ScopedSnapshot = {
   entries: Map<string, ScopedNode>;
   /** Roots that exist but could not be scanned; coverage is incomplete when non-empty. */
   errors: string[];
+  absentRoots?: string[];
+  coverage?: ScanCoverage;
 };
 
 /**
@@ -50,6 +58,7 @@ export type ScopedRootBounds = {
 };
 
 export type ScopedScanOptions = {
+  budget?: CaptureBudget;
   /** Whether path comparison is case-sensitive (D10). */
   caseSensitive: boolean;
   /**
@@ -80,8 +89,15 @@ export function scopedPathKey(path: AbsolutePath, caseSensitive: boolean): strin
 export function scanScopedRoots(roots: Iterable<AbsolutePath>, options: ScopedScanOptions): ScopedSnapshot {
   const entries = new Map<string, ScopedNode>();
   const errors: string[] = [];
-  for (const root of roots) scanNode(root, entries, errors, options, true, options.rootBounds?.get(root));
-  return { entries, errors };
+  const absentRoots: string[] = [];
+  const coverage = newScanCoverage();
+  const budget = options.budget ?? new CaptureBudget();
+  budget.ensurePhase();
+  const effective = { ...options, budget };
+  for (const root of [...new Set(roots)].sort((a, b) => b.length - a.length || a.localeCompare(b)))
+    scanNode(root, entries, errors, effective, true, options.rootBounds?.get(root), absentRoots, 0, coverage);
+  budget.check();
+  return { entries, errors, coverage, ...(absentRoots.length ? { absentRoots } : {}) };
 }
 
 function scanNode(
@@ -91,40 +107,59 @@ function scanNode(
   options: ScopedScanOptions,
   isRoot: boolean,
   bounds?: ScopedRootBounds,
+  absentRoots?: string[],
+  depth = 0,
+  coverage?: ScanCoverage,
 ): void {
-  if (options.skip?.(path)) return;
+  options.budget?.depth(depth);
+  const key = scopedPathKey(path, options.caseSensitive);
+  if (entries.has(key)) return;
+  options.budget?.inspect(path);
+  if (options.skip?.(path)) { coverage?.unknownPaths.add(key); return; }
 
   let stat: Stats;
   try {
     stat = lstatSync(path);
   } catch (error) {
     // A missing root is expected; the installer may create it. Only a real read failure is coverage loss.
-    if (isRoot && (error as NodeJS.ErrnoException).code !== "ENOENT") errors.push(`${path}: ${describe(error)}`);
+    if (isRoot && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      absentRoots?.push(path);
+      coverage?.absentRoots.add(key);
+    } else {
+      coverage?.unknownPaths.add(key);
+      if (errors.length < 32) errors.push(`${path}: ${describe(error)}`);
+    }
     return;
   }
 
   const node = toScopedNode(path, stat);
-  if (!node) return; // sockets, fifos, and other non-regular nodes are not tracked
-  if (!isRoot && bounds !== undefined && boundsExclude(path, node.kind === "directory", bounds)) return;
+  if (!node || (node.kind === "symlink" && node.linkTarget === undefined)) {
+    coverage?.unknownPaths.add(key);
+    if (errors.length < 32) errors.push(`${path}: unsupported or unreadable node`);
+    return;
+  }
+  if (!isRoot && bounds !== undefined && boundsExclude(path, node.kind === "directory", bounds)) { coverage?.unknownPaths.add(key); return; }
   entries.set(scopedPathKey(path, options.caseSensitive), node);
   if (node.kind !== "directory") return;
 
-  let names: string[];
+  let directory: Dir | undefined;
   try {
-    names = readdirSync(path).sort();
+    directory = opendirSync(path, { bufferSize: 32 });
+    for (;;) {
+      options.budget?.check();
+      const entry = directory.readSync();
+      if (!entry) break;
+      scanNode(`${path}/${entry.name}`, entries, errors, options, false, bounds, absentRoots, depth + 1, coverage);
+    }
+    node.childrenComplete = true;
+    coverage?.completeDirectories.add(key);
   } catch (error) {
-    // A subdirectory the scanner cannot read cannot hold installer output either: the installer runs
-    // as this same unprivileged user, so a TCC/permission-protected directory (the system's
-    // `~/Library/Application Support/AddressBook`, for example) is neither an install target nor a
-    // coverage gap we could act on. Pruning it quietly keeps the scan's `partialReason` meaningful
-    // instead of listing a dozen Apple-owned directories that never change. A root we were explicitly
-    // asked to observe is the exception: an unreadable root really is lost coverage, so it stays
-    // reported.
-    if (!isRoot && isPermissionDenied(error)) return;
-    errors.push(`${path}: ${describe(error)}`);
-    return;
+    if (error instanceof CaptureBudgetError) throw error;
+    coverage?.unknownPaths.add(key);
+    if (errors.length < 32) errors.push(`${path}: ${describe(error)}`);
+  } finally {
+    directory?.closeSync();
   }
-  for (const name of names) scanNode(`${path}/${name}`, entries, errors, options, false, bounds);
 }
 
 /**
@@ -176,14 +211,8 @@ export function filesToHash(before: ScopedSnapshot, after: ScopedSnapshot): Abso
 }
 
 /** sha256 of a file's content, or undefined when it cannot be read. */
-export async function hashFile(path: AbsolutePath): Promise<string | undefined> {
-  try {
-    const hasher = new Bun.CryptoHasher("sha256");
-    for await (const chunk of Bun.file(path).stream()) hasher.update(chunk);
-    return hasher.digest("hex");
-  } catch {
-    return undefined;
-  }
+export async function hashFile(path: AbsolutePath, options?: ContentReadOptions): Promise<string | undefined> {
+  return hashBoundedContent(path, options);
 }
 
 /** sha256 hex of `bytes`, the content address used for before-images and record hashes (D2). */
@@ -192,12 +221,8 @@ export function hashBytes(bytes: Uint8Array): string {
 }
 
 /** Reads a whole file as bytes, or undefined when it cannot be read. Callers bound the size first. */
-export async function readFileBytes(path: AbsolutePath): Promise<Uint8Array | undefined> {
-  try {
-    return new Uint8Array(await Bun.file(path).arrayBuffer());
-  } catch {
-    return undefined;
-  }
+export async function readFileBytes(path: AbsolutePath, options?: ContentReadOptions): Promise<Uint8Array | undefined> {
+  return readBoundedContent(path, options);
 }
 
 /**
@@ -210,30 +235,35 @@ export async function readFileBytes(path: AbsolutePath): Promise<Uint8Array | un
  * - parents before children within each group, because a parent path sorts before its descendants;
  * - a mode change before a content write, so a file changed both ways collapses to one mutation.
  */
-export function diffScopedSnapshots(before: ScopedSnapshot, after: ScopedSnapshot): JournalEventInput[] {
+export function diffScopedSnapshots(before: ScopedSnapshot, after: ScopedSnapshot, budget?: CaptureBudget): JournalEventInput[] {
   const events: JournalEventInput[] = [];
+  const push = (event: JournalEventInput) => { budget?.event(event); events.push(event); };
   const created: ScopedNode[] = [];
   const deleted: ScopedNode[] = [];
   const changed: { before: ScopedNode; after: ScopedNode }[] = [];
 
   for (const [key, node] of after.entries) {
     const prior = before.entries.get(key);
-    if (prior === undefined) created.push(node);
+    if (prior === undefined) {
+      if (before.coverage ? scanPresence(key, before.entries, before.coverage) === "absent" : before.errors.length === 0) created.push(node);
+      else if (node.kind === "file") push({ type: "write", path: node.path, after: fileMetadata(node) });
+    }
     else if (replaced(prior, node)) {
       deleted.push(prior);
       created.push(node);
     } else if (changedNode(prior, node)) changed.push({ before: prior, after: node });
   }
-  for (const [key, node] of before.entries) if (!after.entries.has(key)) deleted.push(node);
+  for (const [key, node] of before.entries)
+    if (!after.entries.has(key) && (after.coverage ? scanPresence(key, after.entries, after.coverage) === "absent" : after.errors.length === 0)) deleted.push(node);
 
-  for (const node of sortNodes(deleted)) events.push(removeEvent(node));
-  for (const node of sortNodes(created)) events.push(createEvent(node));
+  for (const node of sortNodes(deleted)) push(removeEvent(node));
+  for (const node of sortNodes(created)) push(createEvent(node));
   for (const pair of changed.sort((a, b) => comparePaths(a.after.path, b.after.path))) {
     if (pair.after.kind === "file") {
-      if (pair.before.mode !== pair.after.mode) events.push(modeEvent(pair.before, pair.after));
-      if (fileStampChanged(pair.before, pair.after)) events.push(writeEvent(pair.before, pair.after));
+      if (pair.before.mode !== pair.after.mode) push(modeEvent(pair.before, pair.after));
+      if (fileStampChanged(pair.before, pair.after)) push(writeEvent(pair.before, pair.after));
     } else if (pair.after.kind === "directory" && pair.before.mode !== pair.after.mode) {
-      events.push(modeEvent(pair.before, pair.after));
+      push(modeEvent(pair.before, pair.after));
     }
   }
   return events;
@@ -308,10 +338,4 @@ function comparePaths(a: AbsolutePath, b: AbsolutePath): number {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** True for the permission errors an unprivileged scanner hits on TCC/system-protected directories. */
-function isPermissionDenied(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "EACCES" || code === "EPERM";
 }

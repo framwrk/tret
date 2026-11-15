@@ -13,7 +13,6 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readSync,
   renameSync,
   rmSync,
@@ -27,6 +26,7 @@ export const PRIVATE_DIR_MODE = 0o700;
 
 /** Mode for a file only its owner can read or write. */
 export const PRIVATE_FILE_MODE = 0o600;
+export const DEFAULT_PRIVATE_READ_BYTES = 64 * 1024 * 1024;
 
 const TEMP_SUFFIX = ".tmp";
 
@@ -56,7 +56,7 @@ export function assertDirectoryIfExists(dir: string): void {
  * Reads a file as raw bytes, returning undefined when it does not exist. Any other error (for
  * example a permissions failure) is rethrown, so callers never mistake unreadable data for absence.
  */
-export function readFileIfExists(path: string, maxBytes?: number): Uint8Array | undefined {
+export function readFileIfExists(path: string, maxBytes = DEFAULT_PRIVATE_READ_BYTES): Uint8Array | undefined {
   let fd: number;
   try {
     if (!lstatSync(path).isFile()) throw new Error(`private state is not a regular file: ${path}`);
@@ -66,24 +66,22 @@ export function readFileIfExists(path: string, maxBytes?: number): Uint8Array | 
     throw error;
   }
   try {
-    const node = fstatSync(fd);
+    const node = fstatSync(fd, { bigint: true });
     if (!node.isFile()) throw new Error(`private state is not a regular file: ${path}`);
-    if (maxBytes !== undefined) {
-      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("invalid private read limit");
-      if (node.size > maxBytes) throw new Error(`private state exceeds ${maxBytes} bytes: ${path}`);
-      const chunks: Buffer[] = [];
-      let total = 0;
-      for (;;) {
-        // One extra byte detects growth beyond the budget without an unbounded readFile allocation.
-        const chunk = Buffer.alloc(Math.min(64 * 1024, maxBytes - total + 1));
-        const count = readSync(fd, chunk, 0, chunk.byteLength, null);
-        if (count === 0) return Buffer.concat(chunks, total);
-        total += count;
-        if (total > maxBytes) throw new Error(`private state exceeds ${maxBytes} bytes: ${path}`);
-        chunks.push(chunk.subarray(0, count));
-      }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("invalid private read limit");
+    if (node.size > BigInt(maxBytes)) throw new Error(`private state exceeds ${maxBytes} bytes: ${path}`);
+    const bytes = Buffer.alloc(Number(node.size));
+    let total = 0;
+    while (total < bytes.byteLength) {
+      const count = readSync(fd, bytes, total, Math.min(64 * 1024, bytes.byteLength - total), null);
+      if (count === 0) throw new Error(`private state changed while reading: ${path}`);
+      total += count;
     }
-    return readFileSync(fd);
+    if (readSync(fd, Buffer.alloc(1), 0, 1, null) !== 0) throw new Error(`private state changed while reading: ${path}`);
+    const current = fstatSync(fd, { bigint: true });
+    if (!(["dev", "ino", "size", "mode", "uid", "gid", "mtimeNs", "ctimeNs"] as const).every((key) => node[key] === current[key]))
+      throw new Error(`private state changed while reading: ${path}`);
+    return bytes;
   } finally {
     closeSync(fd);
   }

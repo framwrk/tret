@@ -179,7 +179,7 @@ describe("macOS volatile churn skip (defect #2)", () => {
 describe("macOS unreadable scope (defect #3 follow-up)", () => {
   // Root runs can read a 0o000 directory, so the assertion only holds for an unprivileged process.
   test.skipIf(process.getuid?.() === 0)(
-    "a permission-denied subdirectory is pruned quietly, but an unreadable root is reported",
+    "unreadable children and roots both retain unknown coverage",
     () => {
       const root = mkdtempSync(join(tmpdir(), "tret-perm-"));
       const locked = join(root, "locked");
@@ -189,9 +189,9 @@ describe("macOS unreadable scope (defect #3 follow-up)", () => {
         chmodSync(locked, 0o000);
 
         const scoped = scanScopedRoots([root], { caseSensitive: true });
-        // The locked directory itself is still recorded (its own lstat succeeded), and no error is
-        // reported for a subdirectory an unprivileged installer could not have written either.
-        expect(scoped.errors).toEqual([]);
+        // A readable node does not prove that its unreadable children are absent.
+        expect(scoped.errors).toHaveLength(1);
+        expect(scoped.errors[0]).toContain("locked");
         expect(scoped.entries.has(scopedPathKey(locked, true))).toBe(true);
 
         // The same directory used as an observed root is real lost coverage, so it stays reported.

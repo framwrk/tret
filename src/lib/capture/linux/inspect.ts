@@ -1,13 +1,17 @@
 import type { AbsolutePath, OwnedKind } from "../../../types";
+import { CaptureBudget, CaptureBudgetError } from "../budget";
 import { EXCLUDED_PATHS, isExcludedDirName, isSensitiveBackupPath } from "../../../constants";
 import { basename, dirname, join } from "node:path";
-import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
+import { hashBoundedContent, readBoundedContent } from "../content";
+import { lstat, opendir, readlink, realpath } from "node:fs/promises";
 import type { BackupPolicy } from "../normalize";
 import type { BlobId } from "../../storage";
 import type { CaptureBaselineEntry } from "../backend";
+import type { ContentReadOptions } from "../content";
 import { createHash } from "node:crypto";
 import { normalizeAbsolutePath } from "./paths";
 import { privateStateFilter } from "../self-state";
+import { scanPresence } from "../scan-coverage";
 
 /**
  * The before/after metadata `reconstruct.ts` needs for one path. It mirrors the journal metadata
@@ -18,7 +22,8 @@ export type NodeInfo =
   | { kind: "file"; hash?: string; size?: number; mode?: number; mtimeMs?: number }
   | { kind: "directory"; mode?: number }
   | { kind: "symlink"; target: AbsolutePath; mode?: number }
-  | { kind: "missing" };
+  | { kind: "missing" }
+  | { kind: "unknown"; reason: string };
 
 export interface FsInspector {
   /**
@@ -38,39 +43,35 @@ export interface FsInspector {
 /** Reads the real filesystem; symlinks are reported by target and never followed. */
 export class RealFsInspector implements FsInspector {
   private readonly maxHashBytes: number;
+  private readonly budget: CaptureBudget;
 
-  constructor(options: { maxHashBytes?: number } = {}) {
-    this.maxHashBytes = options.maxHashBytes ?? 64 * 1024 * 1024;
+  constructor(options: { maxHashBytes?: number; budget?: CaptureBudget } = {}) {
+    this.budget = options.budget ?? new CaptureBudget();
+    this.maxHashBytes = options.maxHashBytes ?? this.budget.limits.maxHashBytes;
   }
 
   async inspect(path: AbsolutePath, options: { hash?: boolean } = {}): Promise<NodeInfo> {
     let stats;
     try {
       stats = await lstat(path);
-    } catch {
-      return { kind: "missing" };
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "missing" } : { kind: "unknown", reason: String(error) };
     }
 
     const mode = stats.mode & 0o7777;
     if (stats.isSymbolicLink()) {
       try {
         return { kind: "symlink", target: await readlink(path), mode };
-      } catch {
-        return { kind: "missing" };
+      } catch (error) {
+        return { kind: "unknown", reason: String(error) };
       }
     }
     if (stats.isDirectory()) return { kind: "directory", mode };
-    if (!stats.isFile()) return { kind: "missing" };
+    if (!stats.isFile()) return { kind: "unknown", reason: "unsupported node type" };
 
     const info: NodeInfo = { kind: "file", size: stats.size, mode, mtimeMs: stats.mtimeMs };
     if (options.hash !== false && stats.size <= this.maxHashBytes) {
-      try {
-        info.hash = createHash("sha256")
-          .update(await readFile(path))
-          .digest("hex");
-      } catch {
-        // Unreadable content stays hash-less; the mutation is still recorded, just not restorable.
-      }
+      info.hash = await hashBoundedContent(path, { maxBytes: this.maxHashBytes, budget: this.budget });
     }
     return info;
   }
@@ -152,6 +153,8 @@ export class FakeFsInspector implements FsInspector {
  * `reconstruct.ts` can attach them as a mutation's or deletion's `before`.
  */
 export interface Baseline {
+  readonly diagnostics?: readonly string[];
+  state?(path: AbsolutePath): "present" | "absent" | "unknown";
   /** Whether the path existed before the window started. */
   existed(path: AbsolutePath): boolean;
   /** The node kind known before the window, when the path existed. */
@@ -163,6 +166,11 @@ export interface Baseline {
 /** An in-memory baseline; `entries` maps absolute paths to a kind or to captured node metadata. */
 export class MemoryBaseline implements Baseline {
   private readonly entries: Map<AbsolutePath, OwnedKind | NodeInfo>;
+  private readonly absentRoots = new Set<string>();
+  private readonly completed = new Set<string>();
+  private readonly uncertain = new Set<string>();
+  private readonly excluded = new Set<string>();
+  readonly diagnostics: string[] = [];
 
   constructor(entries: Iterable<[AbsolutePath, OwnedKind]> = []) {
     this.entries = new Map(entries);
@@ -170,6 +178,17 @@ export class MemoryBaseline implements Baseline {
 
   existed(path: AbsolutePath): boolean {
     return this.entries.has(path);
+  }
+
+  state(path: string): "present" | "absent" | "unknown" {
+    return scanPresence(path, this.entries, { completeDirectories: this.completed, absentRoots: this.absentRoots, unknownPaths: this.uncertain, excludedPaths: this.excluded });
+  }
+  missing(path: string): void { this.absentRoots.add(path); }
+  exclude(path: string): void { this.excluded.add(path); }
+  complete(path: string): void { this.completed.add(path); }
+  unknown(path: string, reason: string): void {
+    this.uncertain.add(path);
+    if (this.diagnostics.length < 32) this.diagnostics.push(`${path}: ${reason}`);
   }
 
   kind(path: AbsolutePath): OwnedKind | undefined {
@@ -188,15 +207,19 @@ export class MemoryBaseline implements Baseline {
   }
 
   snapshot(): CaptureBaselineEntry[] {
-    return [...this.entries].map(([path, entry]) => {
-      if (typeof entry === "string") return { path, kind: entry };
+    const nodes: CaptureBaselineEntry[] = [...this.entries].map(([path, entry]) => {
+      const state = { presence: "present" as const, ...(this.kind(path) === "directory" ? { childrenComplete: this.completed.has(path) } : {}) };
+      if (typeof entry === "string") return { path, kind: entry, ...state };
       return {
-        path, kind: kindOf(entry),
+        path, kind: kindOf(entry), ...state,
         ...("mode" in entry && entry.mode !== undefined ? { mode: entry.mode } : {}),
         ...(entry.kind === "file" && entry.hash ? { hash: entry.hash } : {}),
         ...(entry.kind === "symlink" ? { linkTarget: entry.target } : {}),
       };
     });
+    for (const path of this.absentRoots) if (!this.entries.has(path)) nodes.push({ path, kind: "unknown", presence: "absent" });
+    for (const path of this.uncertain) if (!this.entries.has(path)) nodes.push({ path, kind: "unknown", presence: "unknown" });
+    return nodes;
   }
 
   /** Records full pre-window metadata (only a backups-enabled walk does this). */
@@ -207,12 +230,14 @@ export class MemoryBaseline implements Baseline {
 
 /** Options for the pre-window baseline walk. */
 export type BaselineOptions = {
+  budget?: CaptureBudget;
+  home?: string;
   /** Before-image policy (D2). File content is read only when this reports `enabled`. */
   backups?: BackupPolicy;
   /** Filesystem inspector; defaults to the real one. Tests inject fakes. */
   inspector?: FsInspector;
   /** Reads a file's bytes for a before-image; injected in tests. Defaults to the real filesystem. */
-  read?: (path: AbsolutePath) => Promise<Uint8Array | undefined>;
+  read?: (path: AbsolutePath, options?: ContentReadOptions) => Promise<Uint8Array | undefined>;
 };
 
 /** The baseline plus any before-image bytes the walk read for it. */
@@ -233,51 +258,46 @@ export type CapturedBaseline = {
  * Overlapping roots share a visited-path set, so the same file is never read twice for backups.
  */
 export async function captureBaseline(roots: AbsolutePath[], options: BaselineOptions = {}): Promise<CapturedBaseline> {
-  const inspector = options.inspector ?? new RealFsInspector();
+  const budget = options.budget ?? new CaptureBudget();
+  budget.ensurePhase();
+  const inspector = options.inspector ?? new RealFsInspector({ budget });
   const baseline = new MemoryBaseline();
   const beforeImages = new Map<BlobId, Uint8Array>();
   const visited = new Set<AbsolutePath>();
-  const excluded = excludedPathsUnderRoots(roots);
+  const excluded = new Set(EXCLUDED_PATHS.map((path) => join(options.home ?? process.env.HOME ?? "", path)));
   const privateState = privateStateFilter();
   const backups = options.backups;
   const backup: BackupCapture | undefined =
     backups?.enabled === true
-      ? { sizeLimitBytes: backups.sizeLimitBytes, read: options.read ?? readFileBytes, images: beforeImages }
+      ? { sizeLimitBytes: backups.sizeLimitBytes, read: options.read ?? readBoundedContent, images: beforeImages, budget }
       : undefined;
 
-  for (const root of roots) {
-    if (visited.has(root) || privateState(root)) continue;
+  for (const root of [...new Set(roots)].sort((a, b) => b.length - a.length || a.localeCompare(b))) {
+    if (visited.has(root)) continue;
+    if (privateState(root)) { baseline.exclude(root); continue; }
+    budget.inspect(root);
     const info = await inspector.inspect(root, { hash: false });
-    if (info.kind === "missing") continue;
+    if (info.kind === "missing") { baseline.missing(root); continue; }
+    if (info.kind === "unknown") { baseline.unknown(root, info.reason); continue; }
     if (info.kind === "file" && backup !== undefined) {
       visited.add(root);
       await recordFile(root, info, baseline, backup);
     } else {
       baseline.set(root, kindOf(info));
     }
-    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited, excluded, privateState);
+    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited, excluded, privateState, budget);
     else visited.add(root);
   }
+  budget.check();
+  for (const reason of baseline.diagnostics) budget.note(`baseline coverage unknown: ${reason}`);
   return { baseline, beforeImages };
-}
-
-/**
- * The absolute home-relative skip paths (`EXCLUDED_PATHS`) under every observe root. Applying them
- * per root keeps an explicitly observed root (`--observe ~/Documents/project`) walkable while the
- * default home root still prunes the user-content folders it contains.
- */
-function excludedPathsUnderRoots(roots: AbsolutePath[]): Set<AbsolutePath> {
-  const excluded = new Set<AbsolutePath>();
-  for (const root of roots) {
-    for (const relative of EXCLUDED_PATHS) excluded.add(join(root, relative));
-  }
-  return excluded;
 }
 
 /** What a backups-enabled walk uses to turn pre-existing files into before-images. */
 type BackupCapture = {
+  budget: CaptureBudget;
   sizeLimitBytes: number;
-  read: (path: AbsolutePath) => Promise<Uint8Array | undefined>;
+  read: (path: AbsolutePath, options?: ContentReadOptions) => Promise<Uint8Array | undefined>;
   images: Map<BlobId, Uint8Array>;
 };
 
@@ -289,24 +309,27 @@ async function walk(
   visited: Set<AbsolutePath>,
   excluded: ReadonlySet<AbsolutePath>,
   privateState: (path: string) => boolean,
+  budget: CaptureBudget,
+  depth = 0,
 ): Promise<void> {
+  budget.depth(depth);
   if (visited.has(dir)) return;
   visited.add(dir);
 
-  let entries;
+  let directory;
   try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
+    directory = await opendir(dir, { bufferSize: 32 });
+    for await (const entry of directory) {
+    budget.check();
     const path = join(dir, entry.name);
-    if (visited.has(path) || excluded.has(path) || privateState(path)) continue;
+    if (visited.has(path)) continue;
+    if (excluded.has(path) || privateState(path)) { baseline.exclude(path); continue; }
+    budget.inspect(path);
     if (entry.isDirectory()) {
       baseline.set(path, "directory");
       // Record excluded directories but never descend, so shared churn trees cost one entry and no
       // before-image reads. An explicit root nested below this directory can still be walked separately.
-      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited, excluded, privateState);
+      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited, excluded, privateState, budget, depth + 1);
       else visited.add(path);
     } else {
       visited.add(path);
@@ -314,9 +337,15 @@ async function walk(
         await recordFile(path, await inspector.inspect(path, { hash: false }), baseline, backup);
         continue;
       }
-      const kind: OwnedKind = entry.isSymbolicLink() ? "symlink" : "file";
-      baseline.set(path, kind);
+      if (entry.isSymbolicLink()) baseline.set(path, "symlink");
+      else if (entry.isFile()) baseline.set(path, "file");
+      else baseline.unknown(path, "unsupported node type");
     }
+    }
+    baseline.complete(dir);
+  } catch (error) {
+    if (error instanceof CaptureBudgetError) throw error;
+    baseline.unknown(dir, String(error));
   }
 }
 
@@ -337,23 +366,19 @@ async function recordFile(path: AbsolutePath, info: NodeInfo, baseline: MemoryBa
     baseline.set(path, kindOf(info));
     return;
   }
-  const bytes = await backup.read(path);
+  const used = backup.budget.used.backupBytes;
+  const bytes = await backup.read(path, { budget: backup.budget, maxBytes: Math.min(backup.sizeLimitBytes, backup.budget.limits.maxBlobBytes) });
   if (bytes === undefined || bytes.byteLength > backup.sizeLimitBytes) {
     baseline.set(path, "file");
     return;
   }
+  if (used === backup.budget.used.backupBytes && !backup.budget.tryConsume("backupBytes", bytes.byteLength)) {
+    baseline.set(path, "file"); return;
+  }
+  if (!backup.budget.tryConsume("hashBytes", bytes.byteLength)) { baseline.set(path, "file"); return; }
   const hash = createHash("sha256").update(bytes).digest("hex");
   backup.images.set(hash, bytes);
   baseline.setNode(path, { kind: "file", hash, size: info.size, mode: info.mode, mtimeMs: info.mtimeMs });
-}
-
-/** Reads a whole file for a before-image; an unreadable file is skipped, never fatal. */
-async function readFileBytes(path: AbsolutePath): Promise<Uint8Array | undefined> {
-  try {
-    return new Uint8Array(await readFile(path));
-  } catch {
-    return undefined;
-  }
 }
 
 function kindOf(info: NodeInfo): OwnedKind {
@@ -365,6 +390,7 @@ function kindOf(info: NodeInfo): OwnedKind {
     case "symlink":
       return "symlink";
     case "missing":
+    case "unknown":
       return "unknown";
   }
 }

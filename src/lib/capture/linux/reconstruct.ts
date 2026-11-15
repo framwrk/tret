@@ -11,6 +11,7 @@ import type {
 import type { TracerRecord, TracerResult } from "./raw";
 import { basename, dirname } from "node:path";
 import { hasExcludedAncestor, inRoots, normalizeAbsolutePath } from "./paths";
+import type { CaptureBudget } from "../budget";
 
 /**
  * Turns tracer records into journal events. It runs after the window closes and inspects the final
@@ -25,6 +26,7 @@ import { hasExcludedAncestor, inRoots, normalizeAbsolutePath } from "./paths";
  */
 
 export type ReconstructInput = {
+  budget?: CaptureBudget;
   traced: TracerResult;
   inspector: FsInspector;
   /** Existence/kind baseline used to tell a create from an overwrite. */
@@ -48,9 +50,18 @@ export type ReconstructResult = {
 type LiveKind = "created" | "existing";
 
 export async function reconstruct(input: ReconstructInput): Promise<ReconstructResult> {
-  const { traced, inspector, baseline, roots, fallbackAt } = input;
+  const { traced, inspector: sourceInspector, baseline, roots, fallbackAt } = input;
   const events: JournalEvent[] = [];
   const diagnostics: string[] = [];
+  const inspector: FsInspector = {
+    resolve: (path) => sourceInspector.resolve(path),
+    inspect: async (path, options) => {
+      input.budget?.inspect(path);
+      const info = await sourceInspector.inspect(path, options);
+      if (info.kind === "unknown" && diagnostics.length < 32) diagnostics.push(`${path}: ${info.reason}`);
+      return info;
+    },
+  };
   const live = new Map<AbsolutePath, LiveKind>();
   const resolved = new Map<AbsolutePath, AbsolutePath>();
   let seq = 0;
@@ -64,7 +75,9 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
 
   const push = (event: JournalEventInput & { at?: number }): void => {
     const { at: rawAt, ...rest } = event;
-    events.push({ ...rest, seq: seq++, at: rawAt ?? fallbackAt + seq } as JournalEvent);
+    const observed = { ...rest, seq: seq++, at: rawAt ?? fallbackAt + seq } as JournalEvent;
+    input.budget?.event(observed);
+    events.push(observed);
   };
 
   // Roots are resolved once, so a symlinked ancestor (for example `/var` -> `/private/var` on a
@@ -303,6 +316,7 @@ function nodeMetadata(info: NodeInfo): NodeMetadata | undefined {
     case "symlink":
       return { kind: "symlink", target: info.target, mode: info.mode } satisfies SymlinkMetadata;
     case "missing":
+    case "unknown":
       return undefined;
   }
 }

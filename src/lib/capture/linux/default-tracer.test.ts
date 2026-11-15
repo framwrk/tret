@@ -29,7 +29,7 @@ for (const available of [true, false]) {
       script,
       `import { mock } from "bun:test";
 const calls = [];
-const tracer = { name: "linux-strace", losses: () => [], status: async () => ({ active: true }), stop: async () => {} };
+const tracer = { name: "linux-strace", losses: () => [], isAttached: async () => true, status: async () => ({ active: true }), stop: async () => {} };
 mock.module(${JSON.stringify(join(import.meta.dir, "tracer.ts"))}, () => ({
   attachStrace: async () => { calls.push("strace"); return tracer; },
   attachFanotify: async () => { calls.push("fanotify"); return { ...tracer, name: "linux-fanotify" }; },

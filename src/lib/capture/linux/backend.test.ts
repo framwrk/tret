@@ -2,6 +2,7 @@ import { FakeFsInspector, RealFsInspector } from "./inspect";
 import { LinuxCaptureBackend, parentAttachRestricted } from "./backend";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
+import { CaptureBudget } from "../budget";
 import type { CaptureSession } from "../backend";
 import { FakeLinuxTracer } from "./fake";
 import type { TracerAttachOptions } from "./tracer";
@@ -74,7 +75,7 @@ describe("linux capture backend", () => {
     const session = await capture(backend);
     const journal = await session.stop();
 
-    expect(seen).toEqual([{ pid: 42, roots: ["/h"] }]);
+    expect(seen).toEqual([{ pid: 42, roots: ["/h"], budget: expect.any(CaptureBudget) }]);
     expect(session.backend).toBe("linux-strace");
     expect(journal.backend).toBe("linux-strace");
     expect(journal.completeness).toBe("complete");

@@ -1,5 +1,7 @@
 // Types shared across Tret's commands and library code.
+import type { CaptureResourceReport } from "./lib/capture/budget";
 import type { CleanupApproval } from "./lib/cleanup-authority";
+import type { ScanCoverage } from "./lib/capture/scan-coverage";
 
 // Units
 
@@ -13,6 +15,8 @@ export type MtimeMs = number;
 
 /** Everything recorded about one tracked entry; the size and inode catch a re-pointed symlink that mtime misses. */
 export type FileStamp = {
+  kind?: "file" | "directory" | "symlink" | "unknown";
+  mode?: number;
   mtimeMs: MtimeMs;
   size: number;
   inode: number;
@@ -20,7 +24,7 @@ export type FileStamp = {
 };
 
 /** Every file and folder Tret tracks, mapped to its stamp. */
-export type Snapshot = Map<AbsolutePath, FileStamp>;
+export type Snapshot = Map<AbsolutePath, FileStamp> & { errors?: string[]; coverage?: ScanCoverage };
 
 // Diff
 
@@ -75,6 +79,8 @@ export type Privilege = "user" | "root";
  * (D5). `tret find` records a "find" segment.
  */
 export type CaptureSegment = {
+  roots?: AbsolutePath[];
+  resources?: CaptureResourceReport;
   kind: "install" | "trace" | "find";
   startedAt: string;
   endedAt?: string;

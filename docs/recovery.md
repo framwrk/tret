@@ -1,5 +1,9 @@
 # Records, operations and recovery
 
+Capture receipts include their effective resource limits, counters and observed
+losses. [Capture resource limits](capture-budgets.md) describes refusals, oversized
+private evidence, blob quotas and retention limits that are still pending.
+
 Read commands normalize v2/v3 evidence in memory without rewriting `records.json`.
 Migration invents no ownership, absence, causality or cleanup approval. Version 4
 stores an increasing sequence, record revisions and per-effect evidence/decisions.

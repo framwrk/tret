@@ -1,6 +1,7 @@
 import { confirm, log } from "../utilities";
 import type { BackupPolicy } from "./normalize";
 import type { CaptureBackend } from "./backend";
+import { CaptureBudget } from "./budget";
 import { heuristicFallbackRoots } from "./fallback";
 import { isJsonMode } from "../json-output";
 
@@ -24,10 +25,12 @@ export async function prepareCapture(options: {
 }) {
   let accepted = options.allowWeakerCapture === true;
   const plan = {
+    budget: new CaptureBudget(),
     fallback: options.fallback,
     backend: options.enabled === false ? undefined : options.primary,
     roots: [...options.roots],
     beforeFallback: async (error: unknown) => {
+      plan.budget.pause();
       plan.backend = options.fallback;
       plan.roots = heuristicFallbackRoots(options.roots);
       reason = `preferred capture could not attach: ${message(error)}`;
@@ -35,6 +38,7 @@ export async function prepareCapture(options: {
       await acceptWeaker();
     },
     beforeLegacy: async () => {
+      plan.budget.pause();
       plan.backend = undefined;
       plan.roots = options.enabled === false ? [...options.roots] : heuristicFallbackRoots(options.roots);
       reason = "no capture window is available; only metadata snapshots can observe persistent changes";
@@ -70,6 +74,9 @@ export async function prepareCapture(options: {
   }
   function show(detail: string) {
     log(`capture preflight: ${plan.backend?.name ?? "disabled (metadata snapshots)"}`);
+    const limits = plan.budget.limits;
+    log(`\tresource limits: ${limits.maxNodes} nodes, depth ${limits.maxDepth}, ${limits.maxMetadataBytes} metadata bytes, ${limits.maxBackupBytes} backup bytes, ${limits.maxHashBytes} fingerprint bytes, ${limits.maxEvents} events, ${limits.maxAuditBytes} audit bytes/${limits.maxAuditLines} lines, ${limits.maxWorkMs} active milliseconds per phase`);
+    log(`\tprivate blob limits: ${limits.maxBlobBytes} bytes each, ${limits.maxStoreBytes} stored bytes including staging; retained evidence is never evicted automatically`);
     if (!plan.backend || plan.backend.completeness !== "complete" || plan.backend !== options.primary) log(`\t${detail}`);
     for (const root of plan.roots) log(`\tobserve ${root}`);
     for (const root of options.roots.filter((root) => !plan.roots.includes(root))) log(`\texcluded from fallback: ${root}`);
@@ -81,7 +88,7 @@ export async function prepareCapture(options: {
       !plan.backend
         ? "\tbefore-image backups unavailable without a capture window"
         : options.backups.enabled
-          ? `\tbefore-image backups: eligible files up to ${options.backups.sizeLimitBytes} bytes each; aggregate budgets are not yet enforced`
+          ? `\tbefore-image backups: eligible files up to ${Math.min(options.backups.sizeLimitBytes, limits.maxBlobBytes)} bytes each; aggregate limit ${limits.maxBackupBytes} bytes`
           : "\tbefore-image backups: off; changed existing files may be unrestorable",
     );
     log(
