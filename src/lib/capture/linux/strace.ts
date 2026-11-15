@@ -1,3 +1,4 @@
+import { CaptureBudget, CaptureBudgetError } from "../budget";
 import type { TracerRecord, TracerResult } from "./raw";
 import { inRoots, normalizeAbsolutePath } from "./paths";
 import type { AbsolutePath } from "../../../types";
@@ -22,6 +23,7 @@ import type { AbsolutePath } from "../../../types";
 
 /** Options that affect relative-path resolution and which syscalls are considered in scope. */
 export type ParseStraceOptions = {
+  budget?: CaptureBudget;
   /**
    * Fallback directory for relative paths whose dirfd strace could not annotate (a bare
    * `AT_FDCWD` or an unknown descriptor); a `-y` annotation always wins.
@@ -37,8 +39,21 @@ export type ParseStraceOptions = {
 };
 
 export function parseStraceOutput(text: string, options: ParseStraceOptions = {}): TracerResult {
-  const parser = new StraceParser(options);
-  for (const line of text.split("\n")) parser.feed(line);
+  const budget = options.budget ?? new CaptureBudget();
+  budget.ensurePhase();
+  const parser = new StraceParser({ ...options, budget });
+  try {
+    budget.consume("auditBytes", Buffer.byteLength(text));
+    let start = 0;
+    while (start < text.length) {
+      const end = text.indexOf("\n", start);
+      parser.feed(text.slice(start, end === -1 ? text.length : end));
+      start = end === -1 ? text.length : end + 1;
+    }
+  } catch (error) {
+    if (!(error instanceof CaptureBudgetError)) throw error;
+    parser.diagnose(error.message);
+  }
   parser.finish();
   return parser.result();
 }
@@ -91,6 +106,8 @@ class StraceParser {
   }
 
   feed(rawLine: string): void {
+    this.options.budget?.consume("auditLines", 1);
+    this.options.budget?.consume("metadataBytes", Buffer.byteLength(rawLine) + 256);
     const line = rawLine.replace(/\r$/, "").trimEnd();
     if (line.length === 0) return;
 
@@ -104,7 +121,7 @@ class StraceParser {
       const syscall = resumed[1] ?? "";
       const tail = resumed[2] ?? "";
       if (!pending || pending.syscall !== syscall) {
-        this.diagnostics.push(`resumed syscall without a matching unfinished line: ${syscall}`);
+        this.diagnose(`resumed syscall without a matching unfinished line: ${syscall}`);
         return;
       }
       this.pending.delete(key);
@@ -132,7 +149,7 @@ class StraceParser {
   /** Flushes dangling unfinished syscalls as coverage gaps. */
   finish(): void {
     for (const pending of this.pending.values()) {
-      this.diagnostics.push(`unfinished syscall was never resumed: ${pending.syscall}`);
+      this.diagnose(`unfinished syscall was never resumed: ${pending.syscall}`);
     }
     this.pending.clear();
   }
@@ -145,6 +162,15 @@ class StraceParser {
     };
   }
 
+  diagnose(reason: string): void {
+    if (this.diagnostics.length < 32) this.diagnostics.push(reason.slice(0, 1024));
+  }
+
+  private emit(record: TracerRecord): void {
+    this.options.budget?.consume("metadataBytes", Buffer.byteLength(JSON.stringify(record)) + 128);
+    this.records.push(record);
+  }
+
   private handleCall(at: number, pid: number | undefined, syscall: string, argsBody: string, ret: string): void {
     const args = splitArgs(argsBody);
     const failed = ret.startsWith("-1") || ret.startsWith("-");
@@ -154,7 +180,7 @@ class StraceParser {
     if (syscall === "mmap" || syscall === "mmap2") {
       if (!failed && isSharedWritableFileMap(args)) {
         this.markUnsupported(syscall, undefined);
-        this.records.push({ op: "unsupported", at, pid, syscall, reason: unsupportedReason(syscall) });
+        this.emit({ op: "unsupported", at, pid, syscall, reason: unsupportedReason(syscall) });
       }
       return;
     }
@@ -163,7 +189,7 @@ class StraceParser {
       // A successful unsupported syscall may have changed content the journal cannot see.
       if (!failed) {
         this.markUnsupported(syscall, undefined);
-        this.records.push({ op: "unsupported", at, pid, syscall, reason: unsupportedReason(syscall) });
+        this.emit({ op: "unsupported", at, pid, syscall, reason: unsupportedReason(syscall) });
       }
       return;
     }
@@ -274,7 +300,7 @@ class StraceParser {
 
     // `openat2` puts flags in a struct we do not decode; treat it as an open with unknown flags.
     if (syscall === "openat2") flags = "";
-    this.records.push({
+    this.emit({
       op: "open",
       at,
       pid,
@@ -293,29 +319,29 @@ class StraceParser {
 
   private emitWrite(at: number, pid: number | undefined, path: AbsolutePath | undefined): void {
     if (path === undefined) return;
-    this.records.push({ op: "write", at, pid, path });
+    this.emit({ op: "write", at, pid, path });
   }
 
   private emitRename(at: number, pid: number | undefined, from: AbsolutePath | undefined, to: AbsolutePath | undefined): void {
     if (from === undefined || to === undefined) return;
-    this.records.push({ op: "rename", at, pid, from, to });
+    this.emit({ op: "rename", at, pid, from, to });
   }
 
   private emitUnlink(at: number, pid: number | undefined, path: AbsolutePath | undefined): void {
     if (path === undefined) return;
-    this.records.push({ op: "unlink", at, pid, path });
+    this.emit({ op: "unlink", at, pid, path });
   }
 
   private emitRmdir(at: number, pid: number | undefined, path: AbsolutePath | undefined): void {
     if (path === undefined) return;
-    this.records.push({ op: "rmdir", at, pid, path });
+    this.emit({ op: "rmdir", at, pid, path });
   }
 
   private emitChmod(at: number, pid: number | undefined, path: AbsolutePath | undefined, rawMode: string | undefined): void {
     if (path === undefined) return;
     const mode = parseMode(rawMode);
     if (mode === undefined) return;
-    this.records.push({ op: "chmod", at, pid, path, mode });
+    this.emit({ op: "chmod", at, pid, path, mode });
   }
 
   private emitSymlink(
@@ -325,12 +351,12 @@ class StraceParser {
     target: AbsolutePath | undefined,
   ): void {
     if (path === undefined || target === undefined) return;
-    this.records.push({ op: "symlink", at, pid, path, target });
+    this.emit({ op: "symlink", at, pid, path, target });
   }
 
   private emitMkdir(at: number, pid: number | undefined, path: AbsolutePath | undefined, rawMode: string | undefined): void {
     if (path === undefined) return;
-    this.records.push({ op: "mkdir", at, pid, path, mode: parseMode(rawMode) });
+    this.emit({ op: "mkdir", at, pid, path, mode: parseMode(rawMode) });
   }
 
   private markUnsupported(syscall: string, path: AbsolutePath | undefined): void {
@@ -379,7 +405,7 @@ class StraceParser {
     if (value.startsWith("/")) return normalizeRoot(value, this.options);
     const base = this.baseDir(dirfd, pid);
     if (base === undefined) {
-      this.diagnostics.push(`relative path with no known directory: ${value}`);
+      this.diagnose(`relative path with no known directory: ${value}`);
       return undefined;
     }
     return normalizeRoot(joinPath(base, value), this.options);

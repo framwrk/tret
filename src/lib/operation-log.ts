@@ -1,3 +1,4 @@
+import { type CaptureResourceReport, validCaptureResources } from "./capture/budget";
 import {
   PRIVATE_FILE_MODE,
   assertDirectoryIfExists,
@@ -45,7 +46,7 @@ export type DurableOperation = {
   unknownSince?: string;
   reason?: string;
   retainedPaths?: string[];
-  execution?: { recordId: string; roots: string[]; scriptSha256?: string; executable?: string; exitCode?: number };
+  execution?: { recordId: string; roots: string[]; scriptSha256?: string; executable?: string; exitCode?: number; resources?: CaptureResourceReport };
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -272,7 +273,8 @@ function validOperation(value: unknown): value is DurableOperation {
     (operation.capture === undefined ||
       (typeof operation.capture.backend === "string" &&
         ["complete", "partial", "heuristic"].includes(operation.capture.completeness) &&
-        Array.isArray(operation.capture.events))) &&
+        Array.isArray(operation.capture.events) &&
+        (operation.capture.resources === undefined || validCaptureResources(operation.capture.resources)))) &&
     (operation.application === undefined || validApplication(operation.application)) &&
     (operation.reason === undefined || typeof operation.reason === "string") &&
     (operation.retainedPaths === undefined ||
@@ -283,6 +285,7 @@ function validOperation(value: unknown): value is DurableOperation {
         operation.execution.recordId.length > 0 &&
         Array.isArray(operation.execution.roots) &&
         operation.execution.roots.every((path) => typeof path === "string" && path.startsWith("/")) &&
+        (operation.execution.resources === undefined || validCaptureResources(operation.execution.resources)) &&
         (operation.execution.exitCode === undefined || Number.isInteger(operation.execution.exitCode)))) &&
     (operation.unknownSince === undefined ||
       (typeof operation.unknownSince === "string" && Number.isFinite(Date.parse(operation.unknownSince))))
@@ -379,6 +382,7 @@ export function operationSummary(operation: DurableOperation) {
       : undefined,
     exitCode: operation.execution?.exitCode,
     roots: operation.execution?.roots ?? [],
+    resources: operation.capture?.resources ?? operation.execution?.resources,
     scriptSha256: operation.execution?.scriptSha256,
     staging: Object.values(operation.application?.native ?? {}).map((receipt) => ({
       path: receipt.path,

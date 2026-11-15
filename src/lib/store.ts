@@ -15,6 +15,7 @@
 //   remains an extra retention policy; durable operations pin unpublished before-images first.
 
 import type { BlobId, BlobRef, Storage } from "./storage";
+import { CaptureBudget, CaptureBudgetError, type CaptureLimits, captureLimits } from "./capture/budget";
 import type { EffectEvidence, RecordFileV4, RecordV3, RecordV4 } from "../types";
 import { OBJECTS_PATH, RECORDS_PATH } from "../constants";
 import {
@@ -32,8 +33,8 @@ import {
 import { RecordMigrationError, isV3Record } from "./records";
 import { basename, dirname, join } from "node:path";
 import { currentOperationToken, withOperationLease } from "./operation-lease";
+import { lstatSync, opendirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { observedRecord, readRecordFile, validateRecordFileV4 } from "./records-v4";
-import { readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import type { BackupPolicy } from "./capture/normalize";
 import { OperationLog } from "./operation-log";
 import { homedir } from "node:os";
@@ -133,6 +134,7 @@ export class RecordRevisionError extends Error {
 }
 
 export type FileStorageOptions = {
+  limits?: CaptureLimits;
   /** Directory whose `.tret` subdirectory holds records and blobs; defaults to `$HOME`. */
   homeDir?: string;
   /** Before-image backup policy (D2); defaults to off with `DEFAULT_BACKUP_SIZE_LIMIT_BYTES`. */
@@ -167,8 +169,10 @@ export class FileStorage implements Storage {
   private readonly gcGraceMs: number;
   private readonly lockTimeoutMs: number;
   private readonly now: () => number;
+  private readonly resourceLimits?: CaptureLimits;
 
   constructor(options: FileStorageOptions = {}) {
+    this.resourceLimits = options.limits ? Object.freeze({ ...options.limits }) : undefined;
     this.homeDir = options.homeDir ?? process.env.HOME ?? homedir();
     this.backups = options.backups ?? DEFAULT_BACKUP_POLICY;
     this.gcGraceMs = options.gcGraceMs ?? DEFAULT_GC_GRACE_MS;
@@ -280,17 +284,23 @@ export class FileStorage implements Storage {
    * the configured size limit. Existing bytes that fail their own integrity check are repaired.
    */
   async putBlob(content: Uint8Array): Promise<BlobRef> {
+    return this.withOperation(async () => {
     const size = content.byteLength;
-    if (size > this.backups.sizeLimitBytes) {
-      throw new BlobTooLargeError(size, this.backups.sizeLimitBytes);
+    const limits = this.resourceLimits ?? captureLimits();
+    const maximum = Math.min(this.backups.sizeLimitBytes, limits.maxBlobBytes);
+    if (size > maximum) {
+      throw new BlobTooLargeError(size, maximum);
     }
     const id = hashContent(content);
     ensurePrivateDir(dirname(this.recordsPath));
     assertDirectoryIfExists(this.objectsDir);
     if (!this.blobIsValid(id)) {
+      if (this.objectBytes(limits) + size > limits.maxStoreBytes)
+        throw new CaptureBudgetError("blob store bytes including atomic staging", limits.maxStoreBytes);
       writeFileAtomic(this.blobPath(id), content, PRIVATE_FILE_MODE);
     }
     return { id, size };
+    }, true);
   }
 
   /**
@@ -300,7 +310,7 @@ export class FileStorage implements Storage {
   async getBlob(id: BlobId): Promise<Uint8Array | undefined> {
     if (!BLOB_ID_PATTERN.test(id)) return undefined;
     this.assertBlobDirectories();
-    const bytes = readFileIfExists(this.blobPath(id));
+    const bytes = readFileIfExists(this.blobPath(id), (this.resourceLimits ?? captureLimits()).maxBlobBytes);
     if (bytes === undefined) return undefined;
     if (hashContent(bytes) !== id) throw new BlobCorruptionError(id);
     return bytes;
@@ -402,12 +412,34 @@ export class FileStorage implements Storage {
 
   /** Whether a stored blob for `id` exists and its bytes still hash to that address. */
   private blobIsValid(id: BlobId): boolean {
-    const existing = readFileIfExists(this.blobPath(id));
+    const existing = readFileIfExists(this.blobPath(id), (this.resourceLimits ?? captureLimits()).maxBlobBytes);
     return existing !== undefined && hashContent(existing) === id;
   }
 
   private blobPath(id: BlobId): string {
     return join(this.objectsDir, id);
+  }
+
+  /** Count actual retained/staging bytes without allocating a directory-wide entry list. */
+  private objectBytes(limits: CaptureLimits): number {
+    let directory;
+    try { directory = opendirSync(this.objectsDir, { bufferSize: 32 }); }
+    catch (error) { if (isErrno(error, "ENOENT")) return 0; throw error; }
+    const budget = new CaptureBudget(limits);
+    budget.beginPhase();
+    let size = 0;
+    try {
+      for (;;) {
+        budget.check();
+        const entry = directory.readSync();
+        if (!entry) return size;
+        const path = join(this.objectsDir, entry.name);
+        const node = lstatSync(path);
+        if (!node.isFile()) throw new Error(`unsupported blob-store entry: ${path}`);
+        size += node.size;
+        if (size > limits.maxStoreBytes) throw new CaptureBudgetError("retained blob store bytes", limits.maxStoreBytes);
+      }
+    } finally { directory.closeSync(); }
   }
 
   /** Whether a file was modified inside the GC grace window; always false when no grace is set. */

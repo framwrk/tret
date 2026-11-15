@@ -1,5 +1,6 @@
 import type { AbsolutePath, CaptureCompleteness, OwnedKind, Privilege } from "../../types";
 import type { BackupPolicy } from "./normalize";
+import type { CaptureBudget } from "./budget";
 import type { Journal } from "./events";
 
 /** Inputs for one bounded capture window. */
@@ -15,6 +16,8 @@ export type CaptureStartOptions = {
    * the caller opts in; when on, a backend captures pre-existing bytes within the size limit.
    */
   backups?: BackupPolicy;
+  /** One invocation's aggregate limits, shared with all fallback attempts. */
+  budget?: CaptureBudget;
 };
 
 /** An active observation window; `stop` closes it and returns the collected journal. */
@@ -22,12 +25,16 @@ export type CaptureSession = {
   readonly backend: string;
   readonly beforeImages?: ReadonlyMap<string, Uint8Array>;
   readonly baseline?: readonly CaptureBaselineEntry[];
+  /** Revalidates attach readiness after durable persistence and before external work. */
+  ready?(): Promise<void>;
   stop(): Promise<Journal>;
 };
 
 export type CaptureBaselineEntry = {
   path: string;
   kind: OwnedKind;
+  presence?: "present" | "absent" | "unknown";
+  childrenComplete?: boolean;
   hash?: string;
   mode?: number;
   linkTarget?: string;

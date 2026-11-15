@@ -1,7 +1,8 @@
 import type { TracerRecord, TracerResult } from "./raw";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, open, rm } from "node:fs/promises";
+import { readFileIfExists, writeFileExclusive } from "../../atomic";
 import type { AbsolutePath } from "../../../types";
-import { createInterface } from "node:readline";
+import { CaptureBudget } from "../budget";
 import { join } from "node:path";
 import { parseStraceOutput } from "./strace";
 import { spawn } from "node:child_process";
@@ -21,6 +22,8 @@ export interface LinuxTracer {
   losses(): string[];
   /** Whether the tracer is still attached as the window closes and how many descendants it sees. */
   status(): Promise<TracerStatus>;
+  /** Kernel confirmation for mechanisms that can establish attachment, rather than child liveness. */
+  isAttached?(): Promise<boolean>;
   /** Detaches and waits for the tracer to exit; safe to call more than once. */
   stop(): Promise<void>;
 }
@@ -34,6 +37,7 @@ export type TracerStatus = {
 
 /** Options every tracer needs to attach to one bounded install window. */
 export type TracerAttachOptions = {
+  budget?: CaptureBudget;
   /** Process id of the installer; its descendants are the attribution target. */
   pid: number;
   /** Absolute roots to observe; events outside them are dropped. */
@@ -133,15 +137,18 @@ export class StraceTracer implements LinuxTracer {
   private readonly lossReasons: string[] = [];
   private stopped = false;
   private cached: TracerResult | undefined;
+  private readonly budget: CaptureBudget;
 
   constructor(attach: TracerAttachOptions, options: StraceTracerOptions = {}) {
     this.attach = attach;
     this.options = options;
+    this.budget = attach.budget ?? new CaptureBudget();
   }
 
   async attachProcess(): Promise<void> {
     this.outputDir = await mkdtemp(join(tmpdir(), "tret-strace-"));
     this.outputFile = join(this.outputDir, "trace");
+    writeFileExclusive(this.outputFile, new Uint8Array(), 0o600);
     const args = [
       "-f",
       "-ttt",
@@ -156,16 +163,24 @@ export class StraceTracer implements LinuxTracer {
       "-p",
       String(this.attach.pid),
     ];
-    const child = spawn(this.options.stracePath ?? "strace", args, {
+    // Only the tracer inherits this soft limit: the installer is a child of Tret, not strace.
+    // Shell file-size units vary (512/1024 bytes); rounding down with 1024 is conservative.
+    const limit = Math.floor(this.budget.limits.maxAuditBytes / 1024);
+    const child = spawn("/bin/sh", ["-c", 'requested=$1; shift; inherited=$(ulimit -S -f) || exit 125; case "$inherited" in unlimited) ;; *[!0-9]*|"") exit 125;; *) if [ "$inherited" -lt "$requested" ]; then requested=$inherited; fi;; esac; ulimit -S -f "$requested" || exit 125; exec "$@"', "tret-strace-budget", String(limit), this.options.stracePath ?? "strace", ...args], {
       stdio: ["ignore", "ignore", "pipe"],
       env: this.options.env === undefined ? process.env : { ...process.env, ...this.options.env },
     });
     this.child = child;
     child.stderr?.on("data", (chunk: Buffer) => {
-      this.stderr += chunk.toString();
+      const remaining = Math.min(64 * 1024, this.budget.limits.maxAuditBytes) - Buffer.byteLength(this.stderr);
+      this.stderr += chunk.subarray(0, Math.max(0, remaining)).toString();
+      if (chunk.byteLength > remaining && this.lossReasons.length < 32) this.lossReasons.push("strace audit diagnostics exceeded their byte limit");
     });
     this.exit = new Promise<void>((resolve) => {
-      child.once("close", () => resolve());
+      child.once("close", (code, signal) => {
+        if (signal || (code !== null && code !== 0)) this.lossReasons.push(`strace audit writer exited: ${signal ?? code}`);
+        resolve();
+      });
       child.once("error", (error) => {
         this.lossReasons.push(`strace could not start: ${error.message}`);
         resolve();
@@ -183,16 +198,17 @@ export class StraceTracer implements LinuxTracer {
     if (this.outputFile === undefined) return { records: [], unsupported: [], diagnostics: ["strace never attached"] };
     let text: string;
     try {
-      text = await readFile(this.outputFile, "utf8");
+      const bytes = readFileIfExists(this.outputFile, this.budget.limits.maxAuditBytes);
+      if (!bytes) throw new Error("audit file is unavailable or exceeds its limit");
+      text = Buffer.from(bytes).toString("utf8");
     } catch {
       return { records: [], unsupported: [], diagnostics: ["strace produced no output"] };
     }
-    const parsed = parseStraceOutput(text, { cwd: this.options.cwd, roots: this.attach.roots });
+    const parsed = parseStraceOutput(text, { cwd: this.options.cwd, roots: this.attach.roots, budget: this.budget });
     for (const line of this.stderr.split("\n")) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
-      if (looksLikeTraceLoss(trimmed)) this.lossReasons.push(trimmed);
-      else if (trimmed.startsWith("strace:")) this.lossReasons.push(trimmed);
+      if (this.lossReasons.length < 32 && (looksLikeTraceLoss(trimmed) || trimmed.startsWith("strace:"))) this.lossReasons.push(trimmed.slice(0, 1024));
     }
     return parsed;
   }
@@ -203,6 +219,19 @@ export class StraceTracer implements LinuxTracer {
 
   async status(): Promise<TracerStatus> {
     return { active: this.isAlive(), tracedDescendants: 0 };
+  }
+
+  async isAttached(): Promise<boolean> {
+    if (!this.isAlive() || this.child?.pid === undefined) return false;
+    // procfs status reports size zero despite returning text; read a bounded prefix directly.
+    let file;
+    try {
+      file = await open(`/proc/${this.attach.pid}/status`, "r");
+      const bytes = Buffer.alloc(4096);
+      const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+      return Number(/^TracerPid:\s*(\d+)/m.exec(bytes.subarray(0, bytesRead).toString())?.[1]) === this.child.pid;
+    } catch { return false; }
+    finally { await file?.close(); }
   }
 
   async stop(): Promise<void> {
@@ -216,10 +245,8 @@ export class StraceTracer implements LinuxTracer {
     }
     await this.exit;
     // Parse before removing the output directory so `records()` stays usable after `stop()`.
-    if (this.cached === undefined) this.cached = await this.collect();
-    if (this.outputDir !== undefined) {
-      await rm(this.outputDir, { recursive: true, force: true });
-    }
+    try { if (this.cached === undefined) this.cached = await this.collect(); }
+    finally { if (this.outputDir !== undefined) await rm(this.outputDir, { recursive: true, force: true }); }
   }
 
   private isAlive(): boolean {
@@ -272,10 +299,12 @@ export class FanotifyTracer implements LinuxTracer {
   private readonly lossReasons: string[] = [];
   private stopped = false;
   private reading: Promise<void> | undefined;
+  private readonly budget: CaptureBudget;
 
   constructor(attach: TracerAttachOptions, options: FanotifyTracerOptions = {}) {
     this.attach = attach;
     this.options = options;
+    this.budget = attach.budget ?? new CaptureBudget();
   }
 
   async attachProcess(): Promise<void> {
@@ -286,10 +315,13 @@ export class FanotifyTracer implements LinuxTracer {
     });
     this.child = child;
     child.stderr?.on("data", (chunk: Buffer) => {
-      for (const line of chunk.toString().split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.length > 0) this.lossReasons.push(trimmed);
-      }
+      try {
+        this.budget.consume("auditBytes", chunk.byteLength);
+        for (const line of chunk.toString().split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed.length > 0 && this.lossReasons.length < 32) this.lossReasons.push(trimmed.slice(0, 1024));
+        }
+      } catch (error) { this.budget.note(String(error)); child.kill("SIGTERM"); }
     });
     this.reading = this.readStdout(child);
     this.exit = new Promise<void>((resolve) => {
@@ -303,23 +335,44 @@ export class FanotifyTracer implements LinuxTracer {
 
   private async readStdout(child: ReturnType<typeof spawn>): Promise<void> {
     if (!child.stdout) return;
-    const lines = createInterface({ input: child.stdout });
-    for await (const line of lines) {
+    let pending = Buffer.alloc(0);
+    try {
+      for await (const chunk of child.stdout) {
+        const bytes = Buffer.from(chunk);
+        this.budget.consume("auditBytes", bytes.byteLength);
+        pending = Buffer.concat([pending, bytes]);
+        for (;;) {
+          const end = pending.indexOf(10);
+          if (end === -1) break;
+          this.readLine(pending.subarray(0, end).toString());
+          pending = pending.subarray(end + 1);
+        }
+      }
+      if (pending.byteLength) this.readLine(pending.toString());
+    } catch (error) {
+      this.budget.note(String(error));
+      if (this.lossReasons.length < 32) this.lossReasons.push(`fanotify audit stopped: ${String(error)}`);
+      child.kill("SIGTERM");
+    }
+  }
+
+  private readLine(line: string): void {
+      this.budget.consume("auditLines", 1);
+      this.budget.consume("metadataBytes", Buffer.byteLength(line) + 256);
       const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
+      if (trimmed.length === 0) return;
       if (trimmed.startsWith("@")) {
         // Helper control message, e.g. `@loss <reason>`.
-        this.lossReasons.push(trimmed.slice(1).trim());
-        continue;
+        if (this.lossReasons.length < 32) this.lossReasons.push(trimmed.slice(1, 1025).trim());
+        return;
       }
       try {
         const record = JSON.parse(trimmed) as TracerRecord;
         if (record.op === "unsupported") this.unsupported.add(record.syscall);
         this.recordsOut.push(record);
       } catch {
-        this.diagnostics.push(`fanotify helper emitted an unreadable line: ${trimmed.slice(0, 120)}`);
+        if (this.diagnostics.length < 32) this.diagnostics.push(`fanotify helper emitted an unreadable line: ${trimmed.slice(0, 120)}`);
       }
-    }
   }
 
   async records(): Promise<TracerResult> {

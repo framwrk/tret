@@ -17,6 +17,13 @@ afterEach(() => {
 });
 
 describe("pickExecutable", () => {
+  test("selects only inventory paths instead of discovering uncaptured descendants", () => {
+    const dir = testDir();
+    const binary = join(dir, "tool");
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    expect(pickExecutable([dir])).toBeUndefined();
+    expect(pickExecutable([dir, binary])).toBe(binary);
+  });
   test("ignores symlinks to non-executable files, directories, and missing targets", () => {
     const dir = testDir();
     const config = join(dir, "config");

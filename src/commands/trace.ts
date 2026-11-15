@@ -8,7 +8,7 @@
 // records this window's coverage next to it.
 
 import type { AbsolutePath, CaptureSegment, DeletedEntry, MutatedEntry, OwnedEntry, RecordV3 } from "../types";
-import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
 import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
 import { claimedByOthers, sharedClaim } from "../lib/uninstall-planner";
 import { confirm, log } from "../lib/utilities";
@@ -16,7 +16,9 @@ import { currentPlatform, processPrivilege } from "../lib/platform";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
 import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
+import { BeforeExecutionError } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
+import { CaptureBudgetError } from "../lib/capture/budget";
 import { CaptureConsentError } from "../lib/capture/preflight";
 import { DEFAULT_BACKUP_POLICY } from "../lib/store";
 import { FileStorage } from "../lib/store";
@@ -211,11 +213,13 @@ export async function trace(
     roots: capturePlan.roots,
     fallbackRoots: heuristicFallbackRoots(roots),
     beforeFallback: capturePlan.beforeFallback,
+    budget: capturePlan.budget,
     kind: "trace",
     beforeRun: async (session) => {
       if (!operation || !operationLog) return;
-      operation = operationLog.checkpoint(operation, { execution: { recordId: record.id, roots: capturePlan.roots, executable: record.executable }, pins: [...(session.beforeImages?.keys() ?? [])], ...(session.baseline ? { baseline: session.baseline } : {}) });
+      operation = operationLog.checkpoint(operation, { execution: { recordId: record.id, roots: capturePlan.roots, executable: record.executable, resources: capturePlan.budget.report() }, pins: [...(session.beforeImages?.keys() ?? [])], ...(session.baseline ? { baseline: session.baseline } : {}) });
       for (const [id, bytes] of session.beforeImages ?? []) {
+        capturePlan.budget.check();
         const stored = await storage.putBlob(bytes);
         if (stored.id !== id) throw new Error("capture before-image does not match its content address");
       }
@@ -226,8 +230,9 @@ export async function trace(
     onPrimaryFailure: (error) =>
       log(`capture unavailable (${message(error)}); tracing the tool with a heuristic window`),
   }).catch((error: unknown) => {
-    if (error instanceof CaptureConsentError && operation && operationLog)
-      operation = operationLog.checkpoint(operation, { stage: "partial", reason: `tool was not run: ${error.message}` });
+    if ((error instanceof CaptureConsentError || error instanceof CaptureBudgetError || error instanceof BeforeExecutionError) && operation && operationLog)
+      operation = operationLog.checkpoint(operation, { stage: "partial", execution: { recordId: record.id, roots: capturePlan.roots, executable: record.executable, resources: capturePlan.budget.report() }, reason: `tool was not run: ${error.message}` });
+    if (error instanceof BeforeExecutionError) fail("trace-before-execution", error.message, EXIT_BLOCKED);
     throw error;
   });
   if (attempt.session === undefined) {
@@ -242,7 +247,7 @@ export async function trace(
   if (operation && operationLog) {
     operation = operationLog.checkpoint(operation, { stage: "captured", capture: {
       backend: window.journal.backend, completeness: window.journal.completeness,
-      events: window.journal.events, ...(window.journal.partialReason ? { partialReason: window.journal.partialReason } : {}),
+      events: window.journal.events, ...(window.journal.resources ? { resources: window.journal.resources } : {}), ...(window.journal.partialReason ? { partialReason: window.journal.partialReason } : {}),
     } });
   }
 
@@ -261,7 +266,10 @@ export async function trace(
   };
   if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: updated });
   await storage.saveRecord(updated, "trace");
-  if (operation && operationLog) operationLog.checkpoint(operation, { stage: window.error !== undefined || window.value !== 0 ? "partial" : "completed" });
+  if (operation && operationLog) operationLog.checkpoint(operation, { stage: window.error !== undefined || window.value !== 0 || capturePlan.budget.fatalError ? "partial" : "completed" });
+
+  if (capturePlan.budget.fatalError)
+    fail("trace-capture-partial", `the tool ran, but capture exceeded its budget; retained the unknown segment and recovery receipt: ${capturePlan.budget.fatalError.message}`, EXIT_ERROR);
 
   const exitCode = window.value ?? 1;
   if (isJsonMode()) {

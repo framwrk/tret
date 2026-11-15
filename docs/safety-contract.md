@@ -65,9 +65,10 @@ a new file from that open. A missing entry in a pruned baseline is unknown, not
 proof of absence. A write without prior-state evidence stays a mutation; a later
 unlink retains an uncertain deletion rather than establishing a temporary file.
 
-Consequently, an installer that only uses plain redirections to create commands
-under real strace may retain a partial record with no owned executable. An
-installed content hash alone cannot upgrade that observation to creation proof.
+An installer using plain redirections under real strace can retain its command
+as an observed mutation. That executable can supply a display name without
+granting removal authority. An installed content hash alone cannot upgrade the
+observation to creation proof.
 
 A rename retains the destination's captured before-state. Without destination
 evidence, the destination stays a mutation, never a newly owned file. A backup
@@ -144,8 +145,9 @@ Backups are opt-in and have a per-file limit. Both heuristic backends and Linux
 capture exclude the sensitive directory/file names declared in
 `src/constants.ts`, including `.ssh`, `.aws`, `.netrc`, and Keychains. Explicit
 observation roots do not override those content exclusions. Name-based exclusions
-cannot identify every secret. Size limits apply to returned bytes as well as the
-pre-read stat; aggregate and streaming resource limits remain separate work.
+cannot identify every secret. Reads, streaming fingerprints, aggregate capture
+work and blob storage now have [numeric resource limits](capture-budgets.md).
+Over-budget, changing and unreadable content stays unavailable, with visible loss.
 
 ## Explicit authority and receipts
 
@@ -164,8 +166,8 @@ and [recovery](recovery.md) for commands, supported scope and current limits.
 
 ## Remaining implementation work
 
-The safety plan still requires explicit weaker-capture consent, live capture checkpoints,
-aggregate recovery/capture budgets, verified delegation, richer precise restoration,
+The safety plan still requires live capture checkpoints, aggregate operation/original
+retention, verified delegation, richer precise restoration,
 and native acceptance/release gates. Until these are implemented and verified,
 heuristic fingerprints and a successful uninstall are not proof that every effect
 belonged to the installer or that an installation was fully reversed.

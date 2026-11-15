@@ -62,7 +62,7 @@ describe("linux capture baseline", () => {
     await mkdir(join(root, ".config"), { recursive: true });
     await writeFile(join(root, ".config", "tool.conf"), "tool\n");
 
-    const { baseline } = await captureBaseline([root]);
+    const { baseline } = await captureBaseline([root], { home: root });
 
     // `Documents` is on the shared `EXCLUDED_PATHS` list, so it is neither recorded nor descended.
     expect(baseline.existed(join(root, "Documents"))).toBe(false);
@@ -87,6 +87,7 @@ describe("linux capture baseline: backup exclusions", () => {
 
     const reads: string[] = [];
     const { baseline, beforeImages } = await captureBaseline([home], {
+      home,
       backups: { enabled: true, sizeLimitBytes: 1024 },
       read: async (path) => {
         reads.push(path);

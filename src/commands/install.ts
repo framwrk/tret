@@ -1,5 +1,6 @@
-import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, CaptureSettings, Diff, RecordV3 } from "../types";
+import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, CaptureSettings, Diff, RecordV3, Snapshot } from "../types";
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
+import type { CaptureBudget, CaptureResourceReport } from "../lib/capture/budget";
 import { DEFAULT_BACKUP_POLICY, FileStorage, collectUnreferencedBlobs } from "../lib/store";
 import { EXIT_BLOCKED, EXIT_ERROR, EXIT_USAGE } from "../constants";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
@@ -12,7 +13,9 @@ import { describeManagedPackage, detectManagedPackage, withoutManagedGlobalPaths
 import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
 import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
 import type { ApplianceOutcome } from "../lib/removal";
+import { BeforeExecutionError } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
+import { CaptureBudgetError } from "../lib/capture/budget";
 import { CaptureConsentError } from "../lib/capture/preflight";
 import type { CaptureSession } from "../lib/capture/backend";
 import type { DurableOperation } from "../lib/operation-log";
@@ -309,13 +312,14 @@ export async function install(
   // falls back to the legacy snapshot/diff; its added paths are fingerprinted from disk at record
   // time, while mutations and deletions stay detect-only without before-images.
   runLogPhase("run-installer");
-  const beforeRun = async (session?: CaptureSession) => {
+  const beforeRun = async (session?: Pick<CaptureSession, "baseline" | "beforeImages">) => {
     operation = storage.operations.checkpoint(operation, {
-      execution: { ...execution, roots: capturePlan.roots },
+      execution: { ...execution, roots: capturePlan.roots, resources: capturePlan.budget.report() },
       pins: [...(session?.beforeImages?.keys() ?? [])],
       ...(session?.baseline ? { baseline: session.baseline } : {}),
     });
     for (const [id, bytes] of session?.beforeImages ?? []) {
+      capturePlan.budget.check();
       const stored = await storage.putBlob(bytes);
       if (stored.id !== id) throw new Error("capture before-image does not match its content address");
     }
@@ -325,29 +329,51 @@ export async function install(
   try {
     window = await observeInstall(script, scriptArgs, options, backups, roots, capturePlan, beforeRun);
   } catch (error) {
-    if (error instanceof CaptureConsentError) {
-      operation = storage.operations.checkpoint(operation, { stage: "partial", reason: `installer was not run: ${error.message}` });
+    if (error instanceof CaptureConsentError || error instanceof CaptureBudgetError || error instanceof BeforeExecutionError) {
+      operation = storage.operations.checkpoint(operation, { stage: "partial", execution: { ...execution, roots: capturePlan.roots, resources: capturePlan.budget.report() }, reason: `installer was not run: ${error.message}` });
       if (existing && force)
-        fail("install-capture-partial", "previous approved cleanup completed, but weaker capture was declined and the replacement installer was not run; inspect tret recover for retained evidence", EXIT_ERROR);
+        fail("install-capture-partial", `previous approved cleanup completed, but replacement execution was refused: ${error.message}; inspect tret recover for retained evidence`, EXIT_ERROR);
+      if (error instanceof BeforeExecutionError) fail("install-before-execution", error.message, EXIT_BLOCKED);
     }
     throw error;
   }
   const captured = window.journal ? {
     backend: window.journal.backend, completeness: window.journal.completeness,
-    events: window.journal.events, ...(window.journal.partialReason ? { partialReason: window.journal.partialReason } : {}),
-  } : { backend: "disabled", completeness: "partial" as const, events: [] };
-  operation = storage.operations.checkpoint(operation, { stage: "captured", capture: captured, execution: { ...execution, roots: capturePlan.roots, exitCode: window.exitCode } });
+    events: window.journal.events, ...(window.journal.resources ? { resources: window.journal.resources } : {}), ...(window.journal.partialReason ? { partialReason: window.journal.partialReason } : {}),
+  } : { backend: "disabled", completeness: "partial" as const, events: [], resources: window.fallbackResources, ...(window.fallbackReason ? { partialReason: window.fallbackReason } : {}) };
+  const available: RecordV3 = window.fallback ? {
+    ...provisional,
+    owned: window.fallback.added.map((path) => ({ path, kind: "unknown" })),
+    mutated: window.fallback.edited.map((path) => ({ path })),
+    deleted: window.fallback.deleted.map((path) => ({ path })),
+    capture: { ...provisional.capture, backend: "disabled" },
+  } : provisional;
+  operation = storage.operations.checkpoint(operation, { stage: "captured", checkpoint: available, capture: captured, execution: { ...execution, roots: capturePlan.roots, resources: capturePlan.budget.report(), exitCode: window.exitCode } });
   log(
     window.coverage
       ? `observed the install with ${formatCoverage(window.coverage)}`
       : "capture disabled for this install; no observation window was recorded",
   );
 
-  const effects = buildEffects(window, caseSensitive, backups);
+  if (window.fallbackReason) log(`\t${window.fallbackReason}`);
+  let effects: NormalizedEffects;
+  try { effects = buildEffects(window, caseSensitive, backups, capturePlan.budget); }
+  catch (error) {
+    if (error instanceof CaptureBudgetError) {
+      storage.operations.checkpoint(operation, { stage: "partial", checkpoint: available, execution: { ...execution, roots: capturePlan.roots, resources: capturePlan.budget.report(), exitCode: window.exitCode }, reason: `installer ran; effect inventory is incomplete: ${error.message}` });
+      fail("install-capture-partial", `installer ran, but effect inventory exceeded its budget; retained evidence in tret recover ${operation.id}`, EXIT_ERROR);
+    }
+    throw error;
+  }
+  if (window.fallbackResources) {
+    window.fallbackResources = capturePlan.budget.report();
+    if (capturePlan.budget.losses.size) window.fallbackReason = [...capturePlan.budget.losses].join("; ");
+  }
+  operation = storage.operations.checkpoint(operation, { capture: { ...captured, resources: capturePlan.budget.report(), ...(window.fallbackReason ? { partialReason: window.fallbackReason } : {}) }, execution: { ...execution, roots: capturePlan.roots, resources: capturePlan.budget.report(), exitCode: window.exitCode } });
 
-  // The tool name comes from the executable the install actually put on disk, not the URL or a
-  // prompt; when the URL is already tracked, keep the name that install used rather than re-deriving.
-  const executable = pickExecutable(effects.owned.map((entry) => entry.path));
+  // An observed executable mutation can name the tool without adding removal authority.
+  // A tracked URL keeps its previous name; selection stays inside the bounded effect inventory.
+  const executable = pickExecutable([...effects.owned, ...effects.mutated].map((entry) => entry.path));
   const name = recordDisplayName(options.name, existing?.name, executable, url, scriptSha256);
   const missingExecutable = executable === undefined;
   const effectCount = effects.owned.length + effects.mutated.length + effects.deleted.length;
@@ -355,6 +381,12 @@ export async function install(
   // A no-executable install that changed observed paths still keeps a partial record, so its files
   // are never untracked leftovers; one that changed nothing has nothing to record and fails as before.
   if (missingExecutable && effectCount === 0) {
+    const coverageLoss = window.journal?.partialReason ?? window.fallbackReason;
+    if (coverageLoss) {
+      const reason = `installer ran, but incomplete capture could not establish an executable: ${coverageLoss}`;
+      storage.operations.checkpoint(operation, { stage: "partial", reason });
+      fail("install-capture-partial", `${reason}; inspect retained evidence in tret recover ${operation.id}`, EXIT_ERROR);
+    }
     storage.operations.checkpoint(operation, { stage: "partial", reason: "installer added no executable; captured effects or an unknown interval remain" });
     fail("install-executable", `install script added no executable command: ${url}`);
   }
@@ -458,7 +490,7 @@ export async function install(
       owned: effects.owned.length,
       mutated: effects.mutated.length,
       deleted: effects.deleted.length,
-      capture: { backend: record.capture.backend, completeness: record.capture.completeness },
+      capture: { backend: record.capture.backend, completeness: record.capture.completeness, roots: capturePlan.roots, resources: capturePlan.budget.report(), ...((window.coverage?.partialReason ?? window.fallbackReason) ? { partialReason: window.coverage?.partialReason ?? window.fallbackReason } : {}) },
     });
   }
 }
@@ -481,6 +513,10 @@ type InstallWindow = {
   journal?: Journal;
   /** Legacy snapshot/diff, only present when no capture window produced a journal. */
   fallback?: Diff;
+  fallbackSnapshot?: Snapshot;
+  fallbackResources?: CaptureResourceReport;
+  fallbackReason?: string;
+  fallbackRoots?: string[];
 };
 
 /**
@@ -497,13 +533,10 @@ async function observeInstall(
   backups: BackupPolicy,
   roots: AbsolutePath[],
   capturePlan: Awaited<ReturnType<typeof prepareCapture>>,
-  beforeRun: (session?: CaptureSession) => Promise<void>,
+  beforeRun: (session?: Pick<CaptureSession, "baseline" | "beforeImages">) => Promise<void>,
 ): Promise<InstallWindow> {
   if (!(options.capture ?? true)) {
-    const before = snapshot(capturePlan.roots);
-    await beforeRun();
-    const exitCode = await runInstaller(script, scriptArgs);
-    return { exitCode, fallback: diff(before, snapshot(capturePlan.roots)) };
+    return legacyWindow();
   }
 
   const attempt = await runCaptureFallback({
@@ -516,6 +549,7 @@ async function observeInstall(
     fallbackRoots: heuristicFallbackRoots(roots),
     beforeFallback: capturePlan.beforeFallback,
     backups,
+    budget: capturePlan.budget,
     beforeRun,
     run: () => runInstaller(script, scriptArgs),
     onPrimaryFailure: (error) =>
@@ -528,10 +562,7 @@ async function observeInstall(
     // Both backends failed before the installer started, so it has not run yet. Keep the legacy
     // snapshot/diff path for the install instead of running it unwatched with no observation at all.
     await capturePlan.beforeLegacy();
-    const before = snapshot(capturePlan.roots);
-    await beforeRun();
-    const exitCode = await runInstaller(script, scriptArgs);
-    return { exitCode, fallback: diff(before, snapshot(capturePlan.roots)) };
+    return legacyWindow();
   }
 
   if (attempt.session.error !== undefined) throw attempt.session.error;
@@ -540,6 +571,28 @@ async function observeInstall(
     coverage: attempt.session.coverage,
     journal: attempt.session.journal,
   };
+
+  async function legacyWindow(): Promise<InstallWindow> {
+    const budget = capturePlan.budget;
+    budget.beginPhase();
+    const before = snapshot(capturePlan.roots, budget);
+    await beforeRun({ baseline: [...before].map(([path, stamp]) => ({ path, kind: stamp.kind ?? (stamp.isDir ? "directory" : "file"), presence: "present", ...(stamp.mode !== undefined ? { mode: stamp.mode } : {}) })) });
+    budget.check();
+    budget.pause();
+    const exitCode = await runInstaller(script, scriptArgs);
+    try {
+      budget.beginPhase();
+      const after = snapshot(capturePlan.roots, budget);
+      const changes = diff(before, after);
+      for (const reason of [...(before.errors ?? []), ...(after.errors ?? [])]) budget.note(`metadata observation unknown: ${reason}`);
+      budget.pause();
+      return { exitCode, fallback: changes, fallbackSnapshot: after, fallbackResources: budget.report(), fallbackRoots: [...capturePlan.roots], ...(budget.losses.size ? { fallbackReason: [...budget.losses].join("; ") } : {}) };
+    } catch (error) {
+      budget.note(`after-execution observation failed: ${message(error)}`);
+      budget.pause();
+      return { exitCode, fallback: { added: [], edited: [], deleted: [] }, fallbackResources: budget.report(), fallbackRoots: [...capturePlan.roots], fallbackReason: [...budget.losses].join("; ") };
+    }
+  }
 }
 
 /**
@@ -589,7 +642,7 @@ function finalUrlSegment(url: string): string | undefined {
  * planner's rule for records that genuinely lack a fingerprint. Mutations and deletions stay
  * detect-only because the legacy diff captured no before-image.
  */
-function buildEffects(window: InstallWindow, caseSensitive: boolean, backups: BackupPolicy): NormalizedEffects {
+function buildEffects(window: InstallWindow, caseSensitive: boolean, backups: BackupPolicy, budget?: CaptureBudget): NormalizedEffects {
   if (window.journal) {
     return normalizeJournal({
       journal: window.journal,
@@ -602,9 +655,9 @@ function buildEffects(window: InstallWindow, caseSensitive: boolean, backups: Ba
 
   const changes = window.fallback ?? { added: [], edited: [], deleted: [] };
   return {
-    owned: adoptedEntries(changes.added),
-    mutated: changes.edited.map((path) => ({ path })),
-    deleted: changes.deleted.map((path) => ({ path })),
+    owned: adoptedEntries(changes.added, budget, window.fallbackSnapshot ? (path) => !window.fallbackSnapshot!.has(path) : undefined),
+    mutated: changes.edited.map((path) => { budget?.event({ path, kind: "mutation" }); return { path }; }),
+    deleted: changes.deleted.map((path) => { budget?.event({ path, kind: "deletion" }); return { path }; }),
     diagnostics: [],
   };
 }
@@ -640,7 +693,11 @@ function buildCapture(window: InstallWindow, failed: boolean, clock: () => numbe
   const segment: CaptureSegment = window.coverage
     ? { ...window.coverage.segment }
     : { kind: "install", startedAt: at, endedAt: at, partialReason: "capture disabled for this install" };
+  if (window.fallbackResources) segment.resources = window.fallbackResources;
+  if (window.fallbackRoots) segment.roots = window.fallbackRoots;
+  if (window.fallbackReason) segment.partialReason = combineReasons(segment.partialReason, window.fallbackReason);
   let completeness: CaptureCompleteness = window.coverage?.completeness ?? "heuristic";
+  if (window.fallbackReason) completeness = "partial";
 
   if (failed) {
     completeness = "partial";

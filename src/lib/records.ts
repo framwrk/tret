@@ -1,4 +1,5 @@
 import type { MutatedEntry, OwnedEntry, RecordFileV3, RecordV3, ToolRecord } from "../types";
+import { validCaptureResources } from "./capture/budget";
 
 // Historical v2/v3 validation and pure v2 -> v3 normalization. Production writes version 4
 // through FileStorage; records-v4.ts adds evidence/revision semantics. Legacy mutation APIs fail
@@ -334,6 +335,9 @@ function captureIssues(value: unknown, issues: string[]): void {
     if (segment.partialReason !== undefined) {
       requireNonEmptyString(segment.partialReason, `${where}.partialReason`, issues);
     }
+    if (segment.resources !== undefined && !validCaptureResources(segment.resources)) issues.push(`${where}.resources is invalid`);
+    if (segment.roots !== undefined && (!Array.isArray(segment.roots) || !segment.roots.every((path) => typeof path === "string" && path.startsWith("/") && !path.includes("\0"))))
+      issues.push(`${where}.roots must contain absolute paths`);
   });
 }
 

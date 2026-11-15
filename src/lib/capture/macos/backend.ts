@@ -2,6 +2,8 @@ import type { AbsolutePath, CaptureCompleteness } from "../../../types";
 import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../backend";
 import type { Journal, JournalEvent, JournalEventInput } from "../events";
 import { diffScopedSnapshots, filesToHash, hashBytes, hashFile, readFileBytes, scanScopedRoots, scopedPathKey } from "./scoped";
+import { CaptureBudget } from "../budget";
+import type { ContentReadOptions } from "../content";
 import { MACOS_PLATFORM } from "../../platform";
 import type { ScopedRootBounds } from "./scoped";
 import type { ScopedSnapshot } from "./scoped";
@@ -25,9 +27,9 @@ export type MacosHeuristicOptions = {
   /** Scope roots used when `start` is called with none; mainly for tests. */
   roots?: AbsolutePath[];
   /** Content hash function; injected in tests for determinism. Defaults to sha256. */
-  hash?: (path: AbsolutePath) => Promise<string | undefined>;
+  hash?: (path: AbsolutePath, options?: ContentReadOptions) => Promise<string | undefined>;
   /** Reads a file's bytes for a before-image; injected in tests to simulate an unreadable file. */
-  read?: (path: AbsolutePath) => Promise<Uint8Array | undefined>;
+  read?: (path: AbsolutePath, options?: ContentReadOptions) => Promise<Uint8Array | undefined>;
   /**
    * Home directory whose top level is bounded when it appears in the observed roots; defaults to
    * `$HOME`. Mostly for tests, which scope a temp directory and pass it here.
@@ -50,8 +52,8 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
   /** Exposed so callers and tests can see which case behavior the fallback compares with (D10). */
   readonly caseSensitive: boolean;
   private readonly roots?: AbsolutePath[];
-  private readonly hash: (path: AbsolutePath) => Promise<string | undefined>;
-  private readonly read: (path: AbsolutePath) => Promise<Uint8Array | undefined>;
+  private readonly hash: NonNullable<MacosHeuristicOptions["hash"]>;
+  private readonly read: NonNullable<MacosHeuristicOptions["read"]>;
   private readonly home?: string;
 
   constructor(options: MacosHeuristicOptions = {}) {
@@ -64,25 +66,35 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
   }
 
   async start(options: CaptureStartOptions): Promise<CaptureSession> {
+    const budget = options.budget ?? new CaptureBudget();
+    budget.ensurePhase();
     const roots = options.roots.length > 0 ? options.roots : (this.roots ?? []);
     const caseSensitive = this.caseSensitive;
     const rootBounds = this.homeRootBounds(roots);
     const privateState = privateStateFilter(this.home);
     const skip = (path: string) => privateState(path) || isVolatileChurnPath(path);
     const before: ScopedSnapshot | undefined =
-      roots.length > 0 ? scanScopedRoots(roots, { caseSensitive, skip, rootBounds }) : undefined;
+      roots.length > 0 ? scanScopedRoots(roots, { caseSensitive, skip, rootBounds, budget }) : undefined;
     // When backups are enabled the start snapshot keeps each pre-existing file's bytes (within the
     // size limit) alongside its hash, so an overwrite or deletion later still has something to
     // restore. This is the one place content is read before the installer runs; off by default (D2).
-    const beforeImages = before === undefined ? new Map<string, Uint8Array>() : await this.captureBeforeImages(before, options);
+    const beforeImages = before === undefined ? new Map<string, Uint8Array>() : await this.captureBeforeImages(before, options, budget);
+    for (const reason of before?.errors ?? []) budget.note(`before-scan coverage unknown: ${reason}`);
+    budget.check();
+    budget.pause();
 
     return {
       backend: this.name,
       beforeImages,
-      baseline: [...(before?.entries.values() ?? [])].map(({ path, kind, hash, mode, linkTarget }) => ({
-        path, kind, ...(hash ? { hash } : {}), mode, ...(linkTarget ? { linkTarget } : {}),
-      })),
+      baseline: [
+        ...[...(before?.entries.values() ?? [])].map(({ path, kind, hash, mode, linkTarget, childrenComplete }) => ({
+          path, kind, presence: "present" as const, ...(hash ? { hash } : {}), mode, ...(linkTarget ? { linkTarget } : {}),
+          ...(childrenComplete !== undefined ? { childrenComplete } : {}),
+        })),
+        ...(before?.absentRoots ?? []).map((path) => ({ path, kind: "unknown" as const, presence: "absent" as const })),
+      ],
       stop: async (): Promise<Journal> => {
+        budget.beginPhase();
         if (before === undefined) {
           return {
             backend: this.name,
@@ -92,22 +104,24 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
           };
         }
 
-        const after = scanScopedRoots(roots, { caseSensitive, skip, rootBounds });
-        const hashErrors: AbsolutePath[] = [];
+        const after = scanScopedRoots(roots, { caseSensitive, skip, rootBounds, budget });
         for (const path of filesToHash(before, after)) {
-          const hash = await this.hash(path);
+          const hash = await this.hash(path, { budget });
           const node = after.entries.get(scopedPathKey(path, caseSensitive));
-          if (hash === undefined) hashErrors.push(path);
+          if (hash === undefined) budget.note(`installed content could not be hashed: ${path}`);
           else if (node) node.hash = hash;
         }
 
-        const events: JournalEventInput[] = diffScopedSnapshots(before, after);
-        const partialReason = this.partialReason([...new Set([...before.errors, ...after.errors])], hashErrors);
+        const events: JournalEventInput[] = diffScopedSnapshots(before, after, budget);
+        for (const reason of after.errors) budget.note(`after-scan coverage unknown: ${reason}`);
+        const partialReason = budget.losses.size ? [...budget.losses].join("; ") : undefined;
+        budget.pause();
         return {
           backend: this.name,
           completeness: "heuristic",
           ...(partialReason === undefined ? {} : { partialReason }),
           events: events.map((event, seq) => ({ ...event, seq, at: Date.now() }) as JournalEvent),
+          resources: budget.report(),
           ...(beforeImages.size === 0 ? {} : { beforeImages }),
         };
       },
@@ -119,15 +133,18 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
    * content by address. Over-limit or unreadable files are skipped: the mutation is still recorded,
    * it just is not restorable.
    */
-  private async captureBeforeImages(before: ScopedSnapshot, options: CaptureStartOptions): Promise<Map<string, Uint8Array>> {
+  private async captureBeforeImages(before: ScopedSnapshot, options: CaptureStartOptions, budget: CaptureBudget): Promise<Map<string, Uint8Array>> {
     const backups = options.backups;
     const images = new Map<string, Uint8Array>();
     if (backups === undefined || !backups.enabled) return images;
 
     for (const node of before.entries.values()) {
       if (node.kind !== "file" || node.size > backups.sizeLimitBytes || isSensitiveBackupPath(node.path)) continue;
-      const bytes = await this.read(node.path);
+      const used = budget.used.backupBytes;
+      const bytes = await this.read(node.path, { budget, maxBytes: Math.min(backups.sizeLimitBytes, budget.limits.maxBlobBytes) });
       if (bytes === undefined || bytes.byteLength > backups.sizeLimitBytes) continue;
+      if (used === budget.used.backupBytes && !budget.tryConsume("backupBytes", bytes.byteLength)) continue;
+      if (!budget.tryConsume("hashBytes", bytes.byteLength)) continue;
       node.hash = hashBytes(bytes);
       images.set(node.hash, bytes);
     }
@@ -146,10 +163,4 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
     return new Map([[homeRoot, macosHomeRootBounds(homeRoot)]]);
   }
 
-  private partialReason(scanErrors: string[], hashErrors: AbsolutePath[]): string | undefined {
-    const reasons: string[] = [];
-    if (scanErrors.length > 0) reasons.push(`some scope roots could not be scanned: ${scanErrors.join("; ")}`);
-    if (hashErrors.length > 0) reasons.push(`some files could not be hashed: ${hashErrors.join(", ")}`);
-    return reasons.length > 0 ? reasons.join("; ") : undefined;
-  }
 }

@@ -174,7 +174,7 @@ rm -rf ~/.tret
 
 - Capture covers bounded observation roots under `$HOME`; `--observe` and `--observe-exclude` adjust them.
 - Tool updates preserve capture enablement, backup policy and size limit, and observation additions/exclusions. Older records without saved settings use the install defaults.
-- Backups store only files at or below the per-file limit.
+- Backups store eligible files within per-file and aggregate limits. Capture uses bounded scans, streamed fingerprints and private audit limits; see [resource limits and overrides](docs/capture-budgets.md). Exhausted or unreadable state remains unknown.
 - Without a permitted before-image, mutations and deletions remain unresolved. Default cleanup refuses them; an explicitly approved subset retains them by name.
 - `complete` means the tracer observed the full process tree with no known blind spot; otherwise the window is `partial`.
 - Known Linux gaps: cross-root renames, `openat2` creates, mmap writes, xattr/ownership changes, and hard links.
