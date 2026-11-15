@@ -1,6 +1,6 @@
 import type { LinuxTracer, TracerStatus } from "./tracer";
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import type { AbsolutePath } from "../../../types";
 import { LinuxCaptureBackend } from "./backend";
 import { STRACE_TRACE_SET } from "./tracer";
@@ -110,6 +110,11 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
     const script = join(home, "install.sh");
     writeFileSync(join(home, "existing.txt"), "before\n");
     writeFileSync(join(home, "to-delete.txt"), "gone\n");
+    mkdirSync(join(home, "left"));
+    mkdirSync(join(home, "right", "inner"), { recursive: true });
+    symlinkSync(join(home, "right", "inner"), join(home, "left", "alias"));
+    writeFileSync(join(home, "right", "config"), "alias before\n");
+    writeFileSync(join(home, "left", "config"), "unrelated\n");
     writeFileSync(
       script,
       [
@@ -119,6 +124,7 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
         'printf "created\\n" > "$HOME/smoke/newdir/created.txt"',
         "set +o noclobber",
         'printf "after\\n" > "$HOME/existing.txt"',
+        'printf "alias after\\n" > "$HOME/left/alias/../config"',
         'ln -s target "$HOME/smoke/link"',
         'rm "$HOME/to-delete.txt"',
       ].join("\n"),
@@ -161,6 +167,11 @@ describe.skipIf(!ENABLED)("linux real-strace smoke", () => {
     const mutated = effects.mutated.find((entry) => entry.path === join(home, "existing.txt"))!;
     expect(mutated.beforeBlob).toBeDefined();
     expect(new TextDecoder().decode(journal.beforeImages!.get(mutated.beforeBlob!))).toBe("before\n");
+    const aliasMutation = effects.mutated.find((entry) => entry.path === join(home, "right", "config"))!;
+    expect(new TextDecoder().decode(journal.beforeImages!.get(aliasMutation.beforeBlob!))).toBe("alias before\n");
+    expect(aliasMutation.installedHash).toBe(new Bun.CryptoHasher("sha256").update("alias after\n").digest("hex"));
+    expect(effects.mutated.some((entry) => entry.path === join(home, "left", "config"))).toBe(false);
+    expect(readFileSync(join(home, "left", "config"), "utf8")).toBe("unrelated\n");
     const deleted = effects.deleted.find((entry) => entry.path === join(home, "to-delete.txt"))!;
     expect(deleted.beforeBlob).toBeDefined();
     expect(new TextDecoder().decode(journal.beforeImages!.get(deleted.beforeBlob!))).toBe("gone\n");

@@ -3,12 +3,13 @@ import { CaptureBudget, CaptureBudgetError } from "../budget";
 import { EXCLUDED_PATHS, isExcludedDirName, isSensitiveBackupPath } from "../../../constants";
 import { basename, dirname, join } from "node:path";
 import { hashBoundedContent, readBoundedContent } from "../content";
-import { lstat, opendir, readlink, realpath } from "node:fs/promises";
+import { lstat, opendir, readlink } from "node:fs/promises";
 import type { BackupPolicy } from "../normalize";
 import type { BlobId } from "../../storage";
 import type { CaptureBaselineEntry } from "../backend";
 import type { ContentReadOptions } from "../content";
 import { createHash } from "node:crypto";
+import { nativeRealpath } from "../../native-filesystem";
 import { normalizeAbsolutePath } from "./paths";
 import { privateStateFilter } from "../self-state";
 import { scanPresence } from "../scan-coverage";
@@ -33,7 +34,7 @@ export interface FsInspector {
   inspect(path: AbsolutePath, options?: { hash?: boolean }): Promise<NodeInfo>;
   /**
    * Resolves `path` as far as it exists on disk: `realpath` of the deepest existing ancestor,
-   * rejoined with the remaining (not yet existing) tail and lexically normalized. This is how the
+   * rejoined with a non-traversing missing tail. Unreadable/ambiguous parents throw. This is how the
    * capture pipeline checks that a traced path's parent does not leave the observe roots through a
    * symlinked component.
    */
@@ -78,20 +79,28 @@ export class RealFsInspector implements FsInspector {
 
   /**
    * Walks up from `path` until an ancestor resolves, then rejoins the untouched tail. The tail has
-   * no symlinked components (it does not exist yet), so re-joining it is kernel-accurate; the final
-   * join is lexically normalized because the tail may still contain `..` segments.
+   * no existing components; never collapse `..` across an unresolved component or a dangling link.
    */
   async resolve(path: AbsolutePath): Promise<AbsolutePath> {
     const tail: string[] = [];
     let candidate = path;
     for (;;) {
       try {
-        const resolved = await realpath(candidate);
+        const resolved = nativeRealpath(candidate);
         return finalizeResolved(tail.length === 0 ? resolved : join(resolved, ...tail), path);
-      } catch {
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const name = basename(candidate);
+        if (name === "." || name === "..") throw error;
+        // ENOENT from realpath can mean a dangling symlink, not an absent component.
+        const node = await lstat(candidate).catch((failure: NodeJS.ErrnoException) => {
+          if (failure.code !== "ENOENT") throw failure;
+          return undefined;
+        });
+        if (node) throw error;
         const parent = dirname(candidate);
-        if (parent === candidate) return finalizeResolved(path, path);
-        tail.unshift(basename(candidate));
+        if (parent === candidate) throw error;
+        tail.unshift(name);
         candidate = parent;
       }
     }

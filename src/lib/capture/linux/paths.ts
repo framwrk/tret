@@ -2,9 +2,9 @@ import type { AbsolutePath } from "../../../types";
 import { isExcludedDirName } from "../../../constants";
 
 /**
- * Path-boundary rules for the Linux capture pipeline. `normalizeAbsolutePath` collapses `.` and
- * `..` the way the kernel resolves a path lexically (`..` at the root stays at the root), and
- * `inRoots` decides whether a normalized path is inside an observe root.
+ * Path-boundary rules for the Linux capture pipeline. `normalizeAbsolutePath` collapses lexical
+ * `.` and `..` (`..` at the root stays at the root), and `inRoots` checks the lexical scope.
+ * These are prefilters, not substitutes for kernel path resolution.
  *
  * Neither helper can see a symlinked path component: the pure tracer parser keeps the traced
  * spelling, and `reconstruct.ts` resolves the parent against the real filesystem

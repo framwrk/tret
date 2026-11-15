@@ -20,7 +20,7 @@ import type { CaptureBudget } from "../budget";
  * falls back to existence/kind from the baseline manifest. This is deliberate; the Linux tracer
  * seam gives order and identity, and content hashes are only ever claimed when the bytes were read.
  *
- * Every path is lexically normalized and its parent resolved through symlinks before it is
+ * Every path's parent is resolved through symlinks before it is inspected or
  * recorded: a traced path that leaves the observe roots (through `..` after a symlinked component,
  * or a symlinked parent pointing outside) is dropped and the journal reports reduced coverage.
  */
@@ -87,10 +87,19 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
 
   // Roots are resolved once, so a symlinked ancestor (for example `/var` -> `/private/var` on a
   // test host) cannot make every in-root path read as an escape.
-  const resolvedRoots =
-    roots.length === 0 ? [] : await Promise.all(roots.map((root) => resolveCached(inspector, root, resolved)));
+  const resolvedRoots: { root: AbsolutePath; resolved: AbsolutePath }[] = [];
+  for (const root of roots) {
+    input.budget?.check();
+    try {
+      resolvedRoots.push({ root, resolved: await resolveCached(inspector, root, resolved) });
+    } catch {
+      diagnostics.push(`observe root could not be resolved: ${root}`);
+    }
+  }
+  resolvedRoots.sort((a, b) => b.resolved.length - a.resolved.length);
 
   for (const { record } of ordered) {
+    input.budget?.check();
     if (record.op === "unsupported") {
       diagnostics.push(`unsupported syscall ${record.syscall}: ${record.reason}`);
       continue;
@@ -102,7 +111,11 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
       diagnostics.push(`a traced path was dropped because it does not stay inside the observe roots: ${check.path}`);
       continue;
     }
-    const target = withNormalizedPaths(record, check.paths);
+    if (check.kind === "unresolved") {
+      diagnostics.push(`a traced parent could not be safely resolved: ${check.path}`);
+      continue;
+    }
+    const target = withResolvedPaths(record, check.paths);
 
     switch (target.op) {
       case "open": {
@@ -206,6 +219,7 @@ type PathCheck =
   | { kind: "ok"; paths: AbsolutePath[] }
   /** Lexically outside every observe root: normal out-of-scope filtering, never reported. */
   | { kind: "out-of-scope" }
+  | { kind: "unresolved"; path: AbsolutePath }
   /** Lexically inside a root but truly outside it once symlinks are resolved: a coverage loss. */
   | { kind: "escaped"; path: AbsolutePath };
 
@@ -220,7 +234,7 @@ async function checkPaths(
   paths: AbsolutePath[],
   inspector: FsInspector,
   roots: AbsolutePath[],
-  resolvedRoots: AbsolutePath[],
+  resolvedRoots: { root: AbsolutePath; resolved: AbsolutePath }[],
   cache: Map<AbsolutePath, AbsolutePath>,
 ): Promise<PathCheck> {
   const normalizedPaths: AbsolutePath[] = [];
@@ -232,28 +246,28 @@ async function checkPaths(
     // of a rename's paths is affected: recording the other side alone cannot be told from a fresh
     // create, and inventing an effect is worse than a missing one.
     if (hasExcludedAncestor(normalized)) return { kind: "out-of-scope" };
-    if (await escapesResolvedRoots(raw, normalized, inspector, roots, resolvedRoots, cache)) {
-      return { kind: "escaped", path: raw };
+    // The observe-root node itself is an object even when its final component is a symlink.
+    if (raw === normalized && roots.includes(raw)) {
+      normalizedPaths.push(raw);
+      continue;
     }
-    normalizedPaths.push(normalized);
+    let candidate: AbsolutePath | undefined;
+    try {
+      const parent = await resolveCached(inspector, dirname(raw), cache);
+      candidate = normalizeAbsolutePath(`${parent}/${basename(raw)}`);
+    } catch {
+      return { kind: "unresolved", path: raw };
+    }
+    if (candidate === undefined) return { kind: "unresolved", path: raw };
+    const alias = resolvedRoots.find(({ resolved }) => inRoots(candidate!, [resolved]));
+    if (!alias) return { kind: "escaped", path: raw };
+    if (hasExcludedAncestor(candidate)) return { kind: "out-of-scope" };
+    // Preserve the baseline's root spelling (/var versus /private/var), but never the raw
+    // symlink/.. suffix: inspecting that lexical suffix could fingerprint an unrelated object.
+    const suffix = alias.resolved === "/" ? candidate : candidate.slice(alias.resolved.length);
+    normalizedPaths.push(normalizeAbsolutePath(`${alias.root}/${suffix}`)!);
   }
   return { kind: "ok", paths: normalizedPaths };
-}
-
-/** Whether `raw` resolves outside every observe root once its parent's symlinks are followed. */
-async function escapesResolvedRoots(
-  raw: AbsolutePath,
-  normalized: AbsolutePath,
-  inspector: FsInspector,
-  roots: AbsolutePath[],
-  resolvedRoots: AbsolutePath[],
-  cache: Map<AbsolutePath, AbsolutePath>,
-): Promise<boolean> {
-  // A path that is itself a root is inside by definition; its parent sits above the roots.
-  if (roots.some((root) => root === normalized)) return false;
-  const resolvedParent = await resolveCached(inspector, dirname(raw), cache);
-  const candidate = normalizeAbsolutePath(`${resolvedParent}/${basename(raw)}`);
-  return candidate === undefined || !inRoots(candidate, resolvedRoots);
 }
 
 /** Resolves a path once and memoizes by path; many tracer records share a parent directory. */
@@ -269,8 +283,8 @@ async function resolveCached(
   return resolved;
 }
 
-/** A copy of the record with its paths replaced by their normalized forms. */
-function withNormalizedPaths(
+/** A copy of the record with its paths replaced by their resolved, root-relative forms. */
+function withResolvedPaths(
   record: Exclude<TracerRecord, { op: "unsupported" }>,
   paths: AbsolutePath[],
 ): Exclude<TracerRecord, { op: "unsupported" }> {
