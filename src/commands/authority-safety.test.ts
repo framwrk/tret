@@ -4,6 +4,7 @@ import { FileStorage } from "../lib/store";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "../../index.ts");
@@ -41,7 +42,7 @@ function hash(bytes: Uint8Array) {
   return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 async function run(home: string, args: string[]) {
-  const proc = Bun.spawn([process.execPath, cli, "--json", ...args], {
+  const proc = Bun.spawn([process.execPath, cli, "--json", ...withWeakerCaptureConsent(args)], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
@@ -138,7 +139,7 @@ test("replacement persists its application plan before the first per-action chec
   try {
     // Use tracked update so the original record's stable id is the replacement target.
     const updated = await storage.saveRecord({ ...prior, url: `http://127.0.0.1:${server.port}/install.sh` });
-    const child = Bun.spawn([process.execPath, "--preload", preload, cli, "--json", "update", "fixture", "--yes"], {
+    const child = Bun.spawn([process.execPath, "--preload", preload, cli, "--json", "update", "fixture", "--yes", "--allow-weaker-capture"], {
       env: { ...process.env, HOME: home },
       stdin: "ignore",
       stdout: "pipe",
@@ -197,7 +198,7 @@ test("JSON replacement reports an incomplete apply and preserves a concurrent ta
       };
     `,
     );
-    const child = Bun.spawn([process.execPath, "--preload", preload, cli, "--json", "update", "fixture", "--yes"], {
+    const child = Bun.spawn([process.execPath, "--preload", preload, cli, "--json", "update", "fixture", "--yes", "--allow-weaker-capture"], {
       env: { ...process.env, HOME: home },
       stdin: "ignore",
       stdout: "pipe",

@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
 // Criterion 3, end to end through the shipped commands, in a throwaway $HOME: `install --backup`
 // captures before-image bytes and the prior permission bits for files it overwrites or deletes, and
@@ -30,7 +31,7 @@ afterEach(() => {
 /** Runs the CLI from source as a child process so its `process.exit` never kills the test runner. */
 async function runCli(args: string[], home: string): Promise<number> {
   await approveFixtureCandidates(home, args);
-  const proc = Bun.spawn([BUN, TRET, ...args], {
+  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args)], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
     stdout: "pipe",

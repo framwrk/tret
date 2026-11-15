@@ -20,6 +20,7 @@ import { heuristicFallbackRoots } from "../lib/capture/fallback";
 import { install } from "./install";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
 // These are the commands driven end to end, in a throwaway $HOME, through a fixture installer served
 // over loopback. They are the coverage whose absence let phase 5/9 ship split-brained: install wrote
@@ -58,7 +59,7 @@ afterEach(() => {
 /** Runs the CLI from source as a child process so its `process.exit` never kills the test runner. */
 async function runCli(args: string[], home: string, extraEnv: Record<string, string> = {}): Promise<number> {
   await approveFixtureCandidates(home, args);
-  const proc = Bun.spawn([BUN, TRET, ...args], {
+  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args)], {
     env: { ...process.env, ...extraEnv, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
@@ -74,7 +75,7 @@ async function runCliResult(
   extraEnv: Record<string, string> = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   await approveFixtureCandidates(home, args);
-  const proc = Bun.spawn([BUN, TRET, ...args], {
+  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args)], {
     env: { ...process.env, ...extraEnv, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
@@ -1222,7 +1223,7 @@ describe("capture scope flags", () => {
     process.env.HOME = home;
     const server = serve(INSTALL_SCRIPT);
     try {
-      await install(server.url, false, [], { yes: true, backend: new ThrowingStartBackend(), roots: [home] });
+      await install(server.url, false, [], { yes: true, allowWeakerCapture: true, backend: new ThrowingStartBackend(), roots: [home] });
 
       const record = readStore(home).records.find((entry) => entry.name === "mytool");
       expect(record?.capture.completeness).toBe("heuristic");

@@ -33,6 +33,7 @@ test.each([false, true])(
       runCaptureFallback({
         primary: fallbackSelected ? failing : backend,
         fallback: backend,
+        beforeFallback: async () => {},
         pid: process.pid,
         privilege: "user",
         roots: [],

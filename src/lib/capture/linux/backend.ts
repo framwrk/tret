@@ -78,6 +78,10 @@ export class LinuxCaptureBackend implements CaptureBackend {
     };
   }
 
+  async preflight(): Promise<void> {
+    if (!this.options.tracerFactory) selectDefaultTracer();
+  }
+
   private async stop(
     tracer: LinuxTracer,
     roots: AbsolutePath[],

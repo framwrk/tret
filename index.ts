@@ -61,7 +61,7 @@ switch (command) {
   case "install": {
     // The pre-`--` line, joined, is the URL or a pasted `curl ... | bash` command. Tret-only flags
     // are removed first so a flag value can never end up inside the URL text.
-    const observed = parseObserveFlags(ownArgs.slice(1));
+    const observed = parseObserveFlags(ownArgs.slice(1).filter((arg) => arg !== "--allow-weaker-capture"));
     if ("error" in observed) fail("install-usage", observed.error, EXIT_USAGE);
     const named = extractNameFlag(observed.rest);
     if ("error" in named) fail("install-usage", named.error, EXIT_USAGE);
@@ -88,6 +88,7 @@ switch (command) {
       // D3: --observe/--observe-exclude scope this one install; an empty scope keeps the defaults.
       observe: observed.scope.include.length > 0 || observed.scope.exclude.length > 0 ? observed.scope : undefined,
       yes: ownArgs.includes("--yes"),
+      allowWeakerCapture: ownArgs.includes("--allow-weaker-capture"),
       ...(named.name === undefined ? {} : { name: named.name }),
     });
     break;
@@ -117,7 +118,7 @@ switch (command) {
     break;
 
   case "trace":
-    await trace(ownArgs[1], ownArgs.includes("--yes"));
+    await trace(ownArgs[1], ownArgs.includes("--yes"), { allowWeakerCapture: ownArgs.includes("--allow-weaker-capture") });
     break;
 
   case "unclaim":
@@ -143,7 +144,7 @@ switch (command) {
     // `tret update <tool>` updates one tracked tool by re-running its recorded installer; a bare
     // `tret update` updates Tret itself, so the argument selects which workflow runs. The selector
     // is the first non-flag argument, so `update --yes` never names a tool called `--yes`.
-    await update(ownArgs.slice(1).find((arg) => arg !== "--yes"), ownArgs.includes("--yes"));
+    await update(ownArgs.slice(1).find((arg) => !arg.startsWith("--")), ownArgs.includes("--yes"), ownArgs.includes("--allow-weaker-capture"));
     break;
 
   case "help":
@@ -183,7 +184,7 @@ function help(): void {
     `Each install runs inside a bounded capture window. ${SCRIPT_NAME} reports when the window was open and how completely it covered the installer's process tree; it never runs the installed tool itself to discover lazy writes.`,
   );
   info(
-    `Linux capture attempts strace even when already root; the experimental fanotify helper is never selected automatically; macOS uses a scoped heuristic snapshot. If the tracer cannot attach before install or trace starts, Tret uses a labeled heuristic window (linux-heuristic on Linux, macos-heuristic on macOS); trace refuses to run the tool if neither backend can attach. Capture records changes but does not sandbox the installer or scan for malware.`,
+    `Linux capture attempts strace even when already root; the experimental fanotify helper is never selected automatically; macOS uses a scoped heuristic snapshot. Weaker observation requires a separate confirmation or --allow-weaker-capture for this invocation, including heuristic fallback and --no-capture. --yes alone does not accept it. Trace refuses if neither backend can attach. Capture does not sandbox the installer or scan for malware.`,
   );
   info("");
   info(`Commands`);
@@ -225,6 +226,7 @@ function help(): void {
   info(`\t              unverified paths and state changes after planning still block removal`);
   info(`\t              delegated-removal overlap always blocks, including with --force`);
   info(`\t--no-capture  install: run the installer without attaching a capture window`);
+  info(`\t--allow-weaker-capture install, trace, update <tool>: accept heuristic or no-window observations for this invocation; never saved/replayed`);
   info(
     `\t--backup      install: capture before-images of overwritten or deleted files so uninstall can restore them (off by default; eligible regular files only)`,
   );

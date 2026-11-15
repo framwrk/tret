@@ -473,7 +473,9 @@
             </div>
           </div>
           <p class="muted mt-4">
-            Noninteractive installs and tracked updates require <code>--yes</code>. Most commands accept
+            Noninteractive installs and tracked updates require <code>--yes</code>. Heuristic or disabled
+            capture also requires <code>--allow-weaker-capture</code> for each run; execution consent alone
+            does not accept weaker observation. Most commands accept
             <code>--json</code> for one machine-readable document, with stable exit codes for scripts
             and CI.
           </p>

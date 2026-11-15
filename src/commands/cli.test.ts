@@ -5,6 +5,7 @@ import { VERSION } from "../constants";
 import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
 // Cross-command cover for the documented global flag positions and selector handling. `--json` is
 // global, so it must work before or after the command; after `--` it belongs to the installer. A
@@ -40,7 +41,7 @@ async function runCliResult(
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   await approveFixtureCandidates(home, args);
   const spawnArgs =
-    options.preload === undefined ? [BUN, TRET, ...args] : [BUN, "--preload", options.preload, TRET, ...args];
+    options.preload === undefined ? [BUN, TRET, ...withWeakerCaptureConsent(args)] : [BUN, "--preload", options.preload, TRET, ...withWeakerCaptureConsent(args)];
   const proc = Bun.spawn(spawnArgs, {
     env: { ...process.env, ...options.extraEnv, HOME: home },
     stdin: "ignore",

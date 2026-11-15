@@ -36,6 +36,13 @@ mock.module(${JSON.stringify(join(import.meta.dir, "tracer.ts"))}, () => ({
 }));
 process.getuid = () => 0;
 const { LinuxCaptureBackend, defaultTracerFactory } = await import(${JSON.stringify(join(import.meta.dir, "backend.ts"))});
+const preflight = new LinuxCaptureBackend({ baseline: "none" });
+if (${available}) await preflight.preflight();
+else {
+  try { await preflight.preflight(); throw new Error("expected availability refusal"); }
+  catch (error) { if (!error.message.includes("strace")) throw error; }
+}
+if (calls.length !== 0) throw new Error("preflight launched a tracer");
 if (${available}) {
   const selected = await defaultTracerFactory({ pid: process.pid, roots: [] });
   if (selected.name !== "linux-strace" || JSON.stringify(calls) !== '["strace"]') throw new Error("default selected " + JSON.stringify(calls));

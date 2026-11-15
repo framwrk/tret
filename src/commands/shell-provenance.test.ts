@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
 const roots: string[] = [];
 const cli = join(import.meta.dir, "../../index.ts");
@@ -50,7 +51,7 @@ function fixture(kind: "marked" | "owned", url = "https://example.com/fixture.sh
 }
 
 async function run(args: string[], target: ReturnType<typeof fixture>) {
-  const child = Bun.spawn([process.execPath, cli, ...args], {
+  const child = Bun.spawn([process.execPath, cli, ...withWeakerCaptureConsent(args)], {
     env: { ...process.env, HOME: target.home },
     stdin: "ignore",
     stdout: "pipe",

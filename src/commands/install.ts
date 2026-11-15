@@ -13,11 +13,11 @@ import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
 import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
 import type { ApplianceOutcome } from "../lib/removal";
 import type { CaptureBackend } from "../lib/capture/backend";
+import { CaptureConsentError } from "../lib/capture/preflight";
 import type { CaptureSession } from "../lib/capture/backend";
 import type { DurableOperation } from "../lib/operation-log";
 import type { Journal } from "../lib/capture/events";
 import type { NativeActionReceipt } from "../lib/native-action";
-import type { Platform } from "../lib/platform";
 import type { SessionCoverage } from "../lib/session";
 import type { UninstallPlan } from "../lib/uninstall-planner";
 import { adoptedEntries } from "../lib/adoption";
@@ -28,6 +28,7 @@ import { formatCoverage } from "../lib/session";
 import { formatUninstallPlan } from "../lib/uninstall-planner";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
+import { prepareCapture } from "../lib/capture/preflight";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { runInstaller } from "../lib/installer";
@@ -40,6 +41,8 @@ import { unverifiedShellEdits } from "../lib/shellconfig";
 export type InstallOptions = {
   /** Attach a bounded capture window; the `--no-capture` flag turns this off. */
   capture?: boolean;
+  /** Fresh permission for heuristic or no-window observation, never replayed from a record. */
+  allowWeakerCapture?: boolean;
   /** Capture backend override; defaults to the running platform's backend (D1/D7). */
   backend?: CaptureBackend;
   /** Observation roots override (D3); defaults to the platform's bounded install roots. */
@@ -237,6 +240,13 @@ export async function install(
   // backend's path comparison, so its journal and normalization agree on path identity.
   const roots = options.roots ?? installObservationRoots(platform, options.observe);
   const caseSensitive = caseSensitiveForPaths(platform, roots);
+  const capturePlan = await prepareCapture({
+    primary: options.backend ?? captureBackendFor(platform, caseSensitive),
+    fallback: heuristicCaptureBackendFor(platform, caseSensitive),
+    roots, backups, enabled: options.capture, allowWeakerCapture: options.allowWeakerCapture,
+  });
+  if (existing && force)
+    log("replacement is non-atomic: an unexpected capture failure after approved old cleanup stops execution and retains recovery evidence");
 
   const recordId = options.replaceId ?? randomUUID();
   const provisional: RecordV3 = {
@@ -247,7 +257,7 @@ export async function install(
     capture: { backend: "pending", completeness: "partial", segments: [{ kind: "install", startedAt: new Date(clock()).toISOString(), partialReason: "operation not captured to completion" }] },
     privilege: processPrivilege(), caseSensitive, owned: [], mutated: [], deleted: [],
   };
-  const execution = { recordId, roots, scriptSha256 };
+  const execution = { recordId, roots: capturePlan.roots, scriptSha256 };
 
   // Show the source and its identity before anything runs (plan 03 item 6). The preview is bounded,
   // so a long installer cannot flood the terminal; the full text stays in the run log.
@@ -301,6 +311,7 @@ export async function install(
   runLogPhase("run-installer");
   const beforeRun = async (session?: CaptureSession) => {
     operation = storage.operations.checkpoint(operation, {
+      execution: { ...execution, roots: capturePlan.roots },
       pins: [...(session?.beforeImages?.keys() ?? [])],
       ...(session?.baseline ? { baseline: session.baseline } : {}),
     });
@@ -310,12 +321,22 @@ export async function install(
     }
     operation = storage.operations.checkpoint(operation, { stage: "running", unknownSince: new Date().toISOString() });
   };
-  const window = await observeInstall(platform, script, scriptArgs, options, backups, roots, caseSensitive, beforeRun);
+  let window: InstallWindow;
+  try {
+    window = await observeInstall(script, scriptArgs, options, backups, roots, capturePlan, beforeRun);
+  } catch (error) {
+    if (error instanceof CaptureConsentError) {
+      operation = storage.operations.checkpoint(operation, { stage: "partial", reason: `installer was not run: ${error.message}` });
+      if (existing && force)
+        fail("install-capture-partial", "previous approved cleanup completed, but weaker capture was declined and the replacement installer was not run; inspect tret recover for retained evidence", EXIT_ERROR);
+    }
+    throw error;
+  }
   const captured = window.journal ? {
     backend: window.journal.backend, completeness: window.journal.completeness,
     events: window.journal.events, ...(window.journal.partialReason ? { partialReason: window.journal.partialReason } : {}),
   } : { backend: "disabled", completeness: "partial" as const, events: [] };
-  operation = storage.operations.checkpoint(operation, { stage: "captured", capture: captured, execution: { ...execution, exitCode: window.exitCode } });
+  operation = storage.operations.checkpoint(operation, { stage: "captured", capture: captured, execution: { ...execution, roots: capturePlan.roots, exitCode: window.exitCode } });
   log(
     window.coverage
       ? `observed the install with ${formatCoverage(window.coverage)}`
@@ -463,39 +484,37 @@ type InstallWindow = {
 };
 
 /**
- * Runs the installer once inside a bounded capture window when capture is enabled. Capture is
- * best-effort for `install`: the shared pre-run fallback tries the platform tracer, then the
- * platform's labeled heuristic backend (`linux-heuristic`/`macos-heuristic`), and only a window that
- * never starts keeps the legacy snapshot/diff. The installer runs exactly once either way, and a
+ * Runs the installer once inside the selected observation scope. A weaker heuristic window or
+ * legacy metadata snapshot requires separate consent before external code runs. The installer
+ * runs at most once, and a
  * failed capture close is reported as partial coverage by the session rather than re-running the
- * script. `caseSensitive` is the record-wide probe (D10), handed to both backends so their path keys
- * match the record and journal normalization.
+ * script. Both prepared backends use the record's case behavior for journal normalization.
  */
 async function observeInstall(
-  platform: Platform,
   script: string,
   scriptArgs: string[],
   options: InstallOptions,
   backups: BackupPolicy,
   roots: AbsolutePath[],
-  caseSensitive: boolean,
+  capturePlan: Awaited<ReturnType<typeof prepareCapture>>,
   beforeRun: (session?: CaptureSession) => Promise<void>,
 ): Promise<InstallWindow> {
   if (!(options.capture ?? true)) {
-    const before = snapshot();
+    const before = snapshot(capturePlan.roots);
     await beforeRun();
     const exitCode = await runInstaller(script, scriptArgs);
-    return { exitCode, fallback: diff(before, snapshot()) };
+    return { exitCode, fallback: diff(before, snapshot(capturePlan.roots)) };
   }
 
   const attempt = await runCaptureFallback({
-    primary: options.backend ?? captureBackendFor(platform, caseSensitive),
-    fallback: heuristicCaptureBackendFor(platform, caseSensitive),
+    primary: capturePlan.backend!,
+    fallback: capturePlan.fallback,
     // The installer is spawned as a child of this process, so observing this pid covers it.
     pid: process.pid,
     privilege: processPrivilege(),
-    roots,
+    roots: capturePlan.roots,
     fallbackRoots: heuristicFallbackRoots(roots),
+    beforeFallback: capturePlan.beforeFallback,
     backups,
     beforeRun,
     run: () => runInstaller(script, scriptArgs),
@@ -508,10 +527,11 @@ async function observeInstall(
   if (attempt.session === undefined) {
     // Both backends failed before the installer started, so it has not run yet. Keep the legacy
     // snapshot/diff path for the install instead of running it unwatched with no observation at all.
-    const before = snapshot();
+    await capturePlan.beforeLegacy();
+    const before = snapshot(capturePlan.roots);
     await beforeRun();
     const exitCode = await runInstaller(script, scriptArgs);
-    return { exitCode, fallback: diff(before, snapshot()) };
+    return { exitCode, fallback: diff(before, snapshot(capturePlan.roots)) };
   }
 
   if (attempt.session.error !== undefined) throw attempt.session.error;

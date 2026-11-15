@@ -43,6 +43,8 @@ export interface CaptureBackend {
   readonly name: string;
   /** Coverage the backend can prove; advisory until a session reports its own journal. */
   readonly completeness: CaptureCompleteness;
+  /** Cheap prerequisite checks without baseline scanning or external execution. */
+  preflight?(): Promise<void>;
   /** Begins observing the process tree for the bounded install window. */
   start(options: CaptureStartOptions): Promise<CaptureSession>;
 }

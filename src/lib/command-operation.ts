@@ -1,4 +1,5 @@
 import { FileStorage, RecordRevisionError, RecordsLockedError } from "./store";
+import { CaptureConsentError } from "./capture/preflight";
 import { EXIT_BLOCKED } from "../constants";
 import { OperationLockedError } from "./operation-lease";
 import { OperationRecoveryRequiredError } from "./operation-log";
@@ -9,6 +10,7 @@ export async function runStoreOperation<T>(storage: FileStorage, work: () => Pro
   try {
     return await storage.withOperation(work);
   } catch (error) {
+    if (error instanceof CaptureConsentError) fail("capture-consent", error.message, EXIT_BLOCKED);
     if (error instanceof OperationLockedError || error instanceof RecordsLockedError)
       fail("operation-locked", error.message, EXIT_BLOCKED);
     if (error instanceof OperationRecoveryRequiredError) fail("operation-recovery-required", error.message, EXIT_BLOCKED);

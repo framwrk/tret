@@ -22,6 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import type { Stats } from "node:fs";
 import { approveFixtureCandidates } from "../src/lib/fixtures/approve-candidates";
+import { withWeakerCaptureConsent } from "../src/lib/fixtures/capture-consent";
 
 const ROOT = resolve(import.meta.dir, "..");
 const REAL_HOME = process.env.HOME ?? homedir();
@@ -192,7 +193,7 @@ async function runTret(
     `refusing to run the acceptance binary against the real HOME (${REAL_HOME})`,
   );
   await approveFixtureCandidates(home, args, [binary]);
-  return runProcess([binary, ...args], { ...childEnvironment(home), ...extraEnv });
+  return runProcess([binary, ...withWeakerCaptureConsent(args)], { ...childEnvironment(home), ...extraEnv });
 }
 
 function expectSuccess(result: RunResult, label: string): void {
@@ -772,6 +773,7 @@ async function scenarioForcedShellCleanup(binary: string): Promise<void> {
           binary,
           "install",
           "--yes",
+          "--allow-weaker-capture",
           url,
           "--force",
         ],

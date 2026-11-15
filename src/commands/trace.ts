@@ -17,12 +17,14 @@ import { emitJson, isJsonMode } from "../lib/json-output";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
 import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
 import type { CaptureBackend } from "../lib/capture/backend";
+import { CaptureConsentError } from "../lib/capture/preflight";
 import { DEFAULT_BACKUP_POLICY } from "../lib/store";
 import { FileStorage } from "../lib/store";
 import type { NormalizedEffects } from "../lib/capture/normalize";
 import { fail } from "../lib/failure";
 import { installObservationRoots } from "../lib/platform/roots";
 import { normalizeJournal } from "../lib/journal/normalize";
+import { prepareCapture } from "../lib/capture/preflight";
 import { runProgram } from "../lib/installer";
 import { runStoreOperation } from "../lib/command-operation";
 
@@ -121,6 +123,7 @@ export function mergeTraceEffects(
 
 /** Seams for tests: the record storage, the bounded session, and both capture backends are replaceable. */
 export type TraceOptions = {
+  allowWeakerCapture?: boolean;
   storage?: FileStorage;
   /** Runs the observed work; tests replace the real child process. */
   run?: () => Promise<number>;
@@ -167,18 +170,19 @@ export async function trace(
     fail("trace-executable", `${record.name} has no tracked executable to run`, EXIT_USAGE);
   }
 
+  if (!yes && (isJsonMode() || !process.stdin.isTTY))
+    fail("trace-consent", isJsonMode() ? "pass --yes to trace without a prompt in JSON mode" : "there is no terminal to confirm on; pass --yes to trace without a prompt", EXIT_BLOCKED);
+  const platform = currentPlatform();
+  const roots = options.roots ?? installObservationRoots(platform);
+  const capturePlan = await prepareCapture({
+    primary: options.backend ?? captureBackendFor(platform, record.caseSensitive),
+    fallback: options.fallbackBackend ?? heuristicCaptureBackendFor(platform, record.caseSensitive),
+    roots, backups: DEFAULT_BACKUP_POLICY, allowWeakerCapture: options.allowWeakerCapture,
+  });
+
   // Ask before running the tool. Tracing runs the real program, so it is never silent: JSON mode and
   // non-interactive runs require --yes instead of pretending to have asked.
   if (!yes) {
-    if (isJsonMode() || !process.stdin.isTTY) {
-      fail(
-        "trace-consent",
-        isJsonMode()
-          ? "pass --yes to trace without a prompt in JSON mode"
-          : "there is no terminal to confirm on; pass --yes to trace without a prompt",
-        EXIT_BLOCKED,
-      );
-    }
     const answer = confirm(`run ${record.executable} in an observation window? [y/N]`);
     if (answer === undefined) {
       fail("trace-consent", "could not read a confirmation; pass --yes to run the tool", EXIT_BLOCKED);
@@ -189,29 +193,28 @@ export async function trace(
     }
   }
 
-  const platform = currentPlatform();
-  const roots = options.roots ?? installObservationRoots(platform);
   const run = options.run ?? (() => runProgram(record.executable));
   if (storage instanceof FileStorage) await storage.prepareCurrentFormat();
   const operationLog = storage instanceof FileStorage ? storage.operations : undefined;
   let operation = operationLog?.begin("trace", [record]);
-  if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: record, execution: { recordId: record.id, roots, executable: record.executable } });
+  if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: record, execution: { recordId: record.id, roots: capturePlan.roots, executable: record.executable } });
 
   // Capture starts before the tool runs and the tool is a descendant of this process, so the whole
   // invocation is inside the observed tree. A backend that cannot attach throws before `run`, so the
   // tool is never run unwatched: the command then tries the labeled heuristic window, and if that
   // also cannot attach it fails rather than running the tool without coverage at all.
   const attempt = await runCaptureFallback({
-    primary: options.backend ?? captureBackendFor(platform, record.caseSensitive),
-    fallback: options.fallbackBackend ?? heuristicCaptureBackendFor(platform, record.caseSensitive),
+    primary: capturePlan.backend!,
+    fallback: capturePlan.fallback,
     pid: process.pid,
     privilege: processPrivilege(),
-    roots,
+    roots: capturePlan.roots,
     fallbackRoots: heuristicFallbackRoots(roots),
+    beforeFallback: capturePlan.beforeFallback,
     kind: "trace",
     beforeRun: async (session) => {
       if (!operation || !operationLog) return;
-      operation = operationLog.checkpoint(operation, { pins: [...(session.beforeImages?.keys() ?? [])], ...(session.baseline ? { baseline: session.baseline } : {}) });
+      operation = operationLog.checkpoint(operation, { execution: { recordId: record.id, roots: capturePlan.roots, executable: record.executable }, pins: [...(session.beforeImages?.keys() ?? [])], ...(session.baseline ? { baseline: session.baseline } : {}) });
       for (const [id, bytes] of session.beforeImages ?? []) {
         const stored = await storage.putBlob(bytes);
         if (stored.id !== id) throw new Error("capture before-image does not match its content address");
@@ -222,8 +225,14 @@ export async function trace(
     ...(options.now === undefined ? {} : { now: options.now }),
     onPrimaryFailure: (error) =>
       log(`capture unavailable (${message(error)}); tracing the tool with a heuristic window`),
+  }).catch((error: unknown) => {
+    if (error instanceof CaptureConsentError && operation && operationLog)
+      operation = operationLog.checkpoint(operation, { stage: "partial", reason: `tool was not run: ${error.message}` });
+    throw error;
   });
   if (attempt.session === undefined) {
+    if (operation && operationLog)
+      operation = operationLog.checkpoint(operation, { stage: "partial", reason: "tool was not run because both capture backends failed to attach" });
     fail(
       "trace-capture",
       `could not attach a capture window; the tool was not run: ${message(attempt.primaryError)}; heuristic fallback failed: ${message(attempt.fallbackError)}`,

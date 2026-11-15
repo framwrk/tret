@@ -5,6 +5,7 @@ import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { observedRecord } from "../lib/records-v4";
 import { tmpdir } from "node:os";
+import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
 // End-to-end cover for post-command blob collection (plan step 9): a record that stops referencing a
 // before-image leaves an orphan under `~/.tret/objects/`, and a successful uninstall/forget/unclaim
@@ -29,7 +30,7 @@ afterEach(() => {
 
 async function runCliResult(args: string[], home: string): Promise<{ code: number; stdout: string; stderr: string }> {
   await approveFixtureCandidates(home, args);
-  const proc = Bun.spawn([BUN, TRET, ...args], {
+  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args)], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
