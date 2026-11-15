@@ -1,6 +1,6 @@
 # Recovery retention and explicit evidence disposal
 
-Retained operation manifests, original record files, corrupt quarantines and their
+Retained operation manifests and chunks, original record files, corrupt quarantines and their
 interrupted atomic staging share one inventory. Nothing expires or is evicted to
 make room. Blob storage has its separate [capture-resource quota](capture-budgets.md).
 
@@ -13,7 +13,7 @@ make room. Blob storage has its separate [capture-resource quota](capture-budget
 Malformed overrides refuse with exit 2. Enumeration uses 32-entry directory
 buffers and never follows non-regular recovery entries. Listing stops before
 loading an over-limit graph. Individual operation manifests remain capped at
-16 MiB and originals/private reads at 64 MiB. These are retained-byte and work
+16 MiB, reconstructed operation payloads at 64 MiB, and originals/private reads at 64 MiB. These are retained-byte and work
 limits, not an exact process-RSS guarantee or cancellation of stalled kernel calls.
 
 New intents require 32 MiB of checkpoint headroom (half the total under a smaller
@@ -25,8 +25,36 @@ also streams entries with an active-work deadline.
 
 A known quota refusal before execution exits 5 without running external code.
 Failure after work may have started exits 1, retaining the last durable cursor
-and its unknown interval. It never retries an installer. Live checkpoints and
-chunked operation journals remain separate implementation work.
+and its unknown interval. It never retries an installer. Live checkpoints remain
+separate implementation work.
+
+## Chunked operation evidence
+
+New manifests use physical version 2; older readers refuse them before mutations.
+Version 1 receipts remain readable without migration. Logical payloads up to
+256 KiB stay inline. Larger payloads use immutable SHA-256-addressed chunks of at
+most 1 MiB, named `<operation-id>.<sha256>.part` beside the manifest. Readers
+verify every referenced chunk and its length before reconstructing an operation;
+missing, changed or unsupported chunks fail closed. The manifest is published
+atomically only after its chunks are flushed. A small prepared intent precedes
+a large initial snapshot, so interrupted writes retain an addressable operation.
+
+Unchanged chunks are reused. Encoding generations and their conservative blob
+pins remain until explicit receipt discard, including after completion. At most
+1,024 distinct chunks are retained per operation, also subject to the aggregate
+byte/entry limits. A failed publication preserves the last readable manifest and
+any available new chunks. Unpublished chunks are listed by path and prevent blob
+GC; inspect or explicitly discard their owning operation ID. An orphan whose
+manifest is missing requires manual reconciliation. Chunking adds no capture
+coverage and does not turn an unknown interval into proof of absence.
+
+Discard first publishes the summary, then verifies and unlinks only that
+operation's hashed chunk files through a pinned directory. Failed deletion of
+verified chunks leaves the discarded ID retriable. Partial, changed or unsupported
+chunks remain for manual reconciliation and continue to be listed by path after
+discard; other verified own chunks are still cleaned. Discard relinquishes blob
+pins even if such remnants remain. Purge requires resolving those remnants before
+deleting the summary. Neither action removes target files or another operation's chunks.
 
 ## Select evidence explicitly
 

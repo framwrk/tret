@@ -67,11 +67,12 @@ quota calculation. Quota enumeration uses bounded buffers and an active time
 limit; capture node/metadata caps do not limit the number of retained blobs.
 Legacy oversized blobs remain intact but cannot be read for
 restore under a smaller configured limit. Other private reads default to 64 MiB;
-operation manifests retain their separate 16 MiB ceiling. Unreadable, changing or
+operation manifests retain their separate 16 MiB ceiling, with verified chunks
+supporting logical operations up to 64 MiB. Unreadable, changing or
 oversized private evidence fails closed and is preserved.
 
 These are capture and blob limits. [Recovery retention](recovery-retention.md)
 separately bounds operation/original evidence and exposes explicit discard/purge.
-Live checkpoints and chunked journals remain separate work. Existing receipts pin
+Live checkpoints remain separate work. Existing receipts pin
 their referenced blobs. No limit makes same-user private state tamper-proof or
 turns an unknown interval into an empty installation.

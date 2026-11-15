@@ -123,10 +123,11 @@ export function discardOriginal(log: OperationLog, id: string) {
 export function purgeDiscarded(log: OperationLog, id: string) {
   const operation = log.get(id);
   if (!operation || operation.stage !== "discarded") throw new Error("only an already-discarded receipt can be purged");
+  log.removeDiscardedChunks(id);
   const path = join(log.directory, `${id}.json`);
   const bytes = readFileIfExists(path, 16 * 1024 * 1024);
   if (!bytes) throw new Error("discarded receipt was not found");
-  const expected = JSON.parse(new TextDecoder().decode(bytes));
+  const expected = log.get(id);
   if (JSON.stringify(expected) !== JSON.stringify(operation)) throw new Error("discarded receipt changed");
   if (!currentOperationToken(log.stateDir)) throw new Error("receipt purge requires the store operation lease");
   assertDirectoryIfExists(log.stateDir);
