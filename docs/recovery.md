@@ -41,14 +41,26 @@ a stale claim. A revision conflict requires a fresh read and plan.
 
 Private operation evidence under `.tret/operations/` (manifests and their immutable
 chunks) contains prior records,
-before-image pins, baseline metadata, the last closed capture journal, normalized
+before-image pins, baseline metadata, the latest prefix or closed capture journal, normalized
 record checkpoints and per-action native cursors/outcomes. Permitted before-images
 are pinned and flushed before external execution. A persistence barrier failure
 refuses execution and cannot trigger fallback/reexecution.
 
-Live capture is not yet incrementally checkpointed. SIGKILL, disk failure or power
-loss may leave only a baseline and an unknown interval. Recovery preserves that
-uncertainty. Replacement is currently non-atomic: the previous manifest and its
+Strace event capture persists changed partial prefixes once per second, up to 32
+publications during foreground execution. Snapshot-only and disabled capture keep
+the baseline until close. Prefixes contain scoped metadata without repeated file
+hashing; final capture reconstructs and hashes the closed window. All work shares
+the configured capture/retention budgets. A failed prefix write stops sampling;
+it never repeats or cancels the installer. Close waits for an in-flight write.
+
+SIGKILL, disk failure or power loss preserves only the last durable checkpoint.
+`checkpointAt` names the start of its sample, not a completeness watermark:
+unfinished calls and other losses can precede it. `unknownSince` conservatively
+keeps the running barrier, and the interval after the prefix is also unknown.
+If close fails or omits earlier observations, available prefix events are retained
+and the command exits 1, even if an executable was observed.
+Recovery preserves partial coverage and grants no cleanup approval. Replacement
+is currently non-atomic: the previous manifest and its
 recovery content remain even if a replacement fails after old cleanup.
 
 ## Commands
@@ -83,7 +95,12 @@ Chunked receipts conservatively retain generation pins until explicit discard.
 releases its pins; a later GC may collect content no other evidence references.
 
 Private reads reject final symlinks/non-regular nodes, and bounded operation reads
-check actual bytes. State directories must be real directories. Atomic private
+check actual bytes. A read interrupted by atomic replacement retries at most twice
+when the name points at a different inode or has disappeared. Changes to the same
+inode still refuse; every attempt retains the byte and no-follow checks.
+State directories must be real directories. Atomic private
+writes stage initial operation manifests before publishing their names with a
+no-replace rename, so readers cannot observe an unfinished first write. Other private
 writes use exclusive no-follow temporary files, handle short writes and flush the
 file and directory. Failed exclusive writes clean their own partial file; existing
 names survive failed exclusive opens. A post-rename directory-flush failure can
@@ -92,8 +109,8 @@ leave replacement bytes visible; inspect current state before retrying.
 Manifests have a 16 MiB limit, with verified immutable chunks supporting logical
 operations up to 64 MiB. New physical version 2 manifests reject older readers;
 version 1 receipts remain readable without migration. Chunks and manifests share a bounded
-[recovery inventory](recovery-retention.md). Live checkpoints
-remain pending. Same-user state is not tamper-proof, and private persistence still uses
+[recovery inventory](recovery-retention.md). Live prefixes do not guarantee every
+event survives interruption. Same-user state is not tamper-proof, and private persistence still uses
 path-based primitives. Native target application, its supported scope and further
 limits are described in [authority-and-operations.md](authority-and-operations.md).
 

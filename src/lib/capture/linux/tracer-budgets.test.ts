@@ -69,3 +69,44 @@ test.each(["stdout", "stderr"])("development helper %s overflow stops with expli
     await tracer.stop();
   }
 });
+
+test("strace live reads append new records without freezing the final result or double-counting bytes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tret-audit-prefix-"));
+  roots.push(root);
+  const fake = join(root, "strace.sh");
+  writeFileSync(fake, `#!/bin/sh
+set -eu
+out=""
+while [ "$#" -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; *) shift;; esac; done
+printf '10 1.0 mkdir("/scope/a", 0700) = 0\\n' >> "$out"
+printf 'strace: first warning\\n' >&2
+printf '%s' "$out" > "$HOME/trace-path"
+while [ ! -f "$HOME/continue" ]; do sleep 0.01; done
+printf '10 2.0 mkdir("/scope/b", 0700) = 0' >> "$out"
+printf 'strace: later warning\\n' >&2
+`, { mode: 0o755 });
+  const budget = new CaptureBudget();
+  const tracer = new StraceTracer({ pid: process.pid, roots: ["/scope"], budget }, { stracePath: fake, env: { HOME: root } });
+  try {
+    await tracer.attachProcess();
+    const deadline = performance.now() + 2500;
+    while (!(await Bun.file(join(root, "trace-path")).exists()) && performance.now() < deadline)
+      await new Promise(resolve => setTimeout(resolve, 5));
+    expect((await tracer.checkpoint()).records).toMatchObject([{ op: "mkdir", path: "/scope/a" }]);
+    const firstBytes = budget.used.auditBytes;
+    expect((await tracer.checkpoint()).records).toHaveLength(1);
+    expect(budget.used.auditBytes).toBe(firstBytes);
+    for (let sample = 0; sample < 40; sample++) await tracer.checkpoint();
+    writeFileSync(join(root, "continue"), "go");
+    while ((await tracer.status()).active && performance.now() < deadline)
+      await new Promise(resolve => setTimeout(resolve, 5));
+    const path = readFileSync(join(root, "trace-path"), "utf8");
+    const bytes = statSync(path).size;
+    expect((await tracer.records()).records).toHaveLength(2);
+    await tracer.stop();
+    expect((await tracer.records()).records).toMatchObject([{ path: "/scope/a" }, { path: "/scope/b" }]);
+    expect(budget.used.auditBytes).toBe(bytes);
+    expect(budget.used.auditLines).toBe(2);
+    expect(tracer.losses()).toEqual(["strace: first warning", "strace: later warning"]);
+  } finally { writeFileSync(join(root, "continue"), "go"); await tracer.stop(); }
+});

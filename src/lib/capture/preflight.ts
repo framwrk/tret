@@ -1,3 +1,4 @@
+import { LIVE_CHECKPOINT_INTERVAL_MS, MAX_LIVE_CHECKPOINTS } from "../session";
 import { confirm, log } from "../utilities";
 import type { BackupPolicy } from "./normalize";
 import type { CaptureBackend } from "./backend";
@@ -77,6 +78,7 @@ export async function prepareCapture(options: {
     const limits = plan.budget.limits;
     log(`\tresource limits: ${limits.maxNodes} nodes, depth ${limits.maxDepth}, ${limits.maxMetadataBytes} metadata bytes, ${limits.maxBackupBytes} backup bytes, ${limits.maxHashBytes} fingerprint bytes, ${limits.maxEvents} events, ${limits.maxAuditBytes} audit bytes/${limits.maxAuditLines} lines, ${limits.maxWorkMs} active milliseconds per phase`);
     log(`\tprivate blob limits: ${limits.maxBlobBytes} bytes each, ${limits.maxStoreBytes} stored bytes including staging; retained evidence is never evicted automatically`);
+    log(`\tlive event checkpoints: at most ${MAX_LIVE_CHECKPOINTS} changed prefixes, every ${LIVE_CHECKPOINT_INTERVAL_MS}ms; snapshot-only observation keeps its baseline until close`);
     if (!plan.backend || plan.backend.completeness !== "complete" || plan.backend !== options.primary) log(`\t${detail}`);
     for (const root of plan.roots) log(`\tobserve ${root}`);
     for (const root of options.roots.filter((root) => !plan.roots.includes(root))) log(`\texcluded from fallback: ${root}`);

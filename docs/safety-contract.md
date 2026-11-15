@@ -166,7 +166,9 @@ and [recovery](recovery.md) for commands, supported scope and current limits.
 
 ## Remaining implementation work
 
-The safety plan still requires live capture checkpoints, complete rename semantics,
+Strace keeps bounded partial live prefixes; snapshot-only capture keeps its baseline
+until close. Prefixes grant no cleanup approval and never prove a complete interval.
+The safety plan still requires the broader interruption/lifecycle matrix, complete rename semantics,
 verified delegation, richer precise restoration,
 and native acceptance/release gates. Until these are implemented and verified,
 heuristic fingerprints and a successful uninstall are not proof that every effect

@@ -225,6 +225,10 @@ export async function trace(
       }
       operation = operationLog.checkpoint(operation, { stage: "running", unknownSince: new Date().toISOString() });
     },
+    onCheckpoint: async (journal, observedAt) => {
+      if (operation && operationLog) operation = operationLog.checkpoint(operation, { stage: "running", checkpointAt: observedAt,
+        capture: { backend: journal.backend, completeness: "partial", events: journal.events, partialReason: journal.partialReason, resources: journal.resources } });
+    },
     run,
     ...(options.now === undefined ? {} : { now: options.now }),
     onPrimaryFailure: (error) =>
@@ -262,11 +266,14 @@ export async function trace(
   const segment: CaptureSegment = window.coverage.segment;
   const updated: RecordV3 = {
     ...merged.record,
-    capture: { ...record.capture, segments: [...(record.capture.segments ?? []), segment] },
+    capture: { ...record.capture, ...(window.captureError !== undefined ? { completeness: record.capture.completeness === "heuristic" ? "heuristic" as const : "partial" as const } : {}), segments: [...(record.capture.segments ?? []), segment] },
   };
   if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: updated });
   await storage.saveRecord(updated, "trace");
-  if (operation && operationLog) operationLog.checkpoint(operation, { stage: window.error !== undefined || window.value !== 0 || capturePlan.budget.fatalError ? "partial" : "completed" });
+  if (operation && operationLog) operationLog.checkpoint(operation, { stage: window.error !== undefined || window.captureError !== undefined || window.value !== 0 || capturePlan.budget.fatalError ? "partial" : "completed" });
+
+  if (window.captureError !== undefined)
+    fail("trace-capture-partial", `the tool ran, but capture checkpoint or close failed; retained available evidence: ${message(window.captureError)}`, EXIT_ERROR);
 
   if (capturePlan.budget.fatalError)
     fail("trace-capture-partial", `the tool ran, but capture exceeded its budget; retained the unknown segment and recovery receipt: ${capturePlan.budget.fatalError.message}`, EXIT_ERROR);

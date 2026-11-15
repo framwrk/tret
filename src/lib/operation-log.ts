@@ -4,21 +4,24 @@ import {
   PRIVATE_FILE_MODE,
   assertDirectoryIfExists,
   readFileIfExists,
+  temporaryPath,
   writeFileAtomic,
   writeFileExclusive,
 } from "./atomic";
 import { type RecoveryEntry, type RecoveryLimits, RecoveryRetention, RecoveryRetentionError } from "./recovery-retention";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ApplianceOutcome } from "./removal";
 import type { CaptureBaselineEntry } from "./capture/backend";
 import type { Journal } from "./capture/events";
 import type { NativeActionReceipt } from "./native-action";
+import { NativeDirectory } from "./native-filesystem";
 import type { RecordV3 } from "../types";
 import type { UninstallPlan } from "./uninstall-planner";
 import { currentOperationToken } from "./operation-lease";
 import { isV3Record } from "./records";
 import { randomUUID } from "node:crypto";
 import { referencedBlobs } from "./storage";
+import { rmSync } from "node:fs";
 import { validCleanupApproval } from "./cleanup-authority";
 import { validNativeReceipt } from "./native-action";
 
@@ -44,6 +47,8 @@ export type DurableOperation = {
   };
   /** Describes evidence loss; never stores script text, profile bytes or credentials. */
   unknownSince?: string;
+  /** Start of the latest durable prefix sample, never a completeness watermark. */
+  checkpointAt?: string;
   reason?: string;
   retainedPaths?: string[];
   execution?: { recordId: string; roots: string[]; scriptSha256?: string; executable?: string; exitCode?: number; resources?: CaptureResourceReport };
@@ -136,7 +141,7 @@ export class OperationLog {
     change: Partial<
       Pick<
         DurableOperation,
-        "stage" | "pins" | "checkpoint" | "baseline" | "capture" | "application" | "execution" | "unknownSince" | "reason"
+        "stage" | "pins" | "checkpoint" | "baseline" | "capture" | "application" | "execution" | "unknownSince" | "checkpointAt" | "reason"
       >
     >,
   ): DurableOperation {
@@ -303,8 +308,23 @@ export class OperationLog {
     if (discard) {
       if (exclusive && Buffer.byteLength(text) > 64 * 1024) throw new Error("new discard tombstone exceeds 64 KiB; evidence retained");
     } else this.retention.beforeWrite(path, Buffer.byteLength(text));
-    if (exclusive) writeFileExclusive(path, text, PRIVATE_FILE_MODE);
+    if (exclusive) publishExclusive(path, text);
     else writeFileAtomic(path, text, PRIVATE_FILE_MODE);
+  }
+}
+
+/** Publish a flushed first manifest with no visible in-place write and no replacement authority. */
+function publishExclusive(path: string, text: string): void {
+  const stage = temporaryPath(path);
+  writeFileExclusive(stage, text, PRIVATE_FILE_MODE);
+  let directory: NativeDirectory | undefined;
+  try {
+    directory = new NativeDirectory(dirname(path));
+    directory.moveExclusive(basename(stage), directory, basename(path));
+    directory.sync();
+  } finally {
+    directory?.close();
+    rmSync(stage, { force: true });
   }
 }
 
@@ -358,7 +378,9 @@ function validOperation(value: unknown): value is DurableOperation {
         (operation.execution.resources === undefined || validCaptureResources(operation.execution.resources)) &&
         (operation.execution.exitCode === undefined || Number.isInteger(operation.execution.exitCode)))) &&
     (operation.unknownSince === undefined ||
-      (typeof operation.unknownSince === "string" && Number.isFinite(Date.parse(operation.unknownSince))))
+      (typeof operation.unknownSince === "string" && Number.isFinite(Date.parse(operation.unknownSince)))) &&
+    (operation.checkpointAt === undefined ||
+      (typeof operation.checkpointAt === "string" && Number.isFinite(Date.parse(operation.checkpointAt))))
   );
 }
 
@@ -435,6 +457,7 @@ export function operationSummary(operation: DurableOperation) {
     updatedAt: operation.updatedAt,
     reason: operation.reason,
     unknownSince: operation.unknownSince,
+    checkpointAt: operation.checkpointAt,
     tools: [
       ...new Set(
         [...operation.priorRecords, ...(operation.checkpoint ? [operation.checkpoint] : [])].map((record) => record.name),

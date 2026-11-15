@@ -5,6 +5,9 @@ import type { CaptureBudget } from "./capture/budget";
 import { CaptureBudgetError } from "./capture/budget";
 import type { Journal } from "./capture/events";
 
+export const LIVE_CHECKPOINT_INTERVAL_MS = 1000;
+export const MAX_LIVE_CHECKPOINTS = 32;
+
 /**
  * One bounded observation window: which backend ran, how completely it attributed changes, when the
  * window opened and closed, and how much it saw. The `segment` is record-shaped, so a caller can
@@ -31,7 +34,9 @@ export type BoundedSessionResult<T> = {
   value?: T;
   /** The error the observed work threw, if any. Capture is closed before this is returned. */
   error?: unknown;
-  /** The journal the backend produced; a stop failure becomes an empty `partial` journal. */
+  /** Capture/persistence failed after execution; callers must report partial failure, not success. */
+  captureError?: unknown;
+  /** The closed journal, or the latest available partial prefix when close fails. */
   journal: Journal;
   coverage: SessionCoverage;
 };
@@ -55,6 +60,10 @@ export type BoundedSessionOptions<T> = {
   run: () => Promise<T>;
   /** Durable barrier after baseline/attach, before external work. A failure never triggers fallback. */
   beforeRun?: (session: CaptureSession) => Promise<void>;
+  /** Persists an available partial prefix while external work is running. */
+  onCheckpoint?: (journal: Journal, observedAt: string) => Promise<void>;
+  /** Internal test seam; production samples at one second, at most 32 changed prefixes. */
+  checkpointIntervalMs?: number;
   /** Clock in milliseconds; injectable so tests can pin the window. */
   now?: () => number;
   /** Which kind of window this is; defaults to "install" (`trace` is reserved by D5 for later). */
@@ -114,12 +123,46 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
 
   let value: T | undefined;
   let error: unknown;
+  let captureError: unknown;
+  let prefix: Journal | undefined;
+  let publishedSignature: string | undefined;
+  let publications = 0;
+  let finished = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let inFlight: Promise<void> = Promise.resolve();
+  const schedule = () => {
+    if (finished || captureError !== undefined || publications >= MAX_LIVE_CHECKPOINTS || !session.checkpoint || !options.onCheckpoint) return;
+    timer = setTimeout(() => { inFlight = checkpoint(); }, options.checkpointIntervalMs ?? LIVE_CHECKPOINT_INTERVAL_MS);
+  };
+  const checkpoint = async () => {
+    try {
+      const observedAt = new Date(clock()).toISOString();
+      options.budget?.beginPhase();
+      const available = await session.checkpoint!();
+      if (available) {
+        prefix = { ...available, completeness: "partial", events: available.events.slice() };
+        const signature = `${prefix.events.length}:${prefix.partialReason ?? ""}`;
+        if (signature !== publishedSignature) {
+          await options.onCheckpoint!(prefix, observedAt);
+          options.budget?.check();
+          publishedSignature = signature;
+          publications++;
+        }
+      }
+    } catch (caught) { captureError = caught instanceof Error ? caught : new Error(String(caught)); }
+    finally { options.budget?.pause(); }
+    schedule();
+  };
   options.budget?.pause();
+  schedule();
   try {
     value = await options.run();
   } catch (caught) {
     error = caught;
   }
+  finished = true;
+  clearTimeout(timer);
+  await inFlight;
 
   let journal: Journal;
   let budgetError: unknown;
@@ -129,14 +172,45 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
   } catch (caught) {
     // Closing is part of the window. A backend that fails to close leaves attribution partial, not
     // green: report the blind spot and keep whatever the work produced.
+    captureError ??= caught;
+    // A backend may still expose parsed evidence after detaching/closing failed.
+    try {
+      const available = await session.checkpoint?.();
+      if (available) prefix = { ...available, completeness: "partial", events: available.events.slice() };
+    } catch { /* Preserve the last available prefix and the original close failure. */ }
     journal = {
+      ...prefix,
       backend: session.backend,
       completeness: "partial",
-      partialReason: `capture failed to close: ${message(caught)}`,
-      events: [],
+      partialReason: [prefix?.partialReason, `capture failed to close: ${message(caught)}`].filter(Boolean).join("; "),
+      events: prefix?.events ?? [],
     };
   }
   options.budget?.pause();
+  if (prefix?.events.length) {
+    const key = (event: Journal["events"][number]) => JSON.stringify([event.type, event.at, event.pid,
+      ...(event.type === "rename" ? [event.from, event.to] : [event.path])]);
+    const remaining = new Map<string, number>();
+    for (const event of journal.events) remaining.set(key(event), (remaining.get(key(event)) ?? 0) + 1);
+    const missing = prefix.events.filter(event => {
+      const count = remaining.get(key(event)) ?? 0;
+      if (!count) return true;
+      remaining.set(key(event), count - 1);
+      return false;
+    });
+    if (missing.length) {
+      const reason = "closed capture omitted earlier observations; retained available prefix evidence";
+      captureError ??= new Error(reason);
+      journal = { ...journal, events: [...missing, ...journal.events].sort((a, b) => a.at - b.at || a.seq - b.seq).map((event, seq) => ({ ...event, seq })),
+        partialReason: [journal.partialReason, prefix.partialReason, reason].filter(Boolean).join("; ") };
+    }
+  }
+  captureError ??= budgetError;
+  if (!journal.beforeImages && session.beforeImages?.size) journal.beforeImages = new Map(session.beforeImages);
+  if (captureError !== undefined) {
+    journal.completeness = "partial";
+    journal.partialReason = [...new Set([journal.partialReason, `capture checkpoint or close failed: ${message(captureError)}`].filter(Boolean))].join("; ");
+  }
   if (options.budget) {
     journal.resources = options.budget.report();
     const losses = [...options.budget.losses, ...(budgetError ? [message(budgetError)] : [])];
@@ -150,6 +224,7 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
   return {
     value,
     error,
+    ...(captureError === undefined ? {} : { captureError }),
     journal,
     coverage: {
       backend: journal.backend,

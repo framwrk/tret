@@ -68,3 +68,57 @@ test("corrupt and future operation files prevent mutation and collection", async
     expect(readFileSync(path, "utf8")).toBe('{"version":999}');
   });
 });
+
+test.each(["observe", "collision"])("initial manifest publication is atomic and exclusive: %s", async (phase) => {
+  const root = fixture();
+  const probe = join(root, "publish-probe.ts");
+  writeFileSync(
+    probe,
+    `
+    import * as fs from 'node:fs';
+    import { mock } from 'bun:test';
+    const real={...fs};
+    const root=process.argv[2];
+    const paths=new Map();
+    let log, observations=0, errors=0;
+    mock.module('node:fs',()=>({...real,
+      openSync:(...args)=>{const fd=real.openSync(...args);paths.set(fd,args[0]);return fd;},
+      closeSync:(fd)=>{paths.delete(fd);return real.closeSync(fd);},
+      writeSync:(fd,...args)=>{
+        if(log && String(paths.get(fd)).startsWith(root+'/operations/')) {
+          observations++;
+          try{log.list();}catch{errors++;}
+        }
+        return real.writeSync(fd,...args);
+      }
+    }));
+    if(${JSON.stringify(phase)}==='collision') {
+      const crypto=await import('node:crypto');
+      mock.module('node:crypto',()=>({...crypto,randomUUID:()=> '11111111-1111-1111-1111-111111111111'}));
+    }
+    const {OperationLog}=await import(${JSON.stringify(join(import.meta.dir, "operation-log.ts"))});
+    const {withOperationLease}=await import(${JSON.stringify(join(import.meta.dir, "operation-lease.ts"))});
+    log=new OperationLog(root);
+    await withOperationLease(root,async()=>{
+      if(${JSON.stringify(phase)}==='observe') {
+        log.begin('install');
+        if(!observations||errors)throw new Error('reader observed an incomplete initial manifest: '+errors);
+      } else {
+        const op=log.recordEvidenceDiscard('original',[]);
+        const path=root+'/operations/'+op.id+'.json';
+        const before=real.readFileSync(path);
+        let refused=false;try{log.recordEvidenceDiscard('replacement',[]);}catch{refused=true;}
+        if(!refused||!before.equals(real.readFileSync(path)))throw new Error('existing manifest was overwritten');
+        if(real.readdirSync(root+'/operations').some(name=>name.endsWith('.tmp')))throw new Error('failed publication stranded staging');
+      }
+    });
+  `,
+  );
+  const child = Bun.spawn([process.execPath, probe, root], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const [code, out, err] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect({ code, out, err }).toEqual({ code: 0, out: "", err: "" });
+});

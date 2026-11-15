@@ -327,7 +327,10 @@ export async function install(
   };
   let window: InstallWindow;
   try {
-    window = await observeInstall(script, scriptArgs, options, backups, roots, capturePlan, beforeRun);
+    window = await observeInstall(script, scriptArgs, options, backups, roots, capturePlan, beforeRun, async (journal, observedAt) => {
+      operation = storage.operations.checkpoint(operation, { stage: "running", checkpointAt: observedAt,
+        capture: { backend: journal.backend, completeness: "partial", events: journal.events, partialReason: journal.partialReason, resources: journal.resources } });
+    });
   } catch (error) {
     if (error instanceof CaptureConsentError || error instanceof CaptureBudgetError || error instanceof BeforeExecutionError) {
       operation = storage.operations.checkpoint(operation, { stage: "partial", execution: { ...execution, roots: capturePlan.roots, resources: capturePlan.budget.report() }, reason: `installer was not run: ${error.message}` });
@@ -391,8 +394,8 @@ export async function install(
     fail("install-executable", `install script added no executable command: ${url}`);
   }
 
-  const failureReason = missingExecutable ? "installer added no executable command" : undefined;
-  const failed = window.exitCode !== 0 || missingExecutable;
+  const failureReason = window.captureError !== undefined ? `capture failed after installer execution: ${message(window.captureError)}` : missingExecutable ? "installer added no executable command" : undefined;
+  const failed = window.exitCode !== 0 || missingExecutable || window.captureError !== undefined;
   // A global package-manager install keeps its executable as a bin shim into shared state; record
   // the layout so cleanup reports the unresolved scope instead of touching shared state.
   // The shared tree itself is never owned: npm's prefix `lib` and bun's global root are shared by
@@ -454,6 +457,8 @@ export async function install(
   // unreferenced. Sweep after the new record is durable; the helper never fails this install.
   if (existing !== undefined) await collectUnreferencedBlobs();
 
+  if (window.captureError !== undefined)
+    fail("install-capture-partial", `${failureReason}; retained available evidence in tret recover ${operation.id}`, EXIT_ERROR);
   if (failed) {
     // A non-zero exit or missing executable keeps observed changes in a labeled partial record.
     log("Error");
@@ -509,6 +514,7 @@ export function installerPreview(script: string, maxLines = 20): string[] {
 /** What one install window produced: the exit code, its capture, and a fallback diff when no journal exists. */
 type InstallWindow = {
   exitCode: number;
+  captureError?: unknown;
   coverage?: SessionCoverage;
   journal?: Journal;
   /** Legacy snapshot/diff, only present when no capture window produced a journal. */
@@ -534,6 +540,7 @@ async function observeInstall(
   roots: AbsolutePath[],
   capturePlan: Awaited<ReturnType<typeof prepareCapture>>,
   beforeRun: (session?: Pick<CaptureSession, "baseline" | "beforeImages">) => Promise<void>,
+  onCheckpoint: (journal: Journal, observedAt: string) => Promise<void>,
 ): Promise<InstallWindow> {
   if (!(options.capture ?? true)) {
     return legacyWindow();
@@ -551,6 +558,7 @@ async function observeInstall(
     backups,
     budget: capturePlan.budget,
     beforeRun,
+    onCheckpoint,
     run: () => runInstaller(script, scriptArgs),
     onPrimaryFailure: (error) =>
       log(`capture unavailable (${message(error)}); observing the install with a heuristic window`),
@@ -570,6 +578,7 @@ async function observeInstall(
     exitCode: attempt.session.value ?? 1,
     coverage: attempt.session.coverage,
     journal: attempt.session.journal,
+    ...(attempt.session.captureError === undefined ? {} : { captureError: attempt.session.captureError }),
   };
 
   async function legacyWindow(): Promise<InstallWindow> {

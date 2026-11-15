@@ -27,6 +27,8 @@ export type CaptureSession = {
   readonly baseline?: readonly CaptureBaselineEntry[];
   /** Revalidates attach readiness after durable persistence and before external work. */
   ready?(): Promise<void>;
+  /** Cumulative append-only event prefix; snapshot-only backends omit it instead of inventing live coverage. */
+  checkpoint?(): Promise<Journal | undefined>;
   stop(): Promise<Journal>;
 };
 
