@@ -48,9 +48,10 @@ completed/partial outcome. An unfinished intent or retained native cursor blocks
 until explicit recovery/discard. Recovery never reruns an installer automatically.
 
 The baseline metadata and permitted before-images are persisted before execution.
-The closed journal and normalized record are checkpointed afterward. Incremental
-checkpoints while external code is running remain pending; a killed process may
-retain only its baseline and an explicitly unknown interval. A crash can leave an unknown interval
+The closed journal and normalized record are checkpointed afterward. Strace also
+persists changed partial event prefixes once per second, up to 32 publications;
+snapshot-only backends retain their baseline until close. A killed process may
+retain only its last prefix or baseline and an explicitly unknown interval. A crash can leave an unknown interval
 after the last checkpoint. Disk failure, power loss and unobserved effects do not
 become evidence of absence. A failed replacement retains the previous manifest
 and partial new evidence even when replacement cannot be atomic.
@@ -106,7 +107,7 @@ A retained cursor requires manual reconciliation and explicit evidence discard;
 discard never deletes target/staging files and keeps their locations. `inspect`
 finds related receipts when no active record remains.
 
-In-flight capture checkpoints, complete rename semantics,
+The broader interruption/lifecycle matrix, complete rename semantics,
 richer metadata and precise shell-edit reversal remain
 pending. Bounded retention and explicit original/receipt discard are described in
 [recovery retention](recovery-retention.md). The version barrier prevents

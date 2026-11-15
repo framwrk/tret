@@ -36,26 +36,60 @@ export type ParseStraceOptions = {
    * components against the real filesystem before a path is recorded.
    */
   roots?: AbsolutePath[];
+  /** Tracer-owned raw staging never becomes installer payload, including with broad /tmp roots. */
+  excludedRoots?: AbsolutePath[];
 };
 
 export function parseStraceOutput(text: string, options: ParseStraceOptions = {}): TracerResult {
-  const budget = options.budget ?? new CaptureBudget();
-  budget.ensurePhase();
-  const parser = new StraceParser({ ...options, budget });
-  try {
-    budget.consume("auditBytes", Buffer.byteLength(text));
-    let start = 0;
-    while (start < text.length) {
-      const end = text.indexOf("\n", start);
-      parser.feed(text.slice(start, end === -1 ? text.length : end));
-      start = end === -1 ? text.length : end + 1;
-    }
-  } catch (error) {
-    if (!(error instanceof CaptureBudgetError)) throw error;
-    parser.diagnose(error.message);
+  const stream = new StraceStreamParser(options);
+  stream.write(Buffer.from(text));
+  return stream.finish();
+}
+
+/** Append-only parser: partial lines, UTF8, unfinished calls and descriptor maps survive checkpoints. */
+export class StraceStreamParser {
+  private readonly parser: StraceParser;
+  private readonly budget: CaptureBudget;
+  private readonly decoder = new TextDecoder();
+  private pending = "";
+  private failed = false;
+  constructor(options: ParseStraceOptions = {}) {
+    this.budget = options.budget ?? new CaptureBudget();
+    this.budget.ensurePhase();
+    this.parser = new StraceParser({ ...options, budget: this.budget });
   }
-  parser.finish();
-  return parser.result();
+  write(bytes: Uint8Array): void {
+    if (this.failed) return;
+    this.consume(() => {
+      this.budget.consume("auditBytes", bytes.byteLength);
+      this.pending += this.decoder.decode(bytes, { stream: true });
+      let end;
+      while ((end = this.pending.indexOf("\n")) !== -1) {
+        const line = this.pending.slice(0, end);
+        this.pending = this.pending.slice(end + 1);
+        this.parser.feed(line);
+      }
+    });
+  }
+  snapshot(): TracerResult { return this.parser.result(); }
+  finish(): TracerResult {
+    this.consume(() => {
+      this.pending += this.decoder.decode();
+      if (this.pending) this.parser.feed(this.pending);
+      this.pending = "";
+    });
+    this.parser.finish();
+    return this.snapshot();
+  }
+  private consume(work: () => void): void {
+    if (this.failed) return;
+    try { work(); }
+    catch (error) {
+      if (!(error instanceof CaptureBudgetError)) throw error;
+      this.failed = true;
+      this.parser.diagnose(error.message);
+    }
+  }
 }
 
 /** Syscalls that are relevant to the journal, mapped to how they should be interpreted. */
@@ -167,6 +201,8 @@ class StraceParser {
   }
 
   private emit(record: TracerRecord): void {
+    const paths = record.op === "rename" ? [record.from, record.to] : "path" in record && record.path ? [record.path] : [];
+    if (paths.some(path => this.options.excludedRoots?.some(root => path === root || path.startsWith(root + "/")))) return;
     this.options.budget?.consume("metadataBytes", Buffer.byteLength(JSON.stringify(record)) + 128);
     this.records.push(record);
   }

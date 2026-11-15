@@ -57,8 +57,8 @@ must confirm attachment, with a bounded readiness wait, and attachment is checke
 again after durable pre-execution persistence. A killed/full tracer yields partial
 coverage. Raw output is read within the byte ceiling and removed at close;
 diagnostics are bounded. Development-only fanotify injection also bounds incoming
-bytes, lines and retained metadata. This does not complete the separate Linux
-child-launch or live-checkpoint work.
+bytes, lines and retained metadata. Linux child-launch and the full lifecycle
+matrix remain separate work.
 
 Blob writes hold the operation lease, count existing regular objects and staging
 bytes, and refuse new content when full. Deduplication at the ceiling still works.
@@ -73,6 +73,10 @@ oversized private evidence fails closed and is preserved.
 
 These are capture and blob limits. [Recovery retention](recovery-retention.md)
 separately bounds operation/original evidence and exposes explicit discard/purge.
-Live checkpoints remain separate work. Existing receipts pin
+Strace samples changed live prefixes at one-second intervals, at most 32 times.
+Prefix parsing charges each audit byte/line once; metadata reconstruction also
+uses the shared node/event/metadata counters. Prefixes avoid content hashes;
+final reconstruction still runs on the closed trace. Snapshot backends retain
+only their baseline until close. Existing receipts pin
 their referenced blobs. No limit makes same-user private state tamper-proof or
 turns an unknown interval into an empty installation.

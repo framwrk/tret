@@ -1,15 +1,15 @@
 import type { Baseline, CapturedBaseline, FsInspector } from "./inspect";
 import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../backend";
+import type { Journal, JournalEvent } from "../events";
 import type { LinuxTracer, LinuxTracerFactory, TracerAttachOptions } from "./tracer";
 import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
+import { excludePrivateState, privateStateFilter } from "../self-state";
 import { existsSync, readFileSync } from "node:fs";
 import type { AbsolutePath } from "../../../types";
 import type { BlobId } from "../../storage";
 import { CaptureBudget } from "../budget";
-import type { Journal } from "../events";
 import type { TracerResult } from "./raw";
 import { attachStrace } from "./tracer";
-import { excludePrivateState } from "../self-state";
 import { reconstruct } from "./reconstruct";
 
 /**
@@ -75,6 +75,9 @@ export class LinuxCaptureBackend implements CaptureBackend {
     budget.check();
     const tracer = await tracerFactory(attach);
     budget.pause();
+    let prefixRecords = 0;
+    const prefixEvents: JournalEvent[] = [];
+    const prefixState = { live: new Map<AbsolutePath, "created" | "existing">(), nextSequence: 0 };
 
     return {
       backend: tracer.name,
@@ -84,6 +87,19 @@ export class LinuxCaptureBackend implements CaptureBackend {
         if (!(await tracer.status()).active || (tracer.isAttached && !(await tracer.isAttached())))
           throw new Error("strace could not attach: capture was lost before external execution");
       },
+      ...(tracer.checkpoint ? { checkpoint: async (): Promise<Journal | undefined> => {
+        const traced = payloadTrace(await tracer.checkpoint!(), options.pid);
+        if (traced.records.length < prefixRecords) throw new Error("tracer prefix cursor moved backwards");
+        if (traced.records.length === prefixRecords && traced.diagnostics.length === 0) return undefined;
+        const delta = { ...traced, records: traced.records.slice(prefixRecords) };
+        const result = await reconstruct({ traced: delta, inspector: this.inspector, baseline: resolved.baseline,
+          roots: options.roots, fallbackAt: Date.now(), budget, metadataOnly: true, state: prefixState });
+        prefixRecords = traced.records.length;
+        prefixEvents.push(...result.events);
+        for (const reason of [...traced.diagnostics, ...result.diagnostics, ...tracer.losses()]) budget.note(reason);
+        return { backend: tracer.name, completeness: "partial", events: prefixEvents.slice(), resources: budget.report(),
+          partialReason: ["live event prefix; end-of-window state and the subsequent interval remain unknown", ...budget.losses].join("; ") };
+      } } : {}),
       stop: async (): Promise<Journal> => this.stop(tracer, options.roots, resolved, options.pid, budget),
     };
   }
@@ -106,7 +122,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     const settled = await waitForInactive(tracer, this.settleMs);
     const beforeStopLosses = tracer.losses();
     await tracer.stop();
-    const traced = await tracer.records();
+    const traced = payloadTrace(await tracer.records(), rootPid);
     budget.beginPhase();
     const result = await reconstruct({
       traced,
@@ -163,6 +179,19 @@ export class LinuxCaptureBackend implements CaptureBackend {
     if (configured === "none") return { baseline: new MemoryBaseline(), beforeImages: new Map() };
     return { baseline: configured, beforeImages: new Map() };
   }
+}
+
+/** Drop private bookkeeping before filesystem inspection, preserving child-state exclusion diagnostics. */
+function payloadTrace(traced: TracerResult, rootPid: number): TracerResult {
+  const excluded = privateStateFilter();
+  let childState = false;
+  const records = traced.records.filter(record => {
+    const paths = record.op === "rename" ? [record.from, record.to] : "path" in record && record.path ? [record.path] : [];
+    const keep = !paths.some(excluded);
+    if (!keep && record.pid !== rootPid) childState = true;
+    return keep;
+  });
+  return { ...traced, records, diagnostics: childState ? [...traced.diagnostics.slice(0, 31), "private Tret state events excluded; changes to this state are not installation payload"] : traced.diagnostics };
 }
 
 /**

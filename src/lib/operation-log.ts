@@ -44,6 +44,8 @@ export type DurableOperation = {
   };
   /** Describes evidence loss; never stores script text, profile bytes or credentials. */
   unknownSince?: string;
+  /** Start of the latest durable prefix sample, never a completeness watermark. */
+  checkpointAt?: string;
   reason?: string;
   retainedPaths?: string[];
   execution?: { recordId: string; roots: string[]; scriptSha256?: string; executable?: string; exitCode?: number; resources?: CaptureResourceReport };
@@ -136,7 +138,7 @@ export class OperationLog {
     change: Partial<
       Pick<
         DurableOperation,
-        "stage" | "pins" | "checkpoint" | "baseline" | "capture" | "application" | "execution" | "unknownSince" | "reason"
+        "stage" | "pins" | "checkpoint" | "baseline" | "capture" | "application" | "execution" | "unknownSince" | "checkpointAt" | "reason"
       >
     >,
   ): DurableOperation {
@@ -358,7 +360,9 @@ function validOperation(value: unknown): value is DurableOperation {
         (operation.execution.resources === undefined || validCaptureResources(operation.execution.resources)) &&
         (operation.execution.exitCode === undefined || Number.isInteger(operation.execution.exitCode)))) &&
     (operation.unknownSince === undefined ||
-      (typeof operation.unknownSince === "string" && Number.isFinite(Date.parse(operation.unknownSince))))
+      (typeof operation.unknownSince === "string" && Number.isFinite(Date.parse(operation.unknownSince)))) &&
+    (operation.checkpointAt === undefined ||
+      (typeof operation.checkpointAt === "string" && Number.isFinite(Date.parse(operation.checkpointAt))))
   );
 }
 
@@ -435,6 +439,7 @@ export function operationSummary(operation: DurableOperation) {
     updatedAt: operation.updatedAt,
     reason: operation.reason,
     unknownSince: operation.unknownSince,
+    checkpointAt: operation.checkpointAt,
     tools: [
       ...new Set(
         [...operation.priorRecords, ...(operation.checkpoint ? [operation.checkpoint] : [])].map((record) => record.name),

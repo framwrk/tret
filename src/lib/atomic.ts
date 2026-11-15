@@ -30,6 +30,12 @@ export const DEFAULT_PRIVATE_READ_BYTES = 64 * 1024 * 1024;
 
 const TEMP_SUFFIX = ".tmp";
 
+class PrivateReadChangedError extends Error {
+  constructor(path: string, readonly dev: bigint, readonly ino: bigint) {
+    super(`private state changed while reading: ${path}`);
+  }
+}
+
 /** Creates `dir` (and parents) owned by the current user, tightening permissions on an existing dir. */
 export function ensurePrivateDir(dir: string): void {
   assertDirectoryIfExists(dir);
@@ -57,6 +63,22 @@ export function assertDirectoryIfExists(dir: string): void {
  * example a permissions failure) is rethrown, so callers never mistake unreadable data for absence.
  */
 export function readFileIfExists(path: string, maxBytes = DEFAULT_PRIVATE_READ_BYTES): Uint8Array | undefined {
+  let retries = 2;
+  for (;;) {
+    try { return readPrivateFileOnce(path, maxBytes); }
+    catch (error) {
+      if (!(error instanceof PrivateReadChangedError) || retries-- === 0) throw error;
+      let named;
+      try { named = lstatSync(path, { bigint: true }); }
+      catch (failure) { if (!isErrno(failure, "ENOENT")) throw failure; }
+      // Atomic replacement can change the old inode's ctime. Re-open the new name,
+      // retaining hard refusal for an in-place mutation and every no-follow/size check.
+      if (named && named.dev === error.dev && named.ino === error.ino) throw error;
+    }
+  }
+}
+
+function readPrivateFileOnce(path: string, maxBytes: number): Uint8Array | undefined {
   let fd: number;
   try {
     if (!lstatSync(path).isFile()) throw new Error(`private state is not a regular file: ${path}`);
@@ -74,13 +96,13 @@ export function readFileIfExists(path: string, maxBytes = DEFAULT_PRIVATE_READ_B
     let total = 0;
     while (total < bytes.byteLength) {
       const count = readSync(fd, bytes, total, Math.min(64 * 1024, bytes.byteLength - total), null);
-      if (count === 0) throw new Error(`private state changed while reading: ${path}`);
+      if (count === 0) throw new PrivateReadChangedError(path, node.dev, node.ino);
       total += count;
     }
-    if (readSync(fd, Buffer.alloc(1), 0, 1, null) !== 0) throw new Error(`private state changed while reading: ${path}`);
+    if (readSync(fd, Buffer.alloc(1), 0, 1, null) !== 0) throw new PrivateReadChangedError(path, node.dev, node.ino);
     const current = fstatSync(fd, { bigint: true });
     if (!(["dev", "ino", "size", "mode", "uid", "gid", "mtimeNs", "ctimeNs"] as const).every((key) => node[key] === current[key]))
-      throw new Error(`private state changed while reading: ${path}`);
+      throw new PrivateReadChangedError(path, node.dev, node.ino);
     return bytes;
   } finally {
     closeSync(fd);

@@ -26,6 +26,9 @@ import type { CaptureBudget } from "../budget";
  */
 
 export type ReconstructInput = {
+  /** Prefixes preserve live-kind/order state while avoiding repeated content hashing. */
+  state?: ReconstructState;
+  metadataOnly?: boolean;
   budget?: CaptureBudget;
   traced: TracerResult;
   inspector: FsInspector;
@@ -48,6 +51,7 @@ export type ReconstructResult = {
 };
 
 type LiveKind = "created" | "existing";
+export type ReconstructState = { live: Map<AbsolutePath, LiveKind>; nextSequence: number };
 
 export async function reconstruct(input: ReconstructInput): Promise<ReconstructResult> {
   const { traced, inspector: sourceInspector, baseline, roots, fallbackAt } = input;
@@ -57,14 +61,14 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
     resolve: (path) => sourceInspector.resolve(path),
     inspect: async (path, options) => {
       input.budget?.inspect(path);
-      const info = await sourceInspector.inspect(path, options);
+      const info = await sourceInspector.inspect(path, input.metadataOnly ? { hash: false } : options);
       if (info.kind === "unknown" && diagnostics.length < 32) diagnostics.push(`${path}: ${info.reason}`);
-      return info;
+      return input.metadataOnly && info.kind === "file" ? { ...info, hash: undefined } : info;
     },
   };
-  const live = new Map<AbsolutePath, LiveKind>();
+  const live = input.state?.live ?? new Map<AbsolutePath, LiveKind>();
   const resolved = new Map<AbsolutePath, AbsolutePath>();
-  let seq = 0;
+  let seq = input.state?.nextSequence ?? 0;
 
   const ordered = traced.records
     .map((record, index) => ({ record, index }))
@@ -78,6 +82,7 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
     const observed = { ...rest, seq: seq++, at: rawAt ?? fallbackAt + seq } as JournalEvent;
     input.budget?.event(observed);
     events.push(observed);
+    if (input.state) input.state.nextSequence = seq;
   };
 
   // Roots are resolved once, so a symlinked ancestor (for example `/var` -> `/private/var` on a

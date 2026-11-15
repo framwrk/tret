@@ -1,12 +1,13 @@
 import type { TracerRecord, TracerResult } from "./raw";
-import { mkdtemp, open, rm } from "node:fs/promises";
-import { readFileIfExists, writeFileExclusive } from "../../atomic";
+import { mkdtemp, open, realpath, rm } from "node:fs/promises";
 import type { AbsolutePath } from "../../../types";
 import { CaptureBudget } from "../budget";
+import { StraceStreamParser } from "./strace";
+import { constants } from "node:fs";
 import { join } from "node:path";
-import { parseStraceOutput } from "./strace";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
+import { writeFileExclusive } from "../../atomic";
 
 /**
  * An attached Linux observation mechanism. The backend depends only on this seam, so the strace
@@ -18,6 +19,8 @@ export interface LinuxTracer {
   readonly name: string;
   /** Parses the tracer's captured output into records. */
   records(): Promise<TracerResult>;
+  /** Live prefix without finalizing dangling calls or caching the trace as closed. */
+  checkpoint?(): Promise<TracerResult>;
   /** Reasons the tracer already knows coverage is incomplete (attach denied, uid transition, overflow). */
   losses(): string[];
   /** Whether the tracer is still attached as the window closes and how many descendants it sees. */
@@ -138,6 +141,9 @@ export class StraceTracer implements LinuxTracer {
   private stopped = false;
   private cached: TracerResult | undefined;
   private readonly budget: CaptureBudget;
+  private parser?: StraceStreamParser;
+  private offset = 0;
+  private auditIdentity?: string;
 
   constructor(attach: TracerAttachOptions, options: StraceTracerOptions = {}) {
     this.attach = attach;
@@ -149,6 +155,8 @@ export class StraceTracer implements LinuxTracer {
     this.outputDir = await mkdtemp(join(tmpdir(), "tret-strace-"));
     this.outputFile = join(this.outputDir, "trace");
     writeFileExclusive(this.outputFile, new Uint8Array(), 0o600);
+    this.parser = new StraceStreamParser({ cwd: this.options.cwd, roots: this.attach.roots, budget: this.budget,
+      excludedRoots: [...new Set([this.outputDir, await realpath(this.outputDir)])] });
     const args = [
       "-f",
       "-ttt",
@@ -189,28 +197,46 @@ export class StraceTracer implements LinuxTracer {
   }
 
   async records(): Promise<TracerResult> {
-    if (this.cached === undefined) this.cached = await this.collect();
-    return this.cached;
+    if (!this.stopped && this.child && !this.isAlive() && this.cached === undefined) this.cached = await this.collect(true);
+    if (!this.stopped) return this.cached ?? this.checkpoint();
+    return this.cached ?? { records: [], unsupported: [], diagnostics: ["strace close did not retain a final trace"] };
   }
 
+  async checkpoint(): Promise<TracerResult> { return this.cached ?? this.collect(false); }
+
   /** Reads and parses the trace and folds any strace stderr into loss reasons. */
-  private async collect(): Promise<TracerResult> {
-    if (this.outputFile === undefined) return { records: [], unsupported: [], diagnostics: ["strace never attached"] };
-    let text: string;
+  private async collect(final: boolean): Promise<TracerResult> {
+    if (this.outputFile === undefined || !this.parser) return { records: [], unsupported: [], diagnostics: ["strace never attached"] };
+    let file;
     try {
-      const bytes = readFileIfExists(this.outputFile, this.budget.limits.maxAuditBytes);
-      if (!bytes) throw new Error("audit file is unavailable or exceeds its limit");
-      text = Buffer.from(bytes).toString("utf8");
-    } catch {
-      return { records: [], unsupported: [], diagnostics: ["strace produced no output"] };
-    }
-    const parsed = parseStraceOutput(text, { cwd: this.options.cwd, roots: this.attach.roots, budget: this.budget });
+      file = await open(this.outputFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const node = await file.stat();
+      const identity = `${node.dev}:${node.ino}`;
+      if (!node.isFile() || node.nlink !== 1 || (this.auditIdentity !== undefined && this.auditIdentity !== identity) || node.size < this.offset)
+        throw new Error("audit file identity or append-only cursor changed");
+      this.auditIdentity = identity;
+      const limit = Math.min(node.size, this.budget.limits.maxAuditBytes);
+      const bytes = Buffer.alloc(64 * 1024);
+      while (this.offset < limit) {
+        this.budget.check();
+        const { bytesRead } = await file.read(bytes, 0, Math.min(bytes.length, limit - this.offset), this.offset);
+        if (!bytesRead) throw new Error("audit file truncated during prefix read");
+        this.offset += bytesRead;
+        this.parser.write(bytes.subarray(0, bytesRead));
+      }
+      if (node.size > this.budget.limits.maxAuditBytes) this.budget.consume("auditBytes", node.size);
+    } catch (error) {
+      if (this.lossReasons.length < 32) this.lossReasons.push(`strace audit read failed: ${String(error).slice(0, 1024)}`);
+      if (final) this.cached = this.parser.finish();
+      throw error;
+    } finally { await file?.close(); }
     for (const line of this.stderr.split("\n")) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
-      if (this.lossReasons.length < 32 && (looksLikeTraceLoss(trimmed) || trimmed.startsWith("strace:"))) this.lossReasons.push(trimmed.slice(0, 1024));
+      const reason = trimmed.slice(0, 1024);
+      if (this.lossReasons.length < 32 && !this.lossReasons.includes(reason) && (looksLikeTraceLoss(trimmed) || trimmed.startsWith("strace:"))) this.lossReasons.push(reason);
     }
-    return parsed;
+    return final ? this.parser.finish() : this.parser.snapshot();
   }
 
   losses(): string[] {
@@ -245,7 +271,7 @@ export class StraceTracer implements LinuxTracer {
     }
     await this.exit;
     // Parse before removing the output directory so `records()` stays usable after `stop()`.
-    try { if (this.cached === undefined) this.cached = await this.collect(); }
+    try { if (this.cached === undefined) this.cached = await this.collect(true); }
     finally { if (this.outputDir !== undefined) await rm(this.outputDir, { recursive: true, force: true }); }
   }
 

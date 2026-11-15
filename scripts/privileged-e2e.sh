@@ -284,6 +284,11 @@ inspect_capture helper-present "$HOME_FANOTIFY" "$FANOTIFY_NAME" "$FANOTIFY_ENTR
   fail "the helper-present root install did not retain a root-privileged strace fixture"
 echo "privileged-e2e.sh: helper presence and TRET_FANOTIFY did not change the strace default"
 
+# The shipped binary must persist a real strace prefix before the foreground program exits.
+# This helper uses only its own temporary HOME/scope and verifies recovery after SIGKILL.
+sudo -n "$BUN" "$ROOT/scripts/live-capture-e2e.ts" "$BIN" ||
+  fail "compiled live checkpoint, foreground lease, or interrupted recovery failed"
+
 if [ "$REAL_RECORDS_BEFORE" = "absent" ]; then
   [ ! -e "$REAL_RECORDS" ] || fail "the run wrote $REAL_RECORDS outside the temporary HOME"
 else

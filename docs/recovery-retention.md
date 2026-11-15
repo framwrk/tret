@@ -25,8 +25,9 @@ also streams entries with an active-work deadline.
 
 A known quota refusal before execution exits 5 without running external code.
 Failure after work may have started exits 1, retaining the last durable cursor
-and its unknown interval. It never retries an installer. Live checkpoints remain
-separate implementation work.
+and its unknown interval. It never retries an installer. Strace live prefixes
+share these quotas and stop at 32 publications; snapshot-only backends retain
+their baseline until close. See [durable evidence](recovery.md#durable-evidence).
 
 ## Chunked operation evidence
 
