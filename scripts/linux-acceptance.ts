@@ -773,6 +773,7 @@ async function scenarioForcedShellCleanup(binary: string): Promise<void> {
           binary,
           "install",
           "--yes",
+          "--allow-weaker-capture",
           url,
           "--force",
         ],
