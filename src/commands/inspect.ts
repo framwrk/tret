@@ -7,7 +7,8 @@
 // planner `uninstall` uses runs in preview mode, so the preview cannot diverge from the real plan.
 
 import type { CaptureCompleteness, CaptureSegment, OwnedKind, OwnershipConfidence, Privilege, RecordV3 } from "../types";
-import { EXIT_AMBIGUOUS, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { RecoveryLimitError, RecoveryRetentionError } from "../lib/recovery-retention";
 import type { UninstallPlanner, UninstallVerification } from "../lib/uninstall-planner";
 import { VerifiedUninstallPlanner, inspectPath } from "../lib/uninstall-planner";
 import { emitJson, isJsonMode } from "../lib/json-output";
@@ -274,7 +275,14 @@ export async function inspect(selector: string | undefined): Promise<void> {
       for (const candidate of formatSelectionCandidates(selection)) log(`\t${candidate}`);
       fail("inspect-ambiguous", selection.message, EXIT_AMBIGUOUS);
     }
-    const receipts = new FileStorage().operations.list().filter((operation) => operationMatches(operation, selector));
+    const receipts = (() => {
+      try { return new FileStorage().operations.list().filter((operation) => operationMatches(operation, selector)); }
+      catch (error) {
+        if (error instanceof RecoveryLimitError) fail("inspect-limits", error.message, EXIT_USAGE);
+        if (error instanceof RecoveryRetentionError) fail("inspect-retention", error.message, EXIT_BLOCKED);
+        throw error;
+      }
+    })();
     if (receipts.length) {
       if (isJsonMode()) emitJson({ ok: true, command: "inspect", tool: { name: selector, state: "receipt-only", receipts: receipts.map(operationSummary) } });
       else {

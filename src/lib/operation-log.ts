@@ -2,11 +2,11 @@ import { type CaptureResourceReport, validCaptureResources } from "./capture/bud
 import {
   PRIVATE_FILE_MODE,
   assertDirectoryIfExists,
-  isErrno,
   readFileIfExists,
   writeFileAtomic,
   writeFileExclusive,
 } from "./atomic";
+import { type RecoveryLimits, RecoveryRetention, RecoveryRetentionError } from "./recovery-retention";
 import { dirname, join } from "node:path";
 import type { ApplianceOutcome } from "./removal";
 import type { CaptureBaselineEntry } from "./capture/backend";
@@ -17,7 +17,6 @@ import type { UninstallPlan } from "./uninstall-planner";
 import { currentOperationToken } from "./operation-lease";
 import { isV3Record } from "./records";
 import { randomUUID } from "node:crypto";
-import { readdirSync } from "node:fs";
 import { referencedBlobs } from "./storage";
 import { validCleanupApproval } from "./cleanup-authority";
 import { validNativeReceipt } from "./native-action";
@@ -64,34 +63,36 @@ export class OperationRecoveryRequiredError extends Error {
 /** Durable evidence lives independently of an active record, including during replacements. */
 export class OperationLog {
   readonly directory: string;
-  constructor(readonly stateDir: string) {
+  readonly retention: RecoveryRetention;
+  constructor(readonly stateDir: string, limits?: RecoveryLimits) {
     this.directory = join(stateDir, "operations");
+    this.retention = new RecoveryRetention(stateDir, limits);
   }
 
   /** Read-only; unrecognized entries or corrupt manifests fail closed and prevent GC. */
   list(): DurableOperation[] {
     assertDirectoryIfExists(this.stateDir);
     assertDirectoryIfExists(this.directory);
-    let names: string[];
-    try {
-      names = readdirSync(this.directory);
-    } catch (error) {
-      if (isErrno(error, "ENOENT")) return [];
-      throw error;
-    }
+    const names = this.retention.inventory().filter(entry => entry.path.startsWith(this.directory + "/")).map(entry => entry.name);
     return names
       .filter((name) => !name.endsWith(".tmp"))
       .sort()
       .map((name) => {
-        if (!name.endsWith(".json") || !UUID.test(name.slice(0, -5)))
-          throw new Error(`unrecognized recovery entry: ${join(this.directory, name)}`);
-        const bytes = readFileIfExists(join(this.directory, name), MAX_OPERATION_BYTES);
-        if (!bytes || bytes.byteLength > MAX_OPERATION_BYTES) throw new Error(`unreadable or oversized operation: ${name}`);
-        const operation: unknown = JSON.parse(new TextDecoder().decode(bytes));
-        if (!validOperation(operation) || operation.id !== name.slice(0, -5))
-          throw new Error(`invalid operation evidence: ${name}`);
-        return operation;
+        if (!name.endsWith(".json") || !UUID.test(name.slice(0, -5))) throw new Error(`unrecognized recovery entry: ${name}`);
+        const operation = this.get(name.slice(0, -5)); if (!operation) throw new Error(`unreadable operation: ${name}`); return operation;
       });
+  }
+
+  /** An exact id remains inspectable/discardable even when aggregate listing refuses. */
+  get(id: string): DurableOperation | undefined {
+    if (!UUID.test(id)) throw new Error(`invalid operation id: ${id}`);
+    assertDirectoryIfExists(this.stateDir);
+    assertDirectoryIfExists(this.directory);
+    const bytes = readFileIfExists(join(this.directory, `${id}.json`), MAX_OPERATION_BYTES);
+    if (!bytes) return undefined;
+    const operation: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!validOperation(operation) || operation.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
+    return operation;
   }
 
   requireReconciled(): void {
@@ -106,6 +107,7 @@ export class OperationLog {
   begin(kind: DurableOperation["kind"], priorRecords: RecordV3[] = []): DurableOperation {
     const owner = this.requireLease();
     this.requireReconciled();
+    this.retention.beforeIntent();
     const now = new Date().toISOString();
     const operation: DurableOperation = {
       version: 1,
@@ -133,42 +135,48 @@ export class OperationLog {
   ): DurableOperation {
     const owner = this.requireLease();
     if (operation.owner !== owner) throw new Error("operation belongs to a different lease; use explicit recovery");
-    const current = this.list().find((entry) => entry.id === operation.id);
-    if (!current || JSON.stringify(current) !== JSON.stringify(operation))
-      throw new Error("operation checkpoint changed; reload recovery evidence");
-    if (terminal(operation.stage)) throw new Error("a completed operation cannot be resumed");
-    const allowed: Record<string, OperationStage[]> = {
-      prepared: ["prepared", "running", "applying", "completed", "partial"],
-      running: ["running", "captured", "partial", ...(operation.kind === "metadata" ? ["completed" as const] : [])],
-      captured: ["captured", "applying", "completed", "partial"],
-      applying: ["applying", "completed", "partial", ...(operation.kind === "replace" ? ["running" as const] : [])],
-    };
-    if (change.stage && !allowed[operation.stage]?.includes(change.stage))
-      throw new Error("invalid operation stage transition");
-    const next: DurableOperation = {
-      ...operation,
-      ...change,
-      updatedAt: new Date().toISOString(),
-      pins: [
-        ...new Set([
-          ...operation.pins,
-          ...(change.pins ?? []),
-          ...referencedBlobs(change.checkpoint ? [change.checkpoint] : []),
-        ]),
-      ],
-    };
-    if (next.stage === "completed")
-      next.pins = [
-        ...new Set([...referencedBlobs(next.priorRecords), ...referencedBlobs(next.checkpoint ? [next.checkpoint] : [])]),
-      ];
-    this.write(next, false);
-    return next;
+    try {
+      const current = this.list().find((entry) => entry.id === operation.id);
+      if (!current || JSON.stringify(current) !== JSON.stringify(operation))
+        throw new Error("operation checkpoint changed; reload recovery evidence");
+      if (terminal(operation.stage)) throw new Error("a completed operation cannot be resumed");
+      const allowed: Record<string, OperationStage[]> = {
+        prepared: ["prepared", "running", "applying", "completed", "partial"],
+        running: ["running", "captured", "partial", ...(operation.kind === "metadata" ? ["completed" as const] : [])],
+        captured: ["captured", "applying", "completed", "partial"],
+        applying: ["applying", "completed", "partial", ...(operation.kind === "replace" ? ["running" as const] : [])],
+      };
+      if (change.stage && !allowed[operation.stage]?.includes(change.stage))
+        throw new Error("invalid operation stage transition");
+      const next: DurableOperation = {
+        ...operation,
+        ...change,
+        updatedAt: new Date().toISOString(),
+        pins: [
+          ...new Set([
+            ...operation.pins,
+            ...(change.pins ?? []),
+            ...referencedBlobs(change.checkpoint ? [change.checkpoint] : []),
+          ]),
+        ],
+      };
+      if (next.stage === "completed")
+        next.pins = [
+          ...new Set([...referencedBlobs(next.priorRecords), ...referencedBlobs(next.checkpoint ? [next.checkpoint] : [])]),
+        ];
+      this.write(next, false);
+      return next;
+    }
+    catch (error) {
+      if (error instanceof RecoveryRetentionError && ["running", "captured", "applying"].includes(operation.stage)) error.executionMayHaveStarted = true;
+      throw error;
+    }
   }
 
   /** Evidence discard changes no target and can only run with exclusive store access. */
   discard(id: string): DurableOperation {
     const owner = this.requireLease();
-    const operation = this.list().find((entry) => entry.id === id);
+    const operation = this.get(id);
     if (!operation) throw new Error(`operation not found: ${id}`);
     const next: DurableOperation = {
       ...operation,
@@ -177,18 +185,26 @@ export class OperationLog {
       updatedAt: new Date().toISOString(),
       pins: [],
       priorRecords: [],
-      reason: "recovery evidence explicitly discarded",
-      retainedPaths: Object.values(operation.application?.native ?? {}).map((receipt) =>
+      reason: operation.stage === "discarded" ? operation.reason : "recovery evidence explicitly discarded",
+      retainedPaths: [...new Set([...(operation.retainedPaths ?? []), ...Object.values(operation.application?.native ?? {}).map((receipt) =>
         join(dirname(receipt.path), receipt.stageName),
-      ),
+      )])],
     };
     delete next.checkpoint;
     delete next.baseline;
     delete next.capture;
     delete next.application;
     delete next.execution;
-    this.write(next, false);
+    this.write(next, false, true);
     return next;
+  }
+
+  /** A bounded audit tombstone precedes explicit historical-original deletion. */
+  recordEvidenceDiscard(reason: string, retainedPaths: string[]): DurableOperation {
+    const now = new Date().toISOString();
+    const operation: DurableOperation = { version: 1, id: randomUUID(), kind: "metadata", stage: "discarded", startedAt: now, updatedAt: now, owner: this.requireLease(), priorRecords: [], pins: [], reason, retainedPaths };
+    this.write(operation, true, true);
+    return operation;
   }
 
   /** The exclusive kernel lease, rather than a PID or timestamp, establishes recovery access. */
@@ -227,12 +243,15 @@ export class OperationLog {
     return token;
   }
 
-  private write(operation: DurableOperation, exclusive: boolean): void {
+  private write(operation: DurableOperation, exclusive: boolean, discard = false): void {
     if (!validOperation(operation)) throw new Error("refusing invalid durable operation");
     const text = JSON.stringify(operation, null, 2);
     if (Buffer.byteLength(text) > MAX_OPERATION_BYTES) throw new Error("operation evidence exceeds the 16 MiB limit");
     assertDirectoryIfExists(dirname(this.directory));
     const path = join(this.directory, `${operation.id}.json`);
+    if (discard) {
+      if (exclusive && Buffer.byteLength(text) > 64 * 1024) throw new Error("new discard tombstone exceeds 64 KiB; evidence retained");
+    } else this.retention.beforeWrite(path, Buffer.byteLength(text));
     if (exclusive) writeFileExclusive(path, text, PRIVATE_FILE_MODE);
     else writeFileAtomic(path, text, PRIVATE_FILE_MODE);
   }

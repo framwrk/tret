@@ -33,10 +33,11 @@ import {
 import { RecordMigrationError, isV3Record } from "./records";
 import { basename, dirname, join } from "node:path";
 import { currentOperationToken, withOperationLease } from "./operation-lease";
-import { lstatSync, opendirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { lstatSync, opendirSync, renameSync, rmSync, statSync } from "node:fs";
 import { observedRecord, readRecordFile, validateRecordFileV4 } from "./records-v4";
 import type { BackupPolicy } from "./capture/normalize";
 import { OperationLog } from "./operation-log";
+import type { RecoveryLimits } from "./recovery-retention";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { referencedBlobs } from "./storage";
@@ -134,6 +135,7 @@ export class RecordRevisionError extends Error {
 }
 
 export type FileStorageOptions = {
+  recoveryLimits?: RecoveryLimits;
   limits?: CaptureLimits;
   /** Directory whose `.tret` subdirectory holds records and blobs; defaults to `$HOME`. */
   homeDir?: string;
@@ -180,7 +182,7 @@ export class FileStorage implements Storage {
     this.now = options.now ?? Date.now;
     this.recordsPath = join(this.homeDir, RECORDS_PATH);
     this.objectsDir = join(this.homeDir, OBJECTS_PATH);
-    this.operations = new OperationLog(dirname(this.recordsPath));
+    this.operations = new OperationLog(dirname(this.recordsPath), options.recoveryLimits);
   }
 
   get inOperation(): boolean {
@@ -359,11 +361,12 @@ export class FileStorage implements Storage {
       // Corrupt recovery entries can contain references validation cannot recover. Never mistake
       // that unknown graph for an empty store. Legacy v2 originals cannot reference v3 blobs.
       const base = basename(this.recordsPath);
-      if (readdirSync(dirname(this.recordsPath)).some((name) => name.startsWith(`${base}.corrupt-`))) return [];
+      const recovery = this.operations.retention.inventory();
+      if (recovery.some(entry => entry.kind === "corrupt" || entry.kind === "staging")) return [];
       const keep = new Set([...extraKeep, ...referencedBlobs(await this.loadRecords()), ...this.operations.pinnedBlobs()]);
-      for (const name of readdirSync(dirname(this.recordsPath))) {
-        if (!name.startsWith(`${base}.legacy-v3-`)) continue;
-        const bytes = readFileIfExists(join(dirname(this.recordsPath), name));
+      for (const entry of recovery) {
+        if (!entry.name.startsWith(`${base}.legacy-v3-`)) continue;
+        const bytes = readFileIfExists(entry.path);
         if (!bytes) return [];
         try {
           for (const id of referencedBlobs(readRecordFile(JSON.parse(new TextDecoder().decode(bytes))).records)) keep.add(id);
@@ -404,6 +407,9 @@ export class FileStorage implements Storage {
       if (readFileIfExists(target) !== undefined) {
         throw new RecordsCorruptionError(target, "recovery file already exists; original records were left untouched");
       }
+      const source = readFileIfExists(this.recordsPath);
+      if (!source) return undefined;
+      this.operations.retention.beforeWrite(target, source.byteLength);
       renameSync(this.recordsPath, target);
       flushDirectory(dirname(this.recordsPath));
       return target;
@@ -454,6 +460,9 @@ export class FileStorage implements Storage {
       const version = typeof previous === "object" && previous !== null && "version" in previous ? previous.version : undefined;
       if (version !== 2 && version !== 3) throw new RecordsCorruptionError(this.recordsPath, "unsupported migration source");
       const backup = `${this.recordsPath}.legacy-v${version}-${hashContent(original)}.json`;
+      let exists = false;
+      try { lstatSync(backup); exists = true; } catch (error) { if (!isErrno(error, "ENOENT")) throw error; }
+      if (!exists) this.operations.retention.beforeWrite(backup, original.byteLength);
       try {
         writeFileExclusive(backup, original, PRIVATE_FILE_MODE);
       } catch (error) {
@@ -519,13 +528,24 @@ export class FileStorage implements Storage {
     assertDirectoryIfExists(this.objectsDir);
   }
 
-  private listObjects(): Array<{ name: string; isFile(): boolean }> {
+  private *listObjects(): Iterable<{ name: string; isFile(): boolean }> {
+    let directory;
     try {
-      return readdirSync(this.objectsDir, { withFileTypes: true });
+      directory = opendirSync(this.objectsDir, { bufferSize: 32 });
     } catch (error) {
-      if (isErrno(error, "ENOENT")) return [];
+      if (isErrno(error, "ENOENT")) return;
       throw error;
     }
+    const budget = new CaptureBudget(this.resourceLimits ?? captureLimits());
+    budget.beginPhase();
+    try {
+      for (;;) {
+        budget.check();
+        const entry = directory.readSync();
+        if (!entry) return;
+        yield entry;
+      }
+    } finally { directory.closeSync(); }
   }
 }
 

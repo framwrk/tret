@@ -16,8 +16,8 @@ The first migration retains the exact raw original in an owner-only file named
 A matching retained original is validated/flushed before reuse. A mismatched copy
 fails closed without replacing either file. Originals are recovery evidence, not
 active claims. V3 originals can reference blobs and keep them alive after active
-records are forgotten; v2 originals cannot. Explicit original discard remains a
-manual reconciliation step.
+records are forgotten; v2 originals cannot. Original selectors and explicit
+discard/purge decisions are described in [recovery retention](recovery-retention.md).
 
 ## Serialization and revisions
 
@@ -87,8 +87,9 @@ file and directory. Failed exclusive writes clean their own partial file; existi
 names survive failed exclusive opens. A post-rename directory-flush failure can
 leave replacement bytes visible; inspect current state before retrying.
 
-Manifests have a 16 MiB limit. Broader aggregate storage/capture budgets remain
-pending. Same-user state is not tamper-proof, and private persistence still uses
+Manifests have a 16 MiB limit and share a bounded
+[recovery inventory](recovery-retention.md). Live checkpoints and chunked journals
+remain pending. Same-user state is not tamper-proof, and private persistence still uses
 path-based primitives. Native target application, its supported scope and further
 limits are described in [authority-and-operations.md](authority-and-operations.md).
 

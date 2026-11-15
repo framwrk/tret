@@ -135,8 +135,8 @@ switch (command) {
   }
 
   case "recover": {
-    if (ownArgs.includes("--resume") && ownArgs.includes("--discard")) fail("recover-usage", "select one of --resume or --discard", EXIT_USAGE);
-    await recover(ownArgs[1], ownArgs.includes("--resume") ? "resume" : ownArgs.includes("--discard") ? "discard" : "inspect", ownArgs.includes("--yes"));
+    if (["--resume", "--discard", "--purge"].filter(flag => ownArgs.includes(flag)).length > 1) fail("recover-usage", "select one of --resume, --discard or --purge", EXIT_USAGE);
+    await recover(ownArgs[1], ownArgs.includes("--resume") ? "resume" : ownArgs.includes("--discard") ? "discard" : ownArgs.includes("--purge") ? "purge" : "inspect", ownArgs.includes("--yes"));
     break;
   }
 
@@ -203,7 +203,7 @@ function help(): void {
   info(`\tfind <tool>       Record candidate paths for an installed command; cleanup requires separate approval`);
   info(`\ttrace <tool>      Run a tracked tool in a bounded observation window and append what it writes to the record (asks first; --yes when non-interactive)`);
   info(`\tapprove <tool> <path> --remove|--restore|--revoke  Grant/withdraw one object approval (--yes when noninteractive)`);
-  info(`\trecover [id]     Inspect durable operations; --resume or --discard with --yes makes an explicit recovery decision`);
+  info(`\trecover [id]     Inspect operations/originals; --resume, --discard, or --purge of a discarded receipt requires an explicit recovery decision`);
   info(`\tforget <tool>     Stop tracking a tool without touching its files (escape hatch for detect-only leftovers)`);
   info(`\tupdate [tool]     Update Tret to the latest release; with a tool name, re-run that tool's recorded installer`);
   info("");
