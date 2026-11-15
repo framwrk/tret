@@ -75,6 +75,17 @@ evidence, the destination stays a mutation, never a newly owned file. A backup
 of the source is not a backup of an overwritten destination. Unsupported rename
 semantics and unobserved state remain limitations of capture.
 
+Linux reconstruction resolves existing parent components through libc and checks
+that the kernel names the same object, before inspecting the final component.
+Symlinks are followed before `..`; the final symlink remains its own object.
+Resolved suffixes are recorded under the matching observe-root spelling, so stable
+platform aliases retain their baseline and before-images. An unresolved parent,
+dangling link, loop, or traversal through a missing/non-directory component reduces
+coverage rather than producing an effect at a guessed lexical path. Ordinary
+non-traversing missing tails can retain known baseline deletions. Resolution uses
+the namespace available during sampling, not a historical reconstruction of alias
+changes during the installer; those changes remain a capture limitation.
+
 ## Revalidation and shared claims
 
 Cleanup compares the planned content/link state and filesystem identity again

@@ -189,7 +189,7 @@ describe("linux reconstruction: root boundaries", () => {
   test("a symlinked parent that still resolves inside the roots is kept", async () => {
     const inspector = new FakeFsInspector().setResolution("/h/link", "/h/real");
     const { result } = await run([{ op: "mkdir", at: 1, pid: 9, path: "/h/link/out" }], { inspector });
-    expect(result.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual(["/h/link/out"]);
+    expect(result.events.map((event) => (event.type === "mkdir" ? event.path : ""))).toEqual(["/h/real/out"]);
     expect(result.diagnostics).toEqual([]);
   });
 

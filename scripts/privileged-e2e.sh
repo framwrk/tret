@@ -128,9 +128,11 @@ case "\${E2E_FIXTURE_ROOT:-}" in
   /opt/tret-e2e-*) ;;
   *) echo "fixture: refusing an unexpected root: \${E2E_FIXTURE_ROOT:-<unset>}" >&2; exit 1 ;;
 esac
-mkdir -p "\$E2E_FIXTURE_ROOT/bin"
+mkdir -p "\$E2E_FIXTURE_ROOT/bin/inner"
+ln -s "\$E2E_FIXTURE_ROOT/bin/inner" "\$E2E_FIXTURE_ROOT/route"
 set -C
-printf '#!/bin/sh\necho $TOOL\n' >"\$E2E_FIXTURE_ROOT/bin/$TOOL"
+# The kernel follows route before ..; the compiled capture must own bin/$TOOL, not the lexical root/$TOOL.
+printf '#!/bin/sh\necho $TOOL\n' >"\$E2E_FIXTURE_ROOT/route/../$TOOL"
 chmod 755 "\$E2E_FIXTURE_ROOT/bin/$TOOL"
 EOF
 
@@ -218,6 +220,8 @@ sudo -n chown -R "$(id -u):$(id -g)" "$HOME_STRACE"
 # objects with the shipped binary before proving privileged planning/application.
 sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$STRACE_ENTRY" --remove --yes --json >"$WORK/approve-file.json"
 sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$FIXTURE_STRACE/bin" --remove --yes --json >"$WORK/approve-dir.json"
+sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$FIXTURE_STRACE/bin/inner" --remove --yes --json >"$WORK/approve-inner.json"
+sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$FIXTURE_STRACE/route" --remove --yes --json >"$WORK/approve-route.json"
 # Root's approval writes fresh private metadata; return that metadata to the same invoking user.
 sudo -n chown -R "$(id -u):$(id -g)" "$HOME_STRACE"
 

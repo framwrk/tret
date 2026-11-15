@@ -1,6 +1,6 @@
-import { type Pointer, dlopen, toArrayBuffer } from "bun:ffi";
+import { CString, type Pointer, dlopen, toArrayBuffer } from "bun:ffi";
 import { basename, dirname, isAbsolute } from "node:path";
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, openSync, readSync, writeSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, openSync, readSync, statSync, writeSync } from "node:fs";
 
 /** Decimal strings preserve inode/device precision across JSON and JavaScript. */
 export type NodeIdentity = {
@@ -23,6 +23,8 @@ function bind() {
     mkdirat: { args: ["i32", "ptr", "i32"], returns: "i32" },
     unlinkat: { args: ["i32", "ptr", "i32"], returns: "i32" },
     readlinkat: { args: ["i32", "ptr", "ptr", "u64"], returns: "i64" },
+    realpath: { args: ["ptr", "ptr"], returns: "ptr" },
+    free: { args: ["ptr"], returns: "void" },
   } as const;
   if (process.platform === "darwin") {
     const library = dlopen("/usr/lib/libSystem.B.dylib", {
@@ -63,6 +65,34 @@ function bind() {
 function errorNumber(pointer: Pointer | null): number {
   if (!pointer) throw new Error("cannot read native filesystem error");
   return new Int32Array(toArrayBuffer(pointer, 0, 4))[0]!;
+}
+
+/** libc resolves symlinks before `..`; Bun's realpath currently normalizes them in the opposite order. */
+export function nativeRealpath(path: string): string {
+  if (!path.startsWith("/") || path.includes("\0")) throw new Error("native realpath requires an absolute path without NUL");
+  const native = bind();
+  try {
+    const pointer = native.realpath(new TextEncoder().encode(path + "\0"), null);
+    if (!pointer) {
+      const errno = native.errno();
+      throw Object.assign(new Error(`cannot resolve filesystem path (${errno}): ${path}`), {
+        code: errno === 2 ? "ENOENT" : "UNRESOLVABLE",
+      });
+    }
+    try {
+      const resolved = new CString(pointer).toString();
+      // Some libc versions accept regular-file/.. in realpath; the kernel stat must agree.
+      const rawNode = statSync(path, { bigint: true });
+      const resolvedNode = statSync(resolved, { bigint: true });
+      if (rawNode.dev !== resolvedNode.dev || rawNode.ino !== resolvedNode.ino)
+        throw new Error(`filesystem path changed while resolving: ${path}`);
+      return resolved;
+    } finally {
+      native.free(pointer);
+    }
+  } finally {
+    native.close();
+  }
 }
 
 function nameBytes(name: string): Uint8Array {
