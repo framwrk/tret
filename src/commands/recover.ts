@@ -1,9 +1,9 @@
 import { EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { FileStorage, RecordsCapacityError } from "../lib/store";
 import { RecoveryLimitError, RecoveryRetentionError } from "../lib/recovery-retention";
 import { confirm, log } from "../lib/utilities";
 import { discardOriginal, inspectOriginal, originalId, purgeDiscarded } from "../lib/recovery-originals";
 import { emitJson, isJsonMode } from "../lib/json-output";
-import { FileStorage } from "../lib/store";
 import { fail } from "../lib/failure";
 import { operationSummary } from "../lib/operation-log";
 import { resumeOperation } from "../lib/recovery";
@@ -12,6 +12,8 @@ type RecoveryAction = "inspect" | "resume" | "discard" | "purge";
 export async function recover(id: string | undefined, action: RecoveryAction, yes: boolean): Promise<void> {
   try { await runRecovery(id, action, yes); }
   catch (error) {
+    if (error instanceof RecordsCapacityError)
+      fail(error.executionMayHaveStarted ? "records-capacity-partial" : "records-capacity", `${error.message}${error.executionMayHaveStarted ? "; work may have started; inspect the retained operation receipt" : ""}`, error.executionMayHaveStarted ? EXIT_ERROR : EXIT_BLOCKED);
     if (error instanceof RecoveryLimitError) fail("recover-limits", error.message, EXIT_USAGE);
     const retention = error instanceof RecoveryRetentionError ? error : error instanceof Error && error.cause instanceof RecoveryRetentionError ? error.cause : undefined;
     fail(retention ? retention.executionMayHaveStarted ? "recovery-evidence-partial" : "recover-retention" : "recover-blocked", error instanceof Error ? error.message : String(error), retention?.executionMayHaveStarted ? EXIT_ERROR : EXIT_BLOCKED);

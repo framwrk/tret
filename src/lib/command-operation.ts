@@ -1,6 +1,6 @@
 import { CaptureBudgetError, CaptureLimitError } from "./capture/budget";
 import { EXIT_BLOCKED, EXIT_USAGE } from "../constants";
-import { FileStorage, RecordRevisionError, RecordsLockedError } from "./store";
+import { FileStorage, RecordRevisionError, RecordsCapacityError, RecordsLockedError } from "./store";
 import { RecoveryLimitError, RecoveryRetentionError } from "./recovery-retention";
 import { CaptureConsentError } from "./capture/preflight";
 import { EXIT_ERROR } from "../constants";
@@ -13,6 +13,8 @@ export async function runStoreOperation<T>(storage: FileStorage, work: () => Pro
   try {
     return await storage.withOperation(work);
   } catch (error) {
+    if (error instanceof RecordsCapacityError)
+      fail(error.executionMayHaveStarted ? "records-capacity-partial" : "records-capacity", `${error.message}${error.executionMayHaveStarted ? "; work may have started; inspect the retained operation receipt" : ""}`, error.executionMayHaveStarted ? EXIT_ERROR : EXIT_BLOCKED);
     if (error instanceof RecoveryLimitError) fail("recovery-limits", error.message, EXIT_USAGE);
     if (error instanceof RecoveryRetentionError)
       fail(error.executionMayHaveStarted ? "recovery-evidence-partial" : "recovery-retention", `${error.message}${error.executionMayHaveStarted ? "; an operation may have started; its last durable checkpoint is retained" : ""}`, error.executionMayHaveStarted ? EXIT_ERROR : EXIT_BLOCKED);
