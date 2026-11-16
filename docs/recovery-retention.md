@@ -6,7 +6,8 @@ make room. Blob storage has its separate [capture-resource quota](capture-budget
 
 | Limit                                            | Default   | Positive decimal integer override |
 | ------------------------------------------------ | --------- | --------------------------------- |
-| Retained recovery bytes including atomic staging | 128 MiB   | `TRET_RECOVERY_MAX_BYTES`         |
+| Retained physical bytes including atomic staging | 128 MiB   | `TRET_RECOVERY_MAX_BYTES`         |
+| Combined current logical operation payloads      | 128 MiB   | `TRET_RECOVERY_MAX_BYTES`         |
 | Retained recovery entries                        | 1,024     | `TRET_RECOVERY_MAX_ENTRIES`       |
 | Active directory enumeration                     | 30,000 ms | `TRET_RECOVERY_MAX_WORK_MS`       |
 
@@ -16,8 +17,22 @@ loading an over-limit graph. Individual operation manifests remain capped at
 16 MiB, reconstructed operation payloads at 64 MiB, and originals/private reads at 64 MiB. These are retained-byte and work
 limits, not an exact process-RSS guarantee or cancellation of stalled kernel calls.
 
+The byte setting applies independently to physical evidence and current logical
+operation payloads. Reused chunks can make physical storage much smaller than the
+decoded data. Listing charges each immutable manifest snapshot's logical length
+before reading its chunks, with cooperative time checks between bounded reads.
+Legacy v1 manifests contribute their original byte length without migration.
+
 New intents require 32 MiB of checkpoint headroom (half the total under a smaller
 explicit override). Every regular write also checks its actual staging peak.
+Intent headroom also applies to the combined logical payloads; replacement checks
+exclude the old payload of that same ID. A logical refusal happens before new
+chunks or a replacement manifest are written. Physical retention still includes
+all historical generations. Accumulated history or lowering the byte limit can
+make aggregate listing refuse. Byte-limit errors name an ID, and exact-ID
+inspection/discard/purge remain available
+within their individual limits, without decoding unrelated receipts. Discard
+stays an explicit exception so evidence cannot become impossible to address.
 Atomic staging can temporarily add one directory entry. Migration originals and
 explicit corruption quarantine participate in the same quota. Interrupted staging
 or corrupt/unknown graphs prevent blob collection. Blob-directory GC enumeration

@@ -78,6 +78,17 @@ export class OperationLog {
 
   /** Read-only; unrecognized entries or corrupt manifests fail closed and prevent GC. */
   list(): DurableOperation[] {
+    const account = this.logicalGuard();
+    return this.manifestNames().map(name => {
+      const id = name.slice(0, -5);
+      const operation = this.readOperation(id, bytes => account(bytes, id));
+      if (!operation) throw new Error(`unreadable operation: ${name}`);
+      account(0, id);
+      return operation;
+    });
+  }
+
+  private manifestNames(): string[] {
     assertDirectoryIfExists(this.stateDir);
     assertDirectoryIfExists(this.directory);
     const names = this.retention.inventory().filter(entry => entry.path.startsWith(this.directory + "/")).map(entry => entry.name);
@@ -86,21 +97,59 @@ export class OperationLog {
       .sort()
       .map((name) => {
         if (!name.endsWith(".json") || !UUID.test(name.slice(0, -5))) throw new Error(`unrecognized recovery entry: ${name}`);
-        const operation = this.get(name.slice(0, -5)); if (!operation) throw new Error(`unreadable operation: ${name}`); return operation;
+        return name;
       });
   }
 
   /** An exact id remains inspectable/discardable even when aggregate listing refuses. */
   get(id: string): DurableOperation | undefined {
+    return this.readOperation(id);
+  }
+
+  private storedOperation(id: string): { value: OperationEnvelope | DurableOperation; bytes: number } | undefined {
     if (!UUID.test(id)) throw new Error(`invalid operation id: ${id}`);
     assertDirectoryIfExists(this.stateDir);
     assertDirectoryIfExists(this.directory);
     const bytes = readFileIfExists(join(this.directory, `${id}.json`), MAX_OPERATION_BYTES);
     if (!bytes) return undefined;
     const stored: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    const operation: unknown = isEnvelope(stored, id) ? readEnvelope(this.directory, stored) : stored;
+    if (isEnvelope(stored, id)) return { value: stored, bytes: stored.bytes };
+    if (!validOperation(stored) || stored.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
+    return { value: stored, bytes: bytes.byteLength };
+  }
+
+  private readOperation(id: string, account?: (bytes: number) => void): DurableOperation | undefined {
+    const stored = this.storedOperation(id);
+    if (!stored) return;
+    account?.(stored.bytes);
+    const operation: unknown = stored.value.version === 2
+      ? readEnvelope(this.directory, stored.value, () => account?.(0)) : stored.value;
     if (!validOperation(operation) || operation.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
     return operation;
+  }
+
+  private logicalGuard(): (bytes: number, id: string) => void {
+    const limits = this.retention.limits;
+    const deadline = performance.now() + limits.maxWorkMs;
+    let total = 0;
+    return (bytes, id) => {
+      total += bytes;
+      if (performance.now() >= deadline) throw new RecoveryRetentionError(`logical enumeration exceeded ${limits.maxWorkMs} active milliseconds at ${id}`);
+      if (!Number.isSafeInteger(total) || total > limits.maxBytes)
+        throw new RecoveryRetentionError(`logical payload byte limit ${limits.maxBytes} at ${id}; exact-id inspection/discard remains available`);
+    };
+  }
+
+  private requireLogicalCapacity(id: string, bytes: number): void {
+    const account = this.logicalGuard();
+    account(bytes, id);
+    for (const name of this.manifestNames()) {
+      const other = name.slice(0, -5);
+      if (other === id) continue;
+      const stored = this.storedOperation(other);
+      if (!stored) throw new Error(`unreadable operation: ${name}`);
+      account(stored.bytes, other);
+    }
   }
 
   requireReconciled(): void {
@@ -116,6 +165,7 @@ export class OperationLog {
     const owner = this.requireLease();
     this.requireReconciled();
     this.retention.beforeIntent();
+    this.requireLogicalCapacity("new intent", Math.min(32 * 1024 * 1024, Math.floor(this.retention.limits.maxBytes / 2)));
     const now = new Date().toISOString();
     const operation: DurableOperation = {
       version: 1,
@@ -278,12 +328,8 @@ export class OperationLog {
   }
 
   private envelope(id: string): OperationEnvelope | undefined {
-    const bytes = readFileIfExists(join(this.directory, `${id}.json`), MAX_OPERATION_BYTES);
-    if (!bytes) return undefined;
-    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    if (isEnvelope(value, id)) return value;
-    if (!validOperation(value) || value.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
-    return undefined;
+    const stored = this.storedOperation(id);
+    return stored?.value.version === 2 ? stored.value : undefined;
   }
 
   private requireLease(): string {
@@ -300,10 +346,12 @@ export class OperationLog {
     if (!validOperation(operation)) throw new Error("refusing invalid durable operation");
     assertDirectoryIfExists(dirname(this.directory));
     const path = join(this.directory, `${operation.id}.json`);
+    const payload = discard ? undefined : Buffer.from(operationText(operation));
+    if (payload) this.requireLogicalCapacity(operation.id, payload.byteLength);
     // Explicit discard needs no payload chunks or history, even above a lowered quota.
     const envelope = discard
       ? { version: 2, id: operation.id, inline: operation, bytes: Buffer.byteLength(JSON.stringify(operation)), retained: [], pins: [] }
-      : prepareEnvelope(this.directory, operation.id, operation, [...operation.pins, ...referencedBlobs(operation.priorRecords), ...referencedBlobs(operation.checkpoint ? [operation.checkpoint] : [])], previous, this.retention);
+      : prepareEnvelope(this.directory, operation.id, payload!, [...operation.pins, ...referencedBlobs(operation.priorRecords), ...referencedBlobs(operation.checkpoint ? [operation.checkpoint] : [])], previous, this.retention);
     const text = JSON.stringify(envelope);
     if (Buffer.byteLength(text) > MAX_OPERATION_BYTES) throw new Error("operation manifest exceeds the 16 MiB limit");
     if (discard) {
