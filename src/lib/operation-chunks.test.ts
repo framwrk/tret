@@ -174,7 +174,10 @@ test.each(["maxBytes", "maxEntries"] as const)(
       expect(error).toBeInstanceOf(RecoveryRetentionError);
       expect((error as RecoveryRetentionError).executionMayHaveStarted).toBe(true);
       expect(log.get(op.id)).toEqual(op);
-      expect(parts(log).length).toBeGreaterThan(0);
+      if (resource === "maxBytes") {
+        expect((error as Error).message).toContain("logical");
+        expect(parts(log)).toEqual([]);
+      } else expect(parts(log).length).toBeGreaterThan(0);
       expect(log.unpublishedChunks().length).toBe(parts(log).length);
       log.discard(op.id);
       expect(parts(log)).toEqual([]);

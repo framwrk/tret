@@ -69,7 +69,8 @@ export function isEnvelope(value: unknown, id: string): value is OperationEnvelo
   );
 }
 
-export function readEnvelope(directory: string, envelope: OperationEnvelope): unknown {
+export function readEnvelope(directory: string, envelope: OperationEnvelope, check: () => void = () => {}): unknown {
+  check();
   if (envelope.inline !== undefined) {
     if (Buffer.byteLength(JSON.stringify(envelope.inline)) !== envelope.bytes)
       throw new Error("invalid inline operation length");
@@ -78,12 +79,14 @@ export function readEnvelope(directory: string, envelope: OperationEnvelope): un
   const bytes = Buffer.alloc(envelope.bytes);
   let offset = 0;
   for (const part of envelope.parts!) {
+    check();
     const chunk = readFileIfExists(join(directory, chunkName(envelope.id, part.hash)), OPERATION_CHUNK_BYTES);
     if (!chunk || chunk.byteLength !== part.bytes || hash(chunk) !== part.hash)
       throw new Error("missing or corrupt operation chunk; evidence retained");
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  check();
   return JSON.parse(bytes.toString("utf8"));
 }
 
@@ -91,16 +94,15 @@ export function readEnvelope(directory: string, envelope: OperationEnvelope): un
 export function prepareEnvelope(
   directory: string,
   id: string,
-  payload: DurableOperation,
+  bytes: Uint8Array,
   pins: string[],
   previous: OperationEnvelope | undefined,
   retention: RecoveryRetention,
 ): OperationEnvelope {
-  const bytes = Buffer.from(operationText(payload));
   if (bytes.byteLength > OPERATION_LOGICAL_BYTES) throw new Error("operation evidence exceeds the 64 MiB logical limit");
   const retained = new Map((previous?.retained ?? []).map((part) => [part.hash, part]));
   const envelope: OperationEnvelope = { version: 2, id, bytes: bytes.byteLength, retained: [], pins: [] };
-  if (bytes.byteLength <= OPERATION_INLINE_BYTES) envelope.inline = payload;
+  if (bytes.byteLength <= OPERATION_INLINE_BYTES) envelope.inline = JSON.parse(new TextDecoder().decode(bytes));
   else {
     envelope.parts = [];
     for (let offset = 0; offset < bytes.byteLength; offset += OPERATION_CHUNK_BYTES) {
