@@ -36,6 +36,14 @@ the successful installer result then carries the loss in its capture report and
 does not acquire cleanup authority for those effects. The report retains up to
 32 loss messages plus an explicit truncation notice.
 
+Normalization has a separate bounded report: at most 32 notes and 64 KiB of
+serialized report data per segment, including an explicit `omitted` count. Each
+note has a message of at most 1,024 UTF-8 bytes and at most two exact absolute paths
+of 4,096 bytes each. Count, byte and entry bounds apply during collection. A note
+that exceeds them is omitted and counted; paths are never truncated into invented
+names. These reporting limits do not suppress effects or change their authority.
+The same report is retained in records and recovery evidence and shown by inspect.
+
 Regular-file fingerprints use 64 KiB streaming reads independently of backup
 size. Before-images use the same read chunks into an allocation bounded by both
 the per-file limit and remaining aggregate backup bytes. Final symlinks, special

@@ -13,6 +13,7 @@ export type NormalizedEffects = {
   deleted: DeletedEntry[];
   /** Relationships the record does not represent directly (temp-file collapses, renames, coverage). */
   diagnostics: NormalizationDiagnostic[];
+  diagnosticsOmitted?: number;
 };
 
 /** Kinds of diagnostic normalization emits when it edits the raw event sequence. */

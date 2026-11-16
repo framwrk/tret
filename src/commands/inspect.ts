@@ -224,6 +224,10 @@ export function formatInspect(report: InspectReport): string[] {
   for (const segment of report.capture.segments) {
     const reason = segment.partialReason === undefined ? "" : ` (${segment.partialReason})`;
     lines.push(`\tsegment ${segment.kind}: ${formatWindow(segment)}${reason}`);
+    for (const diagnostic of segment.normalization?.entries ?? []) {
+      lines.push(`\t\t${diagnostic.code}: ${diagnostic.message}${diagnostic.paths.length ? ` (${diagnostic.paths.join(" → ")})` : ""}`);
+    }
+    if (segment.normalization?.omitted) lines.push(`\t\t${segment.normalization.omitted} normalization diagnostics omitted by reporting limits`);
   }
 
   lines.push(`tracked ${report.counts.owned} owned, ${report.counts.mutated} mutated, ${report.counts.deleted} deleted`);

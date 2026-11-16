@@ -1,10 +1,11 @@
 import type { ApplianceOutcome, ApplyUninstallResult } from "./removal";
 import { FileStorage, RecordRevisionError } from "./store";
+import { VerifiedUninstallPlanner, claimedByOthers, sharedClaim } from "./uninstall-planner";
 import type { DurableOperation } from "./operation-log";
 import type { RecordV3 } from "../types";
-import { VerifiedUninstallPlanner } from "./uninstall-planner";
 import { applyNativeAction } from "./native-action";
 import { cleanupClaimChecker } from "./delegated-removal";
+import { normalizationDetails } from "./capture/diagnostics";
 import { normalizeJournal } from "./journal/normalize";
 import { reduceRecordForRetry } from "./removal";
 
@@ -22,13 +23,17 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
           reason: "no record checkpoint exists; retained available evidence without executing code",
         });
       const current = records.find((record) => record.id === checkpoint.id);
-      if (current && payload(current) === payload(checkpoint)) {
+      const expected = operation.priorRecords.find((record) => record.id === checkpoint.id);
+      const pendingTrace =
+        operation.kind === "trace" &&
+        operation.capture !== undefined &&
+        checkpoint.capture.segments.length === expected?.capture.segments.length;
+      if (current && payload(current) === payload(checkpoint) && !pendingTrace) {
         return storage.operations.checkpoint(operation, {
           stage: "partial",
           reason: "the record write already committed; recovery did not repeat external execution",
         });
       }
-      const expected = operation.priorRecords.find((record) => record.id === checkpoint.id);
       const replacementRemovedPrior =
         operation.kind === "replace" &&
         operation.application !== undefined &&
@@ -43,6 +48,7 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
       if (current ? current.revision !== expected?.revision : expected !== undefined && !replacementRemovedPrior)
         throw new RecordRevisionError(checkpoint.id);
       let available = checkpoint;
+      let normalizedCapture = operation.capture;
       if (operation.capture && (checkpoint.capture.backend === "pending" || operation.kind === "trace")) {
         const effects = normalizeJournal({
           journal: operation.capture,
@@ -50,19 +56,44 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
           backups: checkpoint.captureSettings?.backups ?? { enabled: false, sizeLimitBytes: 1024 * 1024 },
           availableBeforeImages: new Set(operation.pins),
         });
+        normalizedCapture = { ...operation.capture, ...normalizationDetails(effects) };
+        const segments = pendingTrace
+          ? [
+              ...checkpoint.capture.segments,
+              {
+                kind: "trace" as const,
+                startedAt: operation.unknownSince ?? operation.startedAt,
+                ...(operation.capture.partialReason ? { partialReason: operation.capture.partialReason } : {}),
+                ...(operation.capture.resources ? { resources: operation.capture.resources } : {}),
+                ...(operation.execution?.roots ? { roots: operation.execution.roots } : {}),
+              },
+            ]
+          : checkpoint.capture.segments;
         const tracked = new Set([...checkpoint.owned, ...checkpoint.mutated, ...checkpoint.deleted].map((entry) => entry.path));
+        const claims = operation.kind === "trace" ? claimedByOthers(records, checkpoint.id) : undefined;
+        const canMerge = (entry: { path: string }) =>
+          !tracked.has(entry.path) && (!claims || !sharedClaim(claims, entry.path, checkpoint.caseSensitive));
         available = {
           ...checkpoint,
-          owned: [...checkpoint.owned, ...effects.owned.filter((entry) => !tracked.has(entry.path))],
-          mutated: [...checkpoint.mutated, ...effects.mutated.filter((entry) => !tracked.has(entry.path))],
-          deleted: [...checkpoint.deleted, ...effects.deleted.filter((entry) => !tracked.has(entry.path))],
-          capture: { ...checkpoint.capture, backend: operation.capture.backend },
+          owned: [...checkpoint.owned, ...effects.owned.filter(canMerge)],
+          mutated: [...checkpoint.mutated, ...effects.mutated.filter(canMerge)],
+          deleted: [...checkpoint.deleted, ...effects.deleted.filter(canMerge)],
+          capture: {
+            ...checkpoint.capture,
+            backend: operation.kind === "trace" ? checkpoint.capture.backend : operation.capture.backend,
+            segments: segments.map((segment, index, all) =>
+              index === all.length - 1 ? { ...segment, ...normalizationDetails(effects) } : segment,
+            ),
+          },
         };
       }
       const recovered: RecordV3 = {
         ...available,
         ...(current ? { revision: current.revision } : {}),
-        evidence: [],
+        evidence:
+          operation.kind === "trace"
+            ? (checkpoint.evidence ?? []).map((entry) => ({ ...entry, authority: "none" as const, approval: undefined }))
+            : [],
         capture: {
           ...available.capture,
           completeness: "partial",
@@ -79,10 +110,11 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
         },
       };
       if (!current) delete recovered.revision;
-      await storage.saveRecord(recovered);
+      await storage.saveRecord(recovered, operation.kind === "trace" ? "trace" : "capture");
       return storage.operations.checkpoint(operation, {
         stage: "partial",
         checkpoint: recovered,
+        ...(normalizedCapture ? { capture: normalizedCapture } : {}),
         reason: "available evidence retained; uncaptured interval remains unknown; installer was not rerun",
       });
     }

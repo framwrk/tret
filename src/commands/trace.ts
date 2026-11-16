@@ -25,6 +25,7 @@ import { FileStorage } from "../lib/store";
 import type { NormalizedEffects } from "../lib/capture/normalize";
 import { fail } from "../lib/failure";
 import { installObservationRoots } from "../lib/platform/roots";
+import { normalizationDetails } from "../lib/capture/diagnostics";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { prepareCapture } from "../lib/capture/preflight";
 import { runProgram } from "../lib/installer";
@@ -263,12 +264,12 @@ export async function trace(
   });
 
   const merged = mergeTraceEffects(record, effects, records);
-  const segment: CaptureSegment = window.coverage.segment;
+  const segment: CaptureSegment = { ...window.coverage.segment, ...normalizationDetails(effects) };
   const updated: RecordV3 = {
     ...merged.record,
     capture: { ...record.capture, ...(window.captureError !== undefined ? { completeness: record.capture.completeness === "heuristic" ? "heuristic" as const : "partial" as const } : {}), segments: [...(record.capture.segments ?? []), segment] },
   };
-  if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: updated });
+  if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: updated, capture: { ...operation.capture!, ...normalizationDetails(effects) } });
   await storage.saveRecord(updated, "trace");
   if (operation && operationLog) operationLog.checkpoint(operation, { stage: window.error !== undefined || window.captureError !== undefined || window.value !== 0 || capturePlan.budget.fatalError ? "partial" : "completed" });
 
@@ -297,6 +298,7 @@ export async function trace(
       },
       skipped: merged.skipped,
       diagnostics: effects.diagnostics,
+      ...(effects.diagnosticsOmitted ? { diagnosticsOmitted: effects.diagnosticsOmitted } : {}),
     });
     return;
   }
@@ -307,7 +309,7 @@ export async function trace(
   if (exitCode !== 0) log(`\tthe tool exited with code ${exitCode}; the trace is still recorded`);
 
   const addedTotal = merged.added.owned.length + merged.added.mutated.length + merged.added.deleted.length;
-  if (addedTotal === 0 && merged.skipped.length === 0 && effects.diagnostics.length === 0) {
+  if (addedTotal === 0 && merged.skipped.length === 0 && effects.diagnostics.length === 0 && !effects.diagnosticsOmitted) {
     log("\tno new paths; the record is unchanged");
     return;
   }
@@ -338,6 +340,7 @@ export async function trace(
     const paths = diagnostic.paths.length === 0 ? "" : ` (${diagnostic.paths.join(", ")})`;
     log(`\tdiagnostic ${diagnostic.code}: ${diagnostic.message}${paths}`);
   }
+  if (effects.diagnosticsOmitted) log(`\t${effects.diagnosticsOmitted} normalization diagnostics omitted by reporting limits`);
   log(`\tmerged ${addedTotal} new path${addedTotal === 1 ? "" : "s"} into ${record.name}`);
 }
 

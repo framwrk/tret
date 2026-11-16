@@ -29,6 +29,7 @@ import { diff } from "../lib/diff";
 import { fail } from "../lib/failure";
 import { formatCoverage } from "../lib/session";
 import { formatUninstallPlan } from "../lib/uninstall-planner";
+import { normalizationDetails } from "../lib/capture/diagnostics";
 import { normalizeJournal } from "../lib/journal/normalize";
 import { pickExecutable } from "../lib/executable";
 import { prepareCapture } from "../lib/capture/preflight";
@@ -372,7 +373,7 @@ export async function install(
     window.fallbackResources = capturePlan.budget.report();
     if (capturePlan.budget.losses.size) window.fallbackReason = [...capturePlan.budget.losses].join("; ");
   }
-  operation = storage.operations.checkpoint(operation, { capture: { ...captured, resources: capturePlan.budget.report(), ...(window.fallbackReason ? { partialReason: window.fallbackReason } : {}) }, execution: { ...execution, roots: capturePlan.roots, resources: capturePlan.budget.report(), exitCode: window.exitCode } });
+  operation = storage.operations.checkpoint(operation, { capture: { ...captured, ...normalizationDetails(effects), resources: capturePlan.budget.report(), ...(window.fallbackReason ? { partialReason: window.fallbackReason } : {}) }, execution: { ...execution, roots: capturePlan.roots, resources: capturePlan.budget.report(), exitCode: window.exitCode } });
 
   // An observed executable mutation can name the tool without adding removal authority.
   // A tracked URL keeps its previous name; selection stays inside the bounded effect inventory.
@@ -438,7 +439,7 @@ export async function install(
       backups,
       ...(options.observe === undefined ? {} : { observe: options.observe }),
     },
-    capture: buildCapture(window, failed, clock, failureReason),
+    capture: buildCapture(window, failed, clock, effects, failureReason),
     privilege: processPrivilege(),
     caseSensitive,
     owned: effects.owned,
@@ -495,7 +496,7 @@ export async function install(
       owned: effects.owned.length,
       mutated: effects.mutated.length,
       deleted: effects.deleted.length,
-      capture: { backend: record.capture.backend, completeness: record.capture.completeness, roots: capturePlan.roots, resources: capturePlan.budget.report(), ...((window.coverage?.partialReason ?? window.fallbackReason) ? { partialReason: window.coverage?.partialReason ?? window.fallbackReason } : {}) },
+      capture: { backend: record.capture.backend, completeness: record.capture.completeness, ...normalizationDetails(effects), roots: capturePlan.roots, resources: capturePlan.budget.report(), ...((window.coverage?.partialReason ?? window.fallbackReason) ? { partialReason: window.coverage?.partialReason ?? window.fallbackReason } : {}) },
     });
   }
 }
@@ -697,12 +698,13 @@ async function storeBeforeImages(
 }
 
 /** Builds the record's capture info; a failed install or missing executable is labeled partial (D6). */
-function buildCapture(window: InstallWindow, failed: boolean, clock: () => number, failureReason?: string): CaptureInfo {
+function buildCapture(window: InstallWindow, failed: boolean, clock: () => number, effects: NormalizedEffects, failureReason?: string): CaptureInfo {
   const at = new Date(clock()).toISOString();
   const segment: CaptureSegment = window.coverage
     ? { ...window.coverage.segment }
     : { kind: "install", startedAt: at, endedAt: at, partialReason: "capture disabled for this install" };
   if (window.fallbackResources) segment.resources = window.fallbackResources;
+  Object.assign(segment, normalizationDetails(effects));
   if (window.fallbackRoots) segment.roots = window.fallbackRoots;
   if (window.fallbackReason) segment.partialReason = combineReasons(segment.partialReason, window.fallbackReason);
   let completeness: CaptureCompleteness = window.coverage?.completeness ?? "heuristic";

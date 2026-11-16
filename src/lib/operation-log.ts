@@ -22,6 +22,7 @@ import { isV3Record } from "./records";
 import { randomUUID } from "node:crypto";
 import { referencedBlobs } from "./storage";
 import { rmSync } from "node:fs";
+import { validCaptureDiagnostics } from "./capture/diagnostics";
 import { validCleanupApproval } from "./cleanup-authority";
 import { validNativeReceipt } from "./native-action";
 
@@ -364,7 +365,8 @@ function validOperation(value: unknown): value is DurableOperation {
       (typeof operation.capture.backend === "string" &&
         ["complete", "partial", "heuristic"].includes(operation.capture.completeness) &&
         Array.isArray(operation.capture.events) &&
-        (operation.capture.resources === undefined || validCaptureResources(operation.capture.resources)))) &&
+        (operation.capture.resources === undefined || validCaptureResources(operation.capture.resources)) &&
+        (operation.capture.normalization === undefined || validCaptureDiagnostics(operation.capture.normalization)))) &&
     (operation.application === undefined || validApplication(operation.application)) &&
     (operation.reason === undefined || typeof operation.reason === "string") &&
     (operation.retainedPaths === undefined ||
@@ -471,6 +473,7 @@ export function operationSummary(operation: DurableOperation) {
           completeness: operation.capture.completeness,
           partialReason: operation.capture.partialReason,
           events: operation.capture.events.length,
+          ...(operation.capture.normalization ? { normalization: operation.capture.normalization } : {}),
         }
       : undefined,
     exitCode: operation.execution?.exitCode,

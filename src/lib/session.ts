@@ -257,9 +257,10 @@ export function formatCoverage(coverage: SessionCoverage): string {
   return `${coverage.backend}: ${describeCompleteness(coverage)}; window ${formatWindow(coverage.segment)}; ${coverage.events} events over ${coverage.roots.length} roots`;
 }
 
-/** Formats a segment's observation window as `start → end (Ns)`. */
+/** Formats a known observation window with its duration; absent ends remain explicitly unknown. */
 export function formatWindow(segment: CaptureSegment): string {
-  const endedAt = segment.endedAt ?? segment.startedAt;
+  if (segment.endedAt === undefined) return `${segment.startedAt} → unknown`;
+  const endedAt = segment.endedAt;
   const seconds = (Date.parse(endedAt) - Date.parse(segment.startedAt)) / 1000;
   return `${segment.startedAt} → ${endedAt} (${seconds.toFixed(1)}s)`;
 }
