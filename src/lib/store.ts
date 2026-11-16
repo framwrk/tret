@@ -16,9 +16,8 @@
 
 import type { BlobId, BlobRef, Storage } from "./storage";
 import { CaptureBudget, CaptureBudgetError, type CaptureLimits, captureLimits } from "./capture/budget";
-import type { EffectEvidence, RecordFileV4, RecordV3, RecordV4 } from "../types";
-import { OBJECTS_PATH, RECORDS_PATH } from "../constants";
 import {
+  DEFAULT_PRIVATE_READ_BYTES,
   PRIVATE_FILE_MODE,
   assertDirectoryIfExists,
   ensurePrivateDir,
@@ -30,6 +29,8 @@ import {
   writeFileAtomic,
   writeFileExclusive,
 } from "./atomic";
+import type { EffectEvidence, RecordFileV4, RecordV3, RecordV4 } from "../types";
+import { OBJECTS_PATH, RECORDS_PATH } from "../constants";
 import { RecordMigrationError, isV3Record } from "./records";
 import { basename, dirname, join } from "node:path";
 import { currentOperationToken, withOperationLease } from "./operation-lease";
@@ -134,6 +135,14 @@ export class RecordRevisionError extends Error {
   }
 }
 
+export class RecordsCapacityError extends Error {
+  executionMayHaveStarted = false;
+  constructor(bytes: number) {
+    super(`${bytes} bytes exceed the records file limit (${DEFAULT_PRIVATE_READ_BYTES} bytes); prior records were preserved`);
+    this.name = "RecordsCapacityError";
+  }
+}
+
 export type FileStorageOptions = {
   recoveryLimits?: RecoveryLimits;
   limits?: CaptureLimits;
@@ -194,7 +203,17 @@ export class FileStorage implements Storage {
     if (this.inOperation) return work();
     return withOperationLease(dirname(this.recordsPath), async () => {
       if (!recovery) this.operations.requireReconciled();
-      return work();
+      try { return await work(); }
+      catch (error) {
+        if (error instanceof RecordsCapacityError) {
+          try {
+            const owner = currentOperationToken(dirname(this.recordsPath));
+            error.executionMayHaveStarted ||= this.operations.list().some(operation => operation.owner === owner &&
+              ["running", "captured", "applying", "partial"].includes(operation.stage));
+          } catch { error.executionMayHaveStarted = true; }
+        }
+        throw error;
+      }
     }, this.lockTimeoutMs);
   }
 
@@ -454,6 +473,10 @@ export class FileStorage implements Storage {
   }
 
   private writeRecords(records: RecordV4[], sequence: number): void {
+    const file = validateRecordFileV4({ version: 4, sequence, records });
+    const serialized = JSON.stringify(file, null, 2);
+    const bytes = Buffer.byteLength(serialized);
+    if (bytes > DEFAULT_PRIVATE_READ_BYTES) throw new RecordsCapacityError(bytes);
     const original = readFileIfExists(this.recordsPath);
     const previous: unknown = original === undefined ? undefined : JSON.parse(new TextDecoder().decode(original));
     if (original !== undefined && !isVersion4File(previous)) {
@@ -474,8 +497,7 @@ export class FileStorage implements Storage {
         flushFile(backup);
       }
     }
-    const file = validateRecordFileV4({ version: 4, sequence, records });
-    writeFileAtomic(this.recordsPath, JSON.stringify(file, null, 2), PRIVATE_FILE_MODE);
+    writeFileAtomic(this.recordsPath, serialized, PRIVATE_FILE_MODE);
   }
 
   /**

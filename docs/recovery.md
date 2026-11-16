@@ -106,6 +106,15 @@ file and directory. Failed exclusive writes clean their own partial file; existi
 names survive failed exclusive opens. A post-rename directory-flush failure can
 leave replacement bytes visible; inspect current state before retrying.
 
+The active records file has a 64 MiB read/write
+ceiling, measured on the serialized UTF-8 bytes. Oversized saves and migration
+expansion refuse before publishing or making a legacy backup; existing records
+remain readable and unchanged. A known pre-work refusal exits 5 with
+`records-capacity`. If the current durable intent indicates work may have started,
+or its phase cannot be inspected, the command exits 1 with
+`records-capacity-partial`; retain and inspect the last durable receipt before
+deciding how to free tracking space. There is no automatic eviction or rerun.
+
 Manifests have a 16 MiB limit, with verified immutable chunks supporting logical
 operations up to 64 MiB. New physical version 2 manifests reject older readers;
 version 1 receipts remain readable without migration. Chunks and manifests share a bounded
