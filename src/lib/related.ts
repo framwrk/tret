@@ -1,37 +1,49 @@
+import { CaptureBudget, CaptureBudgetError } from "./capture/budget";
 import type { AbsolutePath } from "../types";
 import type { Platform } from "./platform";
 import { currentPlatform } from "./platform";
 import { join } from "node:path";
-import { readdirSync } from "node:fs";
+import { opendirSync } from "node:fs";
 
-/**
- * Finds every file and folder that belongs to a tool: the executable it runs as, its dot folder
- * under `$HOME`, and tool-named entries in the standard tool directories of the active platform.
- * Only the top-most path of a nest is returned, matching what `diff()` records for an install.
- */
-export function findRelated(name: string, executable: AbsolutePath, platform: Platform = currentPlatform()): AbsolutePath[] {
-  const home = Bun.env.HOME;
+/** The actual shallow discovery roots, de-duplicated before any enumeration. */
+export function relatedSearchRoots(platform: Platform = currentPlatform(), home = Bun.env.HOME): AbsolutePath[] {
   if (!home) throw new Error("HOME is not set");
-
-  const found = new Set<AbsolutePath>([executable]);
-  addToolEntries(home, name, found);
-  for (const dir of platform.searchRootsInHome) addToolEntries(join(home, dir), name, found);
-  for (const dir of platform.searchRootsAbsolute) addToolEntries(dir, name, found);
-  return topMost([...found].sort());
+  return [...new Set([home, ...platform.searchRootsInHome.map(dir => join(home, dir)), ...platform.searchRootsAbsolute])].sort();
 }
 
-/** Collects the tool's own entries in one directory; a directory that cannot be read is skipped. */
-function addToolEntries(dir: AbsolutePath, name: string, found: Set<AbsolutePath>): void {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
-  }
+/** Name matches are candidate observations only, never proof of ownership or disposal authority. */
+export function findRelated(
+  name: string,
+  executable: AbsolutePath,
+  platform: Platform = currentPlatform(),
+  budget = new CaptureBudget(),
+): AbsolutePath[] {
+  budget.ensurePhase();
+  const found = new Set<AbsolutePath>([executable]);
+  for (const dir of relatedSearchRoots(platform)) addToolEntries(dir, name, found, budget);
+  return topMost([...found].sort(), budget);
+}
 
-  for (const entry of entries) {
-    if (belongsTo(entry, name)) found.add(join(dir, entry));
-  }
+/** Stream all entries, including nonmatches: discovery work is part of the inventory's budget. */
+function addToolEntries(dir: AbsolutePath, name: string, found: Set<AbsolutePath>, budget: CaptureBudget): void {
+  budget.inspect(dir);
+  let directory;
+  try {
+    directory = opendirSync(dir, { bufferSize: 32 });
+    for (;;) {
+      budget.check();
+      const entry = directory.readSync();
+      if (!entry) break;
+      const path = join(dir, entry.name);
+      budget.inspect(path);
+      if (belongsTo(entry.name, name)) found.add(path);
+    }
+  } catch (error) {
+    if (error instanceof CaptureBudgetError) throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (directory || (code !== "ENOENT" && code !== "ENOTDIR"))
+      budget.note(`discovery directory unreadable: ${dir}: ${String(error)}`);
+  } finally { directory?.closeSync(); }
 }
 
 /** True when an entry is the tool's: `mytool`, `mytool.plist`, `.mytool`, or `.mytoolrc`. */
@@ -41,11 +53,17 @@ function belongsTo(entry: string, name: string): boolean {
   return base === wanted || base === `${wanted}rc` || base.startsWith(`${wanted}.`);
 }
 
-/** Drops every path nested inside another match, so a recorded folder already covers its contents. */
-function topMost(paths: AbsolutePath[]): AbsolutePath[] {
-  const kept: AbsolutePath[] = [];
+/** Test ancestor membership instead of comparing every match against every earlier sibling. */
+function topMost(paths: AbsolutePath[], budget: CaptureBudget): AbsolutePath[] {
+  const kept = new Set<AbsolutePath>();
   for (const path of paths) {
-    if (!kept.some((parent) => path.startsWith(`${parent}/`))) kept.push(path);
+    budget.check();
+    let nested = false;
+    for (let end = path.lastIndexOf("/"); end > 0; end = path.lastIndexOf("/", end - 1)) {
+      budget.check();
+      if (kept.has(path.slice(0, end))) { nested = true; break; }
+    }
+    if (!nested) kept.add(path);
   }
-  return kept;
+  return [...kept];
 }

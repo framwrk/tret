@@ -59,6 +59,13 @@ label grants no cleanup authority; its candidates require the same explicit appr
 The packaged helper remains for experiments. Every record now requires per-effect
 cleanup approval; child-launch tracing and real-kernel fidelity tests remain open.
 
+`find` also records candidate observations, with one shared resource budget for
+streamed name discovery and descendant fingerprinting. Nonmatching entries count
+toward the scan limit. Its segment retains effective limits, usage, search roots
+and unreadable/content omissions; exhaustion refuses before a tracking write.
+Discovery never executes the found command. A tool-name match, matching hash or
+directory inventory grants no cleanup approval, including for later descendants.
+
 On Linux, requesting `O_CREAT` does not establish that a file was created: it may
 open an existing file. Only a successful exclusive-create observation can produce
 a new file from that open. A missing entry in a pruned baseline is unknown, not
