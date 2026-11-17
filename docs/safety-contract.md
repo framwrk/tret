@@ -77,6 +77,19 @@ as an observed mutation. That executable can supply a display name without
 granting removal authority. An installed content hash alone cannot upgrade the
 observation to creation proof.
 
+Decoded `openat2` structures retain flags and mode, including successful exclusive
+creation evidence. Nested syscall arguments are split structurally; unquoted
+descriptor annotations stay opaque, including filename commas/brackets/quotes.
+Read-only `O_PATH` handles and unnamed `O_TMPFILE` descriptors cannot establish a new named
+object or truncation, even if creation bits are also printed. Unknown flags or
+abbreviated structures reduce coverage without granting creation proof.
+Nonzero `openat2` resolution constraints currently require a returned descriptor
+path annotation and retain only a mutation, not creation authority: in-root
+resolution can reinterpret an absolute argument. Missing annotations stay unknown
+and never seed a guessed descriptor path. This follows the decoded format in
+[strace's open implementation](https://github.com/strace/strace/blob/master/src/open.c);
+full constrained-path reconstruction remains pending.
+
 A rename retains the destination's captured before-state. Without destination
 evidence, the destination stays a mutation, never a newly owned file. A successful
 `RENAME_NOREPLACE` supplies destination absence at that operation, without replacing

@@ -330,22 +330,36 @@ class StraceParser {
       path = this.resolvePathAt(args[0], args[1], pid);
       flags = args[2] ?? "";
     }
-    if (path === undefined) return;
-
     const fd = fdFromReturn(ret);
-    if (fd !== undefined) this.fdMap(pid).set(fd, path);
+    if (fd !== undefined) this.fdMap(pid).delete(fd);
 
-    // `openat2` puts flags in a struct we do not decode; treat it as an open with unknown flags.
-    if (syscall === "openat2") flags = "";
+    let mode = parseMode(args[args.length - 1]);
+    let constrained = false;
+    if (syscall === "openat2") {
+      const how = openHow(args[2]);
+      mode = parseMode(how?.mode);
+      flags = how?.flags ?? "";
+      constrained = !how || !/^(?:0+|0x0+)$/.test(how.resolve);
+      if (constrained) {
+        this.diagnose("openat2 resolution or structure is not fully decoded; only an annotated result can be observed without creation proof");
+        const actual = fdAnnotation(ret);
+        path = actual === undefined ? undefined : normalizeRoot(actual, this.options);
+        if (path === undefined) return;
+      }
+    }
+    if (path === undefined) return;
+    if (fd !== undefined) this.fdMap(pid).set(fd, path);
+    const decoded = openFlags(flags);
+    if (!decoded.known) this.diagnose("open flags could not be fully decoded; creation and truncation remain unknown");
     this.emit({
       op: "open",
       at,
       pid,
       path,
-      created: flags.includes("O_CREAT") || syscall === "creat",
-      ...(flags.includes("O_CREAT") && flags.includes("O_EXCL") ? { exclusive: true } : {}),
-      truncated: flags.includes("O_TRUNC"),
-      mode: parseMode(args[args.length - 1]),
+      created: decoded.created,
+      ...(decoded.created && decoded.exclusive && !constrained ? { exclusive: true } : {}),
+      truncated: decoded.truncated,
+      mode,
     });
   }
 
@@ -519,9 +533,14 @@ function splitCall(rest: string): Call | undefined {
 /** Scans from just after `(` to the matching `)`, honoring strace string quoting. */
 function scanArgs(rest: string, start: number): { args: string; endIndex: number; unfinished: boolean } {
   let inString = false;
+  let inAnnotation = false;
   let escaped = false;
   for (let i = start; i < rest.length; i += 1) {
     const ch = rest[i]!;
+    if (inAnnotation) {
+      if (ch === ">") inAnnotation = false;
+      continue;
+    }
     if (escaped) {
       escaped = false;
       continue;
@@ -535,10 +554,11 @@ function scanArgs(rest: string, start: number): { args: string; endIndex: number
       inString = true;
       continue;
     }
-    if (ch === ")") return { args: rest.slice(start, i), endIndex: i + 1, unfinished: false };
     if (ch === "<" && rest.startsWith("<unfinished", i)) {
       return { args: rest.slice(start, i).replace(/,\s*$/, ""), endIndex: -1, unfinished: true };
     }
+    if (ch === "<") { inAnnotation = true; continue; }
+    if (ch === ")") return { args: rest.slice(start, i), endIndex: i + 1, unfinished: false };
   }
   return { args: rest.slice(start), endIndex: -1, unfinished: false };
 }
@@ -548,8 +568,15 @@ export function splitArgs(body: string): string[] {
   const args: string[] = [];
   let current = "";
   let inString = false;
+  let inAnnotation = false;
   let escaped = false;
+  let depth = 0;
   for (const ch of body) {
+    if (inAnnotation) {
+      current += ch;
+      if (ch === ">") inAnnotation = false;
+      continue;
+    }
     if (escaped) {
       current += ch;
       escaped = false;
@@ -566,7 +593,10 @@ export function splitArgs(body: string): string[] {
       current += ch;
       continue;
     }
-    if (ch === ",") {
+    if (ch === "<") { inAnnotation = true; current += ch; continue; }
+    if ("{[(".includes(ch)) depth++;
+    else if ("}])".includes(ch)) depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
       args.push(current.trim());
       current = "";
       continue;
@@ -686,6 +716,37 @@ function isSharedWritableFileMap(args: string[]): boolean {
   if (!flags.includes("MAP_SHARED")) return false;
   if (flags.includes("MAP_ANONYMOUS") || flags.includes("MAP_ANON")) return false;
   return /^\d+<[^>]*>/.test(fd);
+}
+
+/** Decode complete open_how fields; abbreviated/unreadable/future structures stay unknown. */
+function openHow(raw: string | undefined): { flags: string; mode?: string; resolve: string } | undefined {
+  if (!raw?.startsWith("{") || !raw.endsWith("}")) return;
+  const fields = new Map<string, string>();
+  for (const field of splitArgs(raw.slice(1, -1))) {
+    const match = /^(flags|mode|resolve)=(.+)$/.exec(field);
+    if (!match || fields.has(match[1]!)) return;
+    fields.set(match[1]!, match[2]!);
+  }
+  const flags = fields.get("flags"), resolve = fields.get("resolve");
+  return flags !== undefined && resolve !== undefined ? { flags, resolve, mode: fields.get("mode") } : undefined;
+}
+
+/** Creation bits are shared by supported Linux targets; O_PATH and unnamed tmpfiles name no new object. */
+function openFlags(raw: string): { known: boolean; created: boolean; exclusive: boolean; truncated: boolean } {
+  const named: Record<string, bigint> = { O_CREAT: 0x40n, O_EXCL: 0x80n, O_TRUNC: 0x200n, O_PATH: 0x200000n, O_TMPFILE: 0x400000n };
+  const ordinary = new Set(["O_RDONLY", "O_WRONLY", "O_RDWR", "O_APPEND", "O_ASYNC", "FASYNC", "O_CLOEXEC", "O_DIRECT", "O_DIRECTORY", "O_DSYNC", "O_LARGEFILE", "O_NOATIME", "O_NOCTTY", "O_NOFOLLOW", "O_NONBLOCK", "O_NDELAY", "O_SYNC", "O_RSYNC", "O_ACCMODE"]);
+  let bits = 0n, known = raw.length > 0;
+  for (const part of raw.split("|").map(value => value.trim())) {
+    if (Object.hasOwn(named, part)) bits |= named[part]!;
+    else if (/^(?:0x[0-9a-f]+|0[0-7]+|[1-9][0-9]*|0)$/i.test(part)) {
+      const numeric = BigInt(/^0[0-7]+$/.test(part) ? `0o${part.slice(1)}` : part);
+      if ((numeric & ~0x7fffffn) !== 0n) known = false;
+      bits |= numeric;
+    } else if (!ordinary.has(part)) known = false;
+  }
+  const naming = known && (bits & (0x200000n | 0x400000n)) === 0n;
+  return { known, created: naming && (bits & 0x40n) !== 0n, exclusive: naming && (bits & 0x80n) !== 0n,
+    truncated: naming && (bits & 0x200n) !== 0n };
 }
 
 function parseMode(raw: string | undefined): number | undefined {

@@ -118,11 +118,21 @@ EOF
 chmod 755 "$FANOTIFY_BIN_DIR/tret" "$FANOTIFY_BIN_DIR/tret-fanotify" "$FANOTIFY_BIN_DIR/tret-fanotify-real"
 FANOTIFY_BIN="$FANOTIFY_BIN_DIR/tret"
 
-# Exercise the actual flagged syscall with the runner's existing Bun and libc.
+# Exercise actual openat2 exclusive creation and exchange syscalls with the runner's existing Bun and libc.
 cat >"$WORK/exchange.ts" <<'EOF'
 import { dlopen } from "bun:ffi";
-const library = dlopen("libc.so.6", { renameat2: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" } });
+import { closeSync, fchmodSync, writeSync } from "node:fs";
+const library = dlopen("libc.so.6", {
+  renameat2: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" },
+  syscall: { args: ["i64", "i32", "ptr", "ptr", "u64"], returns: "i64" },
+});
 try {
+  // openat2 is syscall 437 on both supported Linux architectures; how is three u64 fields.
+  const how = new BigUint64Array([0xc1n, 0o755n, 0n]);
+  const fd = Number(library.symbols.syscall(437, -100, Buffer.from(process.argv[3] + "\0"), how, 24));
+  if (fd < 0) throw new Error("fixture openat2 exclusive creation failed");
+  try { writeSync(fd, "#!/bin/sh\necho exchange-peer\n"); fchmodSync(fd, 0o755); }
+  finally { closeSync(fd); }
   const result = library.symbols.renameat2(-100, Buffer.from(process.argv[2] + "\0"), -100, Buffer.from(process.argv[3] + "\0"), 2);
   if (result !== 0) throw new Error("fixture RENAME_EXCHANGE failed");
 } finally { library.close(); }
@@ -143,8 +153,7 @@ ln -s "\$E2E_FIXTURE_ROOT/bin/inner" "\$E2E_FIXTURE_ROOT/route"
 set -C
 # The kernel follows route before ..; the compiled capture must own bin/$TOOL, not the lexical root/$TOOL.
 printf '#!/bin/sh\necho $TOOL\n' >"\$E2E_FIXTURE_ROOT/route/../$TOOL"
-printf '#!/bin/sh\necho exchange-peer\n' >"\$E2E_FIXTURE_ROOT/bin/$TOOL-exchange-peer"
-chmod 755 "\$E2E_FIXTURE_ROOT/bin/$TOOL" "\$E2E_FIXTURE_ROOT/bin/$TOOL-exchange-peer"
+chmod 755 "\$E2E_FIXTURE_ROOT/bin/$TOOL"
 "$BUN" "$WORK/exchange.ts" "\$E2E_FIXTURE_ROOT/bin/$TOOL" "\$E2E_FIXTURE_ROOT/bin/$TOOL-exchange-peer"
 EOF
 
