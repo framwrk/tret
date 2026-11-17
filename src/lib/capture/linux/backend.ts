@@ -186,7 +186,14 @@ function payloadTrace(traced: TracerResult, rootPid: number): TracerResult {
   const excluded = privateStateFilter();
   let childState = false;
   const records = traced.records.filter(record => {
-    const paths = record.op === "rename" ? [record.from, record.to] : "path" in record && record.path ? [record.path] : [];
+    // Boundary renames need endpoint-by-endpoint reconstruction. Pure bookkeeping still drops
+    // before inspection; defer spellings with traversal components to kernel-aware resolution.
+    if (record.op === "rename") {
+      const privateOnly = [record.from, record.to].every(path => excluded(path) && !path.split("/").includes(".."));
+      if (privateOnly && record.pid !== rootPid) childState = true;
+      return !privateOnly;
+    }
+    const paths = "path" in record && record.path ? [record.path] : [];
     const keep = !paths.some(excluded);
     if (!keep && record.pid !== rootPid) childState = true;
     return keep;

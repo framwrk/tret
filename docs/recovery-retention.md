@@ -46,8 +46,12 @@ their baseline until close. See [durable evidence](recovery.md#durable-evidence)
 
 ## Chunked operation evidence
 
-New manifests use physical version 2; older readers refuse them before mutations.
-Version 1 receipts remain readable without migration. Logical payloads up to
+New manifests use physical version 2 and logical operation version 2. Logical v2
+preserves flagged renames, sampled absence and uncertain endpoints; readers that
+only understand logical v1 refuse it rather than recover an exchange as a move.
+Legacy bare v1 receipts and physical-v2 envelopes containing logical v1 remain
+readable without migration. An explicit write upgrades logical v1 to v2; bare
+logical v2 is not a supported storage format. Logical payloads up to
 256 KiB stay inline. Larger payloads use immutable SHA-256-addressed chunks of at
 most 1 MiB, named `<operation-id>.<sha256>.part` beside the manifest. Readers
 verify every referenced chunk and its length before reconstructing an operation;

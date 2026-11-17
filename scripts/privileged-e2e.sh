@@ -118,6 +118,16 @@ EOF
 chmod 755 "$FANOTIFY_BIN_DIR/tret" "$FANOTIFY_BIN_DIR/tret-fanotify" "$FANOTIFY_BIN_DIR/tret-fanotify-real"
 FANOTIFY_BIN="$FANOTIFY_BIN_DIR/tret"
 
+# Exercise the actual flagged syscall with the runner's existing Bun and libc.
+cat >"$WORK/exchange.ts" <<'EOF'
+import { dlopen } from "bun:ffi";
+const library = dlopen("libc.so.6", { renameat2: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" } });
+try {
+  const result = library.symbols.renameat2(-100, Buffer.from(process.argv[2] + "\0"), -100, Buffer.from(process.argv[3] + "\0"), 2);
+  if (result !== 0) throw new Error("fixture RENAME_EXCHANGE failed");
+} finally { library.close(); }
+EOF
+
 # The fixture installer. It runs as root (the whole install runs as root), so the file it writes is
 # root-owned: the case the plan's D8 decision is about. It reads the run's fixture root from the
 # environment and refuses any path outside the check's own /opt/tret-e2e-* namespace.
@@ -133,7 +143,9 @@ ln -s "\$E2E_FIXTURE_ROOT/bin/inner" "\$E2E_FIXTURE_ROOT/route"
 set -C
 # The kernel follows route before ..; the compiled capture must own bin/$TOOL, not the lexical root/$TOOL.
 printf '#!/bin/sh\necho $TOOL\n' >"\$E2E_FIXTURE_ROOT/route/../$TOOL"
-chmod 755 "\$E2E_FIXTURE_ROOT/bin/$TOOL"
+printf '#!/bin/sh\necho exchange-peer\n' >"\$E2E_FIXTURE_ROOT/bin/$TOOL-exchange-peer"
+chmod 755 "\$E2E_FIXTURE_ROOT/bin/$TOOL" "\$E2E_FIXTURE_ROOT/bin/$TOOL-exchange-peer"
+"$BUN" "$WORK/exchange.ts" "\$E2E_FIXTURE_ROOT/bin/$TOOL" "\$E2E_FIXTURE_ROOT/bin/$TOOL-exchange-peer"
 EOF
 
 # A loopback server for the fixture installer. `tret install` only accepts http(s) URLs with a dotted
@@ -219,6 +231,7 @@ sudo -n chown -R "$(id -u):$(id -g)" "$HOME_STRACE"
 # Capture is observation, including a complete strace window. Explicitly approve only the fixture
 # objects with the shipped binary before proving privileged planning/application.
 sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$STRACE_ENTRY" --remove --yes --json >"$WORK/approve-file.json"
+sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$FIXTURE_STRACE/bin/$TOOL-exchange-peer" --remove --yes --json >"$WORK/approve-peer.json"
 sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$FIXTURE_STRACE/bin" --remove --yes --json >"$WORK/approve-dir.json"
 sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$FIXTURE_STRACE/bin/inner" --remove --yes --json >"$WORK/approve-inner.json"
 sudo -n env HOME="$HOME_STRACE" "$BIN" approve "$STRACE_NAME" "$FIXTURE_STRACE/route" --remove --yes --json >"$WORK/approve-route.json"

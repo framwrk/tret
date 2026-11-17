@@ -27,7 +27,7 @@ export type SymlinkMetadata = {
 };
 
 /** The node metadata an event carries about a path. */
-export type NodeMetadata = FileMetadata | DirectoryMetadata | SymlinkMetadata;
+export type NodeMetadata = FileMetadata | DirectoryMetadata | SymlinkMetadata | { kind: "unknown" };
 
 /** Fields every journal event carries: order, time, and the PID that produced it when known. */
 export type JournalEventBase = {
@@ -54,15 +54,20 @@ export type WriteEvent = JournalEventBase & {
   after: FileMetadata;
 };
 
-/** A node moved. Normalization treats this as a source removal plus a destination creation. */
+/** A namespace change; exchange and uncertain operations must never imply source removal. */
 export type RenameEvent = JournalEventBase & {
   type: "rename";
   from: AbsolutePath;
   to: AbsolutePath;
+  semantics?: "exchange" | "uncertain";
+  /** Only this endpoint was safely observed; the other spelling is descriptive, not an effect. */
+  inScope?: "from" | "to";
   before?: NodeMetadata;
   /** Destination before replacement; omitted means unknown, never proof of absence. */
   destinationBefore?: NodeMetadata | null;
-  after?: NodeMetadata;
+  /** Sampled source after an exchange/uncertain operation; null proves sampled absence only. */
+  sourceAfter?: NodeMetadata | null;
+  after?: NodeMetadata | null;
 };
 
 /** A node was removed; `before` is its last known state. */

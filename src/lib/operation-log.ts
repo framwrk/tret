@@ -24,11 +24,12 @@ import { referencedBlobs } from "./storage";
 import { rmSync } from "node:fs";
 import { validCaptureDiagnostics } from "./capture/diagnostics";
 import { validCleanupApproval } from "./cleanup-authority";
+import { validJournalEvents } from "./capture/journal-validation";
 import { validNativeReceipt } from "./native-action";
 
 export type OperationStage = "prepared" | "running" | "captured" | "applying" | "completed" | "partial" | "discarded";
 export type DurableOperation = {
-  version: 1;
+  version: 1 | 2;
   id: string;
   kind: "install" | "replace" | "trace" | "uninstall" | "metadata";
   stage: OperationStage;
@@ -106,23 +107,23 @@ export class OperationLog {
     return this.readOperation(id);
   }
 
-  private storedOperation(id: string): { value: OperationEnvelope | DurableOperation; bytes: number } | undefined {
+  private storedOperation(id: string): ({ kind: "envelope"; value: OperationEnvelope; bytes: number } | { kind: "legacy"; value: DurableOperation; bytes: number }) | undefined {
     if (!UUID.test(id)) throw new Error(`invalid operation id: ${id}`);
     assertDirectoryIfExists(this.stateDir);
     assertDirectoryIfExists(this.directory);
     const bytes = readFileIfExists(join(this.directory, `${id}.json`), MAX_OPERATION_BYTES);
     if (!bytes) return undefined;
     const stored: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    if (isEnvelope(stored, id)) return { value: stored, bytes: stored.bytes };
-    if (!validOperation(stored) || stored.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
-    return { value: stored, bytes: bytes.byteLength };
+    if (isEnvelope(stored, id)) return { kind: "envelope", value: stored, bytes: stored.bytes };
+    if (!validOperation(stored) || stored.version !== 1 || stored.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
+    return { kind: "legacy", value: stored, bytes: bytes.byteLength };
   }
 
   private readOperation(id: string, account?: (bytes: number) => void): DurableOperation | undefined {
     const stored = this.storedOperation(id);
     if (!stored) return;
     account?.(stored.bytes);
-    const operation: unknown = stored.value.version === 2
+    const operation: unknown = stored.kind === "envelope"
       ? readEnvelope(this.directory, stored.value, () => account?.(0)) : stored.value;
     if (!validOperation(operation) || operation.id !== id) throw new Error(`invalid operation evidence: ${id}.json`);
     return operation;
@@ -168,7 +169,7 @@ export class OperationLog {
     this.requireLogicalCapacity("new intent", Math.min(32 * 1024 * 1024, Math.floor(this.retention.limits.maxBytes / 2)));
     const now = new Date().toISOString();
     const operation: DurableOperation = {
-      version: 1,
+      version: 2,
       id: randomUUID(),
       kind,
       stage: "prepared",
@@ -266,7 +267,7 @@ export class OperationLog {
   /** A bounded audit tombstone precedes explicit historical-original deletion. */
   recordEvidenceDiscard(reason: string, retainedPaths: string[]): DurableOperation {
     const now = new Date().toISOString();
-    const operation: DurableOperation = { version: 1, id: randomUUID(), kind: "metadata", stage: "discarded", startedAt: now, updatedAt: now, owner: this.requireLease(), priorRecords: [], pins: [], reason, retainedPaths };
+    const operation: DurableOperation = { version: 2, id: randomUUID(), kind: "metadata", stage: "discarded", startedAt: now, updatedAt: now, owner: this.requireLease(), priorRecords: [], pins: [], reason, retainedPaths };
     this.write(operation, true, true);
     return operation;
   }
@@ -329,7 +330,7 @@ export class OperationLog {
 
   private envelope(id: string): OperationEnvelope | undefined {
     const stored = this.storedOperation(id);
-    return stored?.value.version === 2 ? stored.value : undefined;
+    return stored?.kind === "envelope" ? stored.value : undefined;
   }
 
   private requireLease(): string {
@@ -343,6 +344,7 @@ export class OperationLog {
     // Chunked generations remain retained evidence until explicit discard; expose their
     // conservative pins in the ordinary receipt summary as well as the GC graph.
     if (!discard && previous?.retained.length) operation.pins = [...new Set([...previous.pins, ...operation.pins])];
+    operation.version = 2;
     if (!validOperation(operation)) throw new Error("refusing invalid durable operation");
     assertDirectoryIfExists(dirname(this.directory));
     const path = join(this.directory, `${operation.id}.json`);
@@ -385,7 +387,7 @@ function validOperation(value: unknown): value is DurableOperation {
   if (typeof value !== "object" || value === null) return false;
   const operation = value as Partial<DurableOperation>;
   return (
-    operation.version === 1 &&
+    (operation.version === 1 || operation.version === 2) &&
     typeof operation.id === "string" &&
     UUID.test(operation.id) &&
     typeof operation.owner === "string" &&
@@ -413,6 +415,7 @@ function validOperation(value: unknown): value is DurableOperation {
       (typeof operation.capture.backend === "string" &&
         ["complete", "partial", "heuristic"].includes(operation.capture.completeness) &&
         Array.isArray(operation.capture.events) &&
+        validJournalEvents(operation.capture.events, operation.version) &&
         (operation.capture.resources === undefined || validCaptureResources(operation.capture.resources)) &&
         (operation.capture.normalization === undefined || validCaptureDiagnostics(operation.capture.normalization)))) &&
     (operation.application === undefined || validApplication(operation.application)) &&

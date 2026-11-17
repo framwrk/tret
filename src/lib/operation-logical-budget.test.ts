@@ -112,7 +112,7 @@ test("the exact logical boundary is readable and a one-byte expansion preserves 
 
 test("legacy v1 bytes participate in the logical budget without migration", async () => {
   const log = fixture();
-  const legacy = await completed(log, 2 * MiB);
+  const legacy = { ...await completed(log, 2 * MiB), version: 1 as const };
   await completed(log, 4 * MiB);
   const path = join(log.directory, `${legacy.id}.json`);
   writeFileSync(path, JSON.stringify(legacy));

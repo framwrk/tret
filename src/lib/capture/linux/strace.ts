@@ -191,6 +191,7 @@ class StraceParser {
   result(): TracerResult {
     return {
       records: this.records.slice(),
+      ...(this.options.excludedRoots ? { excludedRoots: this.options.excludedRoots } : {}),
       unsupported: [...this.unsupported].sort(),
       diagnostics: this.diagnostics.slice(),
     };
@@ -202,7 +203,7 @@ class StraceParser {
 
   private emit(record: TracerRecord): void {
     const paths = record.op === "rename" ? [record.from, record.to] : "path" in record && record.path ? [record.path] : [];
-    if (paths.some(path => this.options.excludedRoots?.some(root => path === root || path.startsWith(root + "/")))) return;
+    if (record.op !== "rename" && paths.some(path => this.options.excludedRoots?.some(root => path === root || path.startsWith(root + "/")))) return;
     this.options.budget?.consume("metadataBytes", Buffer.byteLength(JSON.stringify(record)) + 128);
     this.records.push(record);
   }
@@ -250,15 +251,15 @@ class StraceParser {
         if (!failed) this.emitWrite(at, pid, this.resolveFd(pid, args[0]));
         return;
       case "rename":
-        if (!failed) this.emitRename(at, pid, this.resolvePath(args[0]), this.resolvePath(args[1]));
+        if (!failed) this.emitRename(at, pid, this.resolvePath(args[0], true), this.resolvePath(args[1], true));
         return;
       case "renameat":
         if (!failed)
-          this.emitRename(at, pid, this.resolvePathAt(args[0], args[1], pid), this.resolvePathAt(args[2], args[3], pid));
+          this.emitRename(at, pid, this.resolvePathAt(args[0], args[1], pid, true), this.resolvePathAt(args[2], args[3], pid, true));
         return;
       case "renameat2":
         if (!failed)
-          this.emitRename(at, pid, this.resolvePathAt(args[0], args[1], pid), this.resolvePathAt(args[2], args[3], pid));
+          this.emitRename(at, pid, this.resolvePathAt(args[0], args[1], pid, true), this.resolvePathAt(args[2], args[3], pid, true), args[4]);
         return;
       case "unlink":
         if (!failed) this.emitUnlink(at, pid, this.resolvePath(args[0]));
@@ -358,9 +359,15 @@ class StraceParser {
     this.emit({ op: "write", at, pid, path });
   }
 
-  private emitRename(at: number, pid: number | undefined, from: AbsolutePath | undefined, to: AbsolutePath | undefined): void {
+  private emitRename(at: number, pid: number | undefined, from: AbsolutePath | undefined, to: AbsolutePath | undefined, flags = "0"): void {
     if (from === undefined || to === undefined) return;
-    this.emit({ op: "rename", at, pid, from, to });
+    if (!normalizeRoot(from, this.options) && !normalizeRoot(to, this.options)) return;
+    const flag = flags.trim();
+    const numeric = /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(flag) ? Number(flag) : undefined;
+    const semantics = flag === "RENAME_EXCHANGE" || numeric === 2 ? "exchange" :
+      flag === "RENAME_NOREPLACE" || numeric === 1 || numeric === 0 ? undefined : "uncertain";
+    this.emit({ op: "rename", at, pid, from, to, ...(semantics ? { semantics } : {}),
+      ...(flag === "RENAME_NOREPLACE" || numeric === 1 ? { noReplace: true } : {}) });
   }
 
   private emitUnlink(at: number, pid: number | undefined, path: AbsolutePath | undefined): void {
@@ -422,29 +429,30 @@ class StraceParser {
     return this.fds.get(pidKey(pid))?.get(fd);
   }
 
-  private resolvePath(raw: string | undefined): AbsolutePath | undefined {
+  private resolvePath(raw: string | undefined, unscoped = false): AbsolutePath | undefined {
     if (raw === undefined) return undefined;
     const value = decodeStraceString(raw);
     if (value === undefined) return undefined;
-    return this.absolute(value, undefined);
+    return this.absolute(value, undefined, undefined, unscoped);
   }
 
   /** Resolves `(dirfd, path)` pairs, honoring an annotated dirfd and `AT_FDCWD`. */
-  private resolvePathAt(dirfd: string | undefined, raw: string | undefined, pid: number | undefined): AbsolutePath | undefined {
+  private resolvePathAt(dirfd: string | undefined, raw: string | undefined, pid: number | undefined, unscoped = false): AbsolutePath | undefined {
     if (raw === undefined) return undefined;
     const value = decodeStraceString(raw);
     if (value === undefined) return undefined;
-    return this.absolute(value, dirfd, pid);
+    return this.absolute(value, dirfd, pid, unscoped);
   }
 
-  private absolute(value: AbsolutePath, dirfd: string | undefined, pid?: number): AbsolutePath | undefined {
-    if (value.startsWith("/")) return normalizeRoot(value, this.options);
+  private absolute(value: AbsolutePath, dirfd: string | undefined, pid?: number, unscoped = false): AbsolutePath | undefined {
+    const options = unscoped ? {} : this.options;
+    if (value.startsWith("/")) return normalizeRoot(value, options);
     const base = this.baseDir(dirfd, pid);
     if (base === undefined) {
       this.diagnose(`relative path with no known directory: ${value}`);
       return undefined;
     }
-    return normalizeRoot(joinPath(base, value), this.options);
+    return normalizeRoot(joinPath(base, value), options);
   }
 
   /**
