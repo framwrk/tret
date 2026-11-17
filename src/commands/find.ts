@@ -1,12 +1,13 @@
 import { caseSensitiveForPaths, currentPlatform, processPrivilege } from "../lib/platform";
 import { detectManagedInstall, withoutManagedInstallPaths } from "../lib/managed-install";
+import { findRelated, relatedSearchRoots } from "../lib/related";
+import { CaptureBudget } from "../lib/capture/budget";
 import { EXIT_USAGE } from "../constants";
 import { FileStorage } from "../lib/store";
 import type { RecordV3 } from "../types";
 import { adoptedEntries } from "../lib/adoption";
 import { detectManagedPackage } from "../lib/package-manager";
 import { fail } from "../lib/failure";
-import { findRelated } from "../lib/related";
 import { log } from "../lib/utilities";
 import { randomUUID } from "node:crypto";
 import { resolveCommand } from "../lib/executable";
@@ -46,25 +47,28 @@ export async function find(name: string | undefined): Promise<void> {
     return;
   }
 
-  const paths = findRelated(name, executable);
+  const platform = currentPlatform();
+  const budget = new CaptureBudget();
+  const paths = findRelated(name, executable, platform, budget);
   log(`found ${paths.length} files and folders for ${name}`);
   for (const path of paths) {
     log(`\t${path}`);
   }
 
-  const platform = currentPlatform();
   const installedAt = new Date().toISOString();
-  // Folders bring their contents with them: every node inside an adopted directory is fingerprinted
-  // so a later uninstall can empty it file by file instead of reporting an opaque `not-empty`.
-  const found = adoptedEntries(paths);
+  // Inventory descendants under the same budget; unavailable fingerprints remain unknown,
+  // and every candidate still needs separate object approval before cleanup.
+  const found = adoptedEntries(paths, budget);
   if (found.length > paths.length) log(`\tinventoried ${found.length} paths inside those folders`);
-  // Adoption can also recognize a package-manager global shim, so a found tool uninstalls through
-  // the manager rather than by deleting shared global state.
+  // Recognized manager/layout scopes remain unresolved; discovery cannot authorize their cleanup.
   const managedBy = detectManagedPackage(executable, found);
-  // A first-party managed install is recognized the same way, so its unowned `node_modules` payload
-  // is delegated rather than adopted into the record and stranded as a `not-empty` conflict.
   const managedInstall = detectManagedInstall(executable, found);
   const owned = managedInstall === undefined ? found : withoutManagedInstallPaths(found, managedInstall);
+  const caseSensitive = caseSensitiveForPaths(platform, [executable, ...paths]);
+  budget.check();
+  budget.pause();
+  const resources = budget.report();
+  for (const reason of resources.losses) log(`\tobservation loss: ${reason}`);
   // No URL or script hash: the tool was not installed through Tret, so those fields stay empty.
   const record: RecordV3 = {
     id: randomUUID(),
@@ -77,12 +81,13 @@ export async function find(name: string | undefined): Promise<void> {
     capture: {
       backend: "find",
       completeness: "heuristic",
-      segments: [{ kind: "find", startedAt: installedAt, partialReason: "adopted by tret find: no install journal exists" }],
+      segments: [{ kind: "find", startedAt: installedAt, resources, roots: [...new Set([executable, ...relatedSearchRoots(platform)])].sort(),
+        partialReason: ["adopted by tret find: no install journal exists", ...resources.losses].join("; ") }],
     },
     privilege: processPrivilege(),
     // Every adopted path is fingerprinted in this record, so the case flag is probed over all of
     // them plus the executable (D10); uninstall's overlap checks read this flag back.
-    caseSensitive: caseSensitiveForPaths(platform, [executable, ...paths]),
+    caseSensitive,
     owned,
     mutated: [],
     deleted: [],

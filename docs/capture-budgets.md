@@ -26,6 +26,19 @@ Node and metadata counters bound retained work, rather than measuring exact proc
 RSS. Directory enumeration is incremental with at most 32 buffered entries per
 open directory. Depth limits bound nested directory handles and stack use.
 
+`find` shares these limits across shallow name discovery and descendant
+fingerprinting. Discovery streams 32-entry directory buffers and charges every
+visited entry, including nonmatching names and attempted search roots. It does
+not first allocate an entire directory listing. Duplicate search roots are scanned
+once. Exhaustion refuses with exit 5 before saving a record; malformed limits use
+exit 2. Existing tracking bytes and targets stay unchanged. Unreadable directories
+and unavailable fingerprints remain visible losses in the find segment's resources
+and partial reason; absent search directories are expected, not scan losses.
+The segment lists the executable and actual search roots. Name matches and a
+bounded inventory are still unapproved observations, not attribution or permission
+to remove files. The work deadline is shared by discovery and inventory and cannot
+interrupt a stalled filesystem call.
+
 Installer runtime and time waiting for weaker-capture confirmation are excluded
 from active work deadlines. Checks occur between bounded reads and filesystem
 calls; they cannot interrupt a stalled kernel call. A pre-execution budget failure
