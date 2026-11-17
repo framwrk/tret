@@ -255,6 +255,8 @@ chmod +x "$HOME/.local/bin/updatetool"
     }
   });
 
+  // Install, repeated updates, per-object approvals and uninstall each flush durable state.
+  // Allow native runner process/filesystem latency across the whole integration scenario.
   test.each([8, 32])("updates retain capture settings and refuse unsupported reversal (budget %d)", async (limit) => {
     const home = makeHome();
     const extra = makeDir("tret-update-observe-");
@@ -348,7 +350,7 @@ printf 'excluded\\n' >> "$HOME/.capture-excluded"
     } finally {
       await server.stop();
     }
-  });
+  }, 30_000);
 
   test("update retains an explicit --no-capture setting", async () => {
     const home = makeHome();
