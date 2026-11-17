@@ -5,6 +5,7 @@ import { confirm, log } from "../lib/utilities";
 import { discardOriginal, inspectOriginal, originalId, purgeDiscarded } from "../lib/recovery-originals";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { fail } from "../lib/failure";
+import { formatTraceObservations } from "../lib/capture/trace-observations";
 import { operationSummary } from "../lib/operation-log";
 import { resumeOperation } from "../lib/recovery";
 
@@ -73,6 +74,7 @@ async function runRecovery(id: string | undefined, action: RecoveryAction, yes: 
   else {
     for (const operation of selected) {
       log(`${operation.id} ${operation.kind} ${operation.stage}${operation.reason ? `: ${operation.reason}` : ""}`);
+      for (const line of formatTraceObservations(operation.capture?.observations)) log(`\t${line}`);
       for (const note of operation.capture?.normalization?.entries ?? [])
         log(`\t${note.code}: ${note.message}${note.paths.length ? ` (${note.paths.join(" → ")})` : ""}`);
       if (operation.capture?.normalization?.omitted)

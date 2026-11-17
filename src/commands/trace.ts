@@ -15,6 +15,7 @@ import { confirm, log } from "../lib/utilities";
 import { currentPlatform, processPrivilege } from "../lib/platform";
 import { emitJson, isJsonMode } from "../lib/json-output";
 import { formatSelectionCandidates, selectRecord } from "../lib/record-selection";
+import { formatTraceObservations, traceObservations } from "../lib/capture/trace-observations";
 import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
 import { BeforeExecutionError } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
@@ -264,12 +265,13 @@ export async function trace(
   });
 
   const merged = mergeTraceEffects(record, effects, records);
-  const segment: CaptureSegment = { ...window.coverage.segment, ...normalizationDetails(effects) };
+  const observations = traceObservations(record, effects, records);
+  const segment: CaptureSegment = { ...window.coverage.segment, observations, ...normalizationDetails(effects) };
   const updated: RecordV3 = {
     ...merged.record,
     capture: { ...record.capture, ...(window.captureError !== undefined ? { completeness: record.capture.completeness === "heuristic" ? "heuristic" as const : "partial" as const } : {}), segments: [...(record.capture.segments ?? []), segment] },
   };
-  if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: updated, capture: { ...operation.capture!, ...normalizationDetails(effects) } });
+  if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: updated, capture: { ...operation.capture!, observations, ...normalizationDetails(effects) } });
   await storage.saveRecord(updated, "trace");
   if (operation && operationLog) operationLog.checkpoint(operation, { stage: window.error !== undefined || window.captureError !== undefined || window.value !== 0 || capturePlan.budget.fatalError ? "partial" : "completed" });
 
@@ -305,6 +307,7 @@ export async function trace(
 
   log(`trace ${record.name}`);
   log(`\tobserved ${window.coverage.backend}: ${describeCoverage(window.coverage)}`);
+  for (const line of formatTraceObservations(observations)) log(`\t${line}`);
   log(`\ttrace window ${segment.startedAt} → ${segment.endedAt ?? segment.startedAt}`);
   if (exitCode !== 0) log(`\tthe tool exited with code ${exitCode}; the trace is still recorded`);
 

@@ -12,6 +12,13 @@ facts. Neither an installed hash, a backup, an exclusive-create syscall without
 object identity, nor a historical `complete` label independently authorizes
 cleanup. This applies to every backend and to runtime traces.
 
+Trace segments retain separate window observations for already-tracked and shared
+paths, including available before/after fingerprints. The install's original
+candidate evidence stays intact. These reports are bounded inspection metadata,
+not new cleanup decisions or restoration backups; omitted counts are visible in
+`inspect`/`recover`. The raw operation journal remains subject to explicit evidence
+disposal. Interrupted recovery preserves the same separation without executing code.
+
 Version 4 records carry a revision and per-effect decisions. Migration from v2 or
 v3 preserves observations and before-images but supplies no cleanup approvals.
 Unknown optional fields in legacy files cannot inject approvals. Older readers

@@ -26,6 +26,7 @@ import { validCaptureDiagnostics } from "./capture/diagnostics";
 import { validCleanupApproval } from "./cleanup-authority";
 import { validJournalEvents } from "./capture/journal-validation";
 import { validNativeReceipt } from "./native-action";
+import { validTraceObservations } from "./capture/trace-observations";
 
 export type OperationStage = "prepared" | "running" | "captured" | "applying" | "completed" | "partial" | "discarded";
 export type DurableOperation = {
@@ -414,6 +415,7 @@ function validOperation(value: unknown): value is DurableOperation {
     (operation.capture === undefined ||
       (typeof operation.capture.backend === "string" &&
         ["complete", "partial", "heuristic"].includes(operation.capture.completeness) &&
+        (operation.capture.observations === undefined || (operation.kind === "trace" && validTraceObservations(operation.capture.observations))) &&
         Array.isArray(operation.capture.events) &&
         validJournalEvents(operation.capture.events, operation.version) &&
         (operation.capture.resources === undefined || validCaptureResources(operation.capture.resources)) &&
@@ -525,6 +527,7 @@ export function operationSummary(operation: DurableOperation) {
           partialReason: operation.capture.partialReason,
           events: operation.capture.events.length,
           ...(operation.capture.normalization ? { normalization: operation.capture.normalization } : {}),
+          ...(operation.capture.observations ? { observations: operation.capture.observations } : {}),
         }
       : undefined,
     exitCode: operation.execution?.exitCode,

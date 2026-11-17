@@ -8,6 +8,7 @@ import { cleanupClaimChecker } from "./delegated-removal";
 import { normalizationDetails } from "./capture/diagnostics";
 import { normalizeJournal } from "./journal/normalize";
 import { reduceRecordForRetry } from "./removal";
+import { traceObservations } from "./capture/trace-observations";
 
 /** Explicit recovery replays filesystem protocol steps, never external code. */
 export async function resumeOperation(storage: FileStorage, id: string): Promise<DurableOperation> {
@@ -56,7 +57,10 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
           backups: checkpoint.captureSettings?.backups ?? { enabled: false, sizeLimitBytes: 1024 * 1024 },
           availableBeforeImages: new Set(operation.pins),
         });
-        normalizedCapture = { ...operation.capture, ...normalizationDetails(effects) };
+        const observations = operation.kind === "trace" ? traceObservations(
+          operation.priorRecords.find(record => record.id === checkpoint.id) ?? checkpoint, effects, records,
+        ) : undefined;
+        normalizedCapture = { ...operation.capture, ...(observations ? { observations } : {}), ...normalizationDetails(effects) };
         const segments = pendingTrace
           ? [
               ...checkpoint.capture.segments,
@@ -82,7 +86,7 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
             ...checkpoint.capture,
             backend: operation.kind === "trace" ? checkpoint.capture.backend : operation.capture.backend,
             segments: segments.map((segment, index, all) =>
-              index === all.length - 1 ? { ...segment, ...normalizationDetails(effects) } : segment,
+              index === all.length - 1 ? { ...segment, ...(observations ? { observations } : {}), ...normalizationDetails(effects) } : segment,
             ),
           },
         };
