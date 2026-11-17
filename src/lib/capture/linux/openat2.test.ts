@@ -56,8 +56,13 @@ test.each(["O_PATH|O_CREAT|O_EXCL|O_TRUNC", "0x2002c0", "O_TMPFILE|O_CREAT|O_EXC
       `openat(AT_FDCWD, "/h/tool", ${flags}, 0600)`,
     ]) {
       const result = parseStraceOutput(`9 1.000001 ${call} = 3</h/tool>`, { roots: ["/h"] });
-      expect(result.records[0]).toMatchObject({ created: false, truncated: false });
-      expect(result.records[0]).not.toHaveProperty("exclusive");
+      if (flags.includes("O_TMPFILE")) {
+        expect(result.records).toEqual([]);
+        expect(result.diagnostics.join(" ")).toContain("unnamed");
+      } else {
+        expect(result.records[0]).toMatchObject({ created: false, truncated: false });
+        expect(result.records[0]).not.toHaveProperty("exclusive");
+      }
     }
   },
 );

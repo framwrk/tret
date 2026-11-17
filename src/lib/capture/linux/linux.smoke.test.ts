@@ -50,7 +50,7 @@ class ParentStraceTracer implements LinuxTracer {
       "-f",
       "-ttt",
       "-y",
-      "-qq",
+      "-q",
       "-s",
       "4096",
       "-e",

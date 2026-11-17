@@ -124,12 +124,30 @@ import { dlopen } from "bun:ffi";
 import { closeSync, fchmodSync, writeSync } from "node:fs";
 const library = dlopen("libc.so.6", {
   renameat2: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" },
+  dup: { args: ["i32"], returns: "i32" },
+  open: { args: ["ptr", "i32", "i32"], returns: "i32" },
+  fchdir: { args: ["i32"], returns: "i32" },
   syscall: { args: ["i64", "i32", "ptr", "ptr", "u64"], returns: "i64" },
 });
 try {
   // openat2 is syscall 437 on both supported Linux architectures; how is three u64 fields.
+  const parent = process.argv[3].slice(0, process.argv[3].lastIndexOf("/"));
+  const anonymousHow = new BigUint64Array([0x410002n, 0o600n, 0n]);
+  const anonymous = Number(library.symbols.syscall(437, -100, Buffer.from(parent + "\0"), anonymousHow, 24));
+  if (anonymous < 0) throw new Error("fixture unnamed temporary open failed");
+  const anonymousAlias = library.symbols.dup(anonymous);
+  if (anonymousAlias < 0) throw new Error("fixture temporary dup failed");
+  try { writeSync(anonymousAlias, "anonymous bytes"); fchmodSync(anonymousAlias, 0o600); }
+  finally { closeSync(anonymousAlias); closeSync(anonymous); }
+  const directory = library.symbols.open(Buffer.from(parent + "\0"), 0x210000, 0);
+  if (directory < 0) throw new Error("fixture O_PATH directory open failed");
+  const directoryAlias = library.symbols.dup(directory);
+  closeSync(directory);
+  if (directoryAlias < 0) throw new Error("fixture O_PATH dup failed");
+  try { if (library.symbols.fchdir(directoryAlias) !== 0) throw new Error("fixture fchdir failed"); }
+  finally { closeSync(directoryAlias); }
   const how = new BigUint64Array([0xc1n, 0o755n, 0n]);
-  const fd = Number(library.symbols.syscall(437, -100, Buffer.from(process.argv[3] + "\0"), how, 24));
+  const fd = Number(library.symbols.syscall(437, -100, Buffer.from(process.argv[3].slice(process.argv[3].lastIndexOf("/") + 1) + "\0"), how, 24));
   if (fd < 0) throw new Error("fixture openat2 exclusive creation failed");
   try { writeSync(fd, "#!/bin/sh\necho exchange-peer\n"); fchmodSync(fd, 0o755); }
   finally { closeSync(fd); }

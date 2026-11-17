@@ -12,7 +12,7 @@ import type { AbsolutePath } from "../../../types";
  * Coverage caveats the parser reports instead of hiding:
  * - A relative path is resolved against the `-y` annotation strace printed for its dirfd — including
  *   `AT_FDCWD</dir>`, which pins the tracee's working directory at that syscall. Only when strace
- *   printed no usable annotation does the parser fall back to the supplied `cwd`; a relative path
+ *   printed no usable annotation does the parser use observed process/descriptor state; a relative path
  *   with no known directory at all is dropped with a diagnostic.
  * - Unknown fds in `write`-family calls become a diagnostic (the fd map is reset when strace cannot
  *   report an `open` we parsed, for example a write inherited across a `fork` we did not trace).
@@ -25,10 +25,11 @@ import type { AbsolutePath } from "../../../types";
 export type ParseStraceOptions = {
   budget?: CaptureBudget;
   /**
-   * Fallback directory for relative paths whose dirfd strace could not annotate (a bare
-   * `AT_FDCWD` or an unknown descriptor); a `-y` annotation always wins.
+   * Initial cwd of the attached root process. Children require observed inheritance; unknown
+   * numeric directory descriptors never fall back to cwd. A `-y` annotation always wins.
    */
   cwd?: AbsolutePath;
+  rootPid?: number;
   /**
    * Only records whose path falls under one of these roots after lexical `.`/`..` normalization are
    * kept. Empty or omitted means "keep everything", which the backend uses when it wants to
@@ -123,6 +124,9 @@ const UNSUPPORTED_SYSCALLS = new Set([
   "utimes",
 ]);
 
+type Descriptor = { kind: "named" | "path-only" | "unnamed"; path?: AbsolutePath; closeOnExec: boolean };
+type ProcessState = { fds: Map<number, Descriptor>; cwd: { path?: AbsolutePath } };
+
 type Pending = { at: number; pid?: number; syscall: string; args: string };
 
 class StraceParser {
@@ -132,11 +136,14 @@ class StraceParser {
   private readonly diagnostics: string[] = [];
   private readonly pending = new Map<string, Pending>();
   /** Open file descriptors per pid, so a `write` can be tied back to a path. */
-  private readonly fds = new Map<string, Map<number, AbsolutePath>>();
+  private readonly processes = new Map<string, ProcessState>();
+  private rootKey?: string;
+  private seededRoot = false;
   private readonly seenUnsupported = new Set<string>();
 
   constructor(options: ParseStraceOptions) {
     this.options = options;
+    this.rootKey = options.rootPid === undefined ? undefined : pidKey(options.rootPid);
   }
 
   feed(rawLine: string): void {
@@ -147,6 +154,16 @@ class StraceParser {
 
     const prefix = stripPrefix(line);
     if (prefix.rest.length === 0) return;
+    if (/^\+\+\+ (?:exited|killed)/.test(prefix.rest)) {
+      this.processes.delete(pidKey(prefix.pid));
+      this.pending.delete(pidKey(prefix.pid));
+      return;
+    }
+    if (prefix.rest.includes("superseded by execve")) {
+      this.processes.clear();
+      this.diagnose("exec changed thread identity; inherited process state is unknown");
+      return;
+    }
 
     const resumed = /^<\.\.\.\s+(\w+)\s+resumed>(.*)$/.exec(prefix.rest);
     if (resumed) {
@@ -155,6 +172,7 @@ class StraceParser {
       const syscall = resumed[1] ?? "";
       const tail = resumed[2] ?? "";
       if (!pending || pending.syscall !== syscall) {
+        if (syscall === "execve" || syscall === "execveat") this.processes.delete(key);
         this.diagnose(`resumed syscall without a matching unfinished line: ${syscall}`);
         return;
       }
@@ -198,7 +216,8 @@ class StraceParser {
   }
 
   diagnose(reason: string): void {
-    if (this.diagnostics.length < 32) this.diagnostics.push(reason.slice(0, 1024));
+    const bounded = reason.slice(0, 1024);
+    if (this.diagnostics.length < 32 && !this.diagnostics.includes(bounded)) this.diagnostics.push(bounded);
   }
 
   private emit(record: TracerRecord): void {
@@ -211,6 +230,7 @@ class StraceParser {
   private handleCall(at: number, pid: number | undefined, syscall: string, argsBody: string, ret: string): void {
     const args = splitArgs(argsBody);
     const failed = ret.startsWith("-1") || ret.startsWith("-");
+    this.processState(pid);
 
     // `mmap` is only a journal gap when it is a shared, writable, file-backed mapping; ordinary
     // anonymous allocations would otherwise mark almost every process as incomplete.
@@ -232,6 +252,29 @@ class StraceParser {
     }
 
     switch (syscall) {
+      case "chdir":
+        if (!failed) this.setCwd(pid, this.resolvePath(args[0], pid, true));
+        return;
+      case "fchdir":
+        if (!failed) {
+          const descriptor = this.descriptor(pid, args[0]);
+          this.setCwd(pid, descriptor?.kind === "unnamed" ? undefined : descriptor?.path);
+          if (!this.processState(pid).cwd.path) this.diagnose("fchdir target is unknown");
+        }
+        return;
+      case "fork": case "vfork": case "clone": case "clone3":
+        if (!failed) this.inheritProcess(pid, syscall, args, ret);
+        return;
+      case "execve": case "execveat":
+        if (!failed) {
+          const state = this.processState(pid);
+          this.options.budget?.consume("metadataBytes", state.fds.size * 96 + 256);
+          state.fds = new Map([...state.fds].filter(([, descriptor]) => !descriptor.closeOnExec));
+        }
+        return;
+      case "fcntl":
+        if (!failed) this.handleFcntl(pid, args, ret);
+        return;
       case "open":
       case "openat":
       case "openat2":
@@ -245,13 +288,13 @@ class StraceParser {
         if (!failed) this.handleWrite(at, pid, args);
         return;
       case "truncate":
-        if (!failed) this.emitWrite(at, pid, this.resolvePath(args[0]));
+        if (!failed) this.emitWrite(at, pid, this.resolvePath(args[0], pid));
         return;
       case "ftruncate":
         if (!failed) this.emitWrite(at, pid, this.resolveFd(pid, args[0]));
         return;
       case "rename":
-        if (!failed) this.emitRename(at, pid, this.resolvePath(args[0], true), this.resolvePath(args[1], true));
+        if (!failed) this.emitRename(at, pid, this.resolvePath(args[0], pid, true), this.resolvePath(args[1], pid, true));
         return;
       case "renameat":
         if (!failed)
@@ -262,7 +305,7 @@ class StraceParser {
           this.emitRename(at, pid, this.resolvePathAt(args[0], args[1], pid, true), this.resolvePathAt(args[2], args[3], pid, true), args[4]);
         return;
       case "unlink":
-        if (!failed) this.emitUnlink(at, pid, this.resolvePath(args[0]));
+        if (!failed) this.emitUnlink(at, pid, this.resolvePath(args[0], pid));
         return;
       case "unlinkat": {
         if (failed) return;
@@ -273,7 +316,7 @@ class StraceParser {
         return;
       }
       case "chmod":
-        if (!failed) this.emitChmod(at, pid, this.resolvePath(args[0]), args[1]);
+        if (!failed) this.emitChmod(at, pid, this.resolvePath(args[0], pid), args[1]);
         return;
       case "fchmod":
         if (!failed) this.emitChmod(at, pid, this.resolveFd(pid, args[0]), args[1]);
@@ -283,22 +326,22 @@ class StraceParser {
         if (!failed) this.emitChmod(at, pid, this.resolvePathAt(args[0], args[1], pid), args[2]);
         return;
       case "symlink":
-        if (!failed) this.emitSymlink(at, pid, this.resolvePath(args[1]), decodeLinkTarget(args[0]));
+        if (!failed) this.emitSymlink(at, pid, this.resolvePath(args[1], pid), decodeLinkTarget(args[0]));
         return;
       case "symlinkat":
         if (!failed) this.emitSymlink(at, pid, this.resolvePathAt(args[1], args[2], pid), decodeLinkTarget(args[0]));
         return;
       case "mkdir":
-        if (!failed) this.emitMkdir(at, pid, this.resolvePath(args[0]), args[1]);
+        if (!failed) this.emitMkdir(at, pid, this.resolvePath(args[0], pid), args[1]);
         return;
       case "mkdirat":
         if (!failed) this.emitMkdir(at, pid, this.resolvePathAt(args[0], args[1], pid), args[2]);
         return;
       case "rmdir":
-        if (!failed) this.emitRmdir(at, pid, this.resolvePath(args[0]));
+        if (!failed) this.emitRmdir(at, pid, this.resolvePath(args[0], pid));
         return;
       case "close": {
-        const pidMap = this.fds.get(pidKey(pid));
+        const pidMap = this.processes.get(pidKey(pid))?.fds;
         const fd = fdNumber(args[0]);
         if (pidMap && fd !== undefined) pidMap.delete(fd);
         return;
@@ -306,10 +349,13 @@ class StraceParser {
       case "dup":
       case "dup2":
       case "dup3": {
-        const from = fdNumber(args[0]);
-        const to = syscall === "dup" ? fdNumber(ret) : fdNumber(args[1]);
-        const path = from !== undefined ? this.resolveFd(pid, args[0]) : undefined;
-        if (path !== undefined && to !== undefined) this.fdMap(pid).set(to, path);
+        if (failed) return;
+        const to = fdNumber(ret);
+        if (to === undefined) return;
+        const source = this.descriptor(pid, args[0]);
+        if (syscall === "dup2" && fdNumber(args[0]) === to) return;
+        this.fdMap(pid).delete(to);
+        if (source) this.fdMap(pid).set(to, { ...source, closeOnExec: syscall === "dup3" && /O_CLOEXEC|0x80000|524288/.test(args[2] ?? "") });
         return;
       }
       default:
@@ -321,10 +367,10 @@ class StraceParser {
     let path: AbsolutePath | undefined;
     let flags: string;
     if (syscall === "creat") {
-      path = this.resolvePath(args[0]);
+      path = this.resolvePath(args[0], pid);
       flags = "O_CREAT|O_WRONLY|O_TRUNC";
     } else if (syscall === "open") {
-      path = this.resolvePath(args[0]);
+      path = this.resolvePath(args[0], pid);
       flags = args[1] ?? "";
     } else {
       path = this.resolvePathAt(args[0], args[1], pid);
@@ -344,12 +390,17 @@ class StraceParser {
         this.diagnose("openat2 resolution or structure is not fully decoded; only an annotated result can be observed without creation proof");
         const actual = fdAnnotation(ret);
         path = actual === undefined ? undefined : normalizeRoot(actual, this.options);
-        if (path === undefined) return;
       }
     }
-    if (path === undefined) return;
-    if (fd !== undefined) this.fdMap(pid).set(fd, path);
     const decoded = openFlags(flags);
+    if (decoded.kind === "unnamed") {
+      if (fd !== undefined) this.fdMap(pid).set(fd, { kind: "unnamed", closeOnExec: decoded.closeOnExec });
+      if (path !== undefined) this.diagnose("unnamed temporary descriptor observed; no named-path effect is inferred");
+      return;
+    }
+    if (fd !== undefined && (path !== undefined || decoded.kind === "path-only"))
+      this.fdMap(pid).set(fd, { kind: decoded.kind, path, closeOnExec: decoded.closeOnExec });
+    if (path === undefined) return;
     if (!decoded.known) this.diagnose("open flags could not be fully decoded; creation and truncation remain unknown");
     this.emit({
       op: "open",
@@ -423,31 +474,88 @@ class StraceParser {
     this.unsupported.add(syscall);
   }
 
-  private fdMap(pid: number | undefined): Map<number, AbsolutePath> {
+  private processState(pid: number | undefined): ProcessState {
     const key = pidKey(pid);
-    let map = this.fds.get(key);
-    if (!map) {
-      map = new Map();
-      this.fds.set(key, map);
+    let state = this.processes.get(key);
+    if (!state) {
+      this.rootKey ??= key;
+      const initial = key === this.rootKey && !this.seededRoot;
+      if (initial) this.seededRoot = true;
+      state = { fds: new Map(), cwd: { path: initial ? this.options.cwd : undefined } };
+      this.processes.set(key, state);
     }
-    return map;
+    return state;
   }
 
-  /** Resolves an fd argument, preferring the `-y` path annotation and falling back to the fd map. */
-  private resolveFd(pid: number | undefined, raw: string | undefined): AbsolutePath | undefined {
-    if (raw === undefined) return undefined;
-    const annotated = /^(\d+)<([^>]*)>/.exec(raw);
-    if (annotated) return normalizeRoot(annotated[2] ?? "", this.options);
+  private setCwd(pid: number | undefined, path: string | undefined): void {
+    if (path !== undefined) this.options.budget?.consume("metadataBytes", Buffer.byteLength(path));
+    this.processState(pid).cwd.path = path;
+  }
+
+  private fdMap(pid: number | undefined): Map<number, Descriptor> { return this.processState(pid).fds; }
+
+  private descriptor(pid: number | undefined, raw: string | undefined): Descriptor | undefined {
     const fd = fdNumber(raw);
-    if (fd === undefined) return undefined;
-    return this.fds.get(pidKey(pid))?.get(fd);
+    const known = fd === undefined ? undefined : this.fdMap(pid).get(fd);
+    if (known && known.kind !== "named") return known;
+    const annotation = fdAnnotation(raw);
+    if (annotation !== undefined) {
+      const path = normalizeRoot(annotation, this.options);
+      return path === undefined ? undefined : { kind: "named", path, closeOnExec: known?.closeOnExec ?? false };
+    }
+    return known;
   }
 
-  private resolvePath(raw: string | undefined, unscoped = false): AbsolutePath | undefined {
+  private resolveFd(pid: number | undefined, raw: string | undefined): AbsolutePath | undefined {
+    const descriptor = this.descriptor(pid, raw);
+    return descriptor?.kind === "named" ? descriptor.path : undefined;
+  }
+
+  private inheritProcess(pid: number | undefined, syscall: string, args: string[], ret: string): void {
+    const child = fdNumber(ret);
+    if (child === undefined || child <= 0) return;
+    const key = pidKey(child);
+    if (this.processes.has(key)) {
+      this.diagnose("child observed before fork completion; inherited state remains unknown");
+      return;
+    }
+    const parent = this.processState(pid);
+    let flags = "0";
+    if (syscall === "clone") flags = args.find(arg => arg.startsWith("flags="))?.slice(6) ?? "unknown";
+    if (syscall === "clone3") flags = args[0]?.startsWith("{") && args[0].endsWith("}") ?
+      splitArgs(args[0].slice(1, -1)).find(arg => arg.startsWith("flags="))?.slice(6) ?? "unknown" : "unknown";
+    const sharing = cloneSharing(flags);
+    if (!sharing) {
+      this.processes.set(key, { fds: new Map(), cwd: {} });
+      this.diagnose("process clone flags were not decoded; inherited state is unknown");
+      return;
+    }
+    this.options.budget?.consume("metadataBytes", sharing.files ? 256 : parent.fds.size * 64 + 256);
+    this.processes.set(key, { fds: sharing.files ? parent.fds : new Map(parent.fds), cwd: sharing.fs ? parent.cwd : { ...parent.cwd } });
+  }
+
+  private handleFcntl(pid: number | undefined, args: string[], ret: string): void {
+    const command = args[1];
+    if (command === "F_DUPFD" || command === "F_DUPFD_CLOEXEC") {
+      const to = fdNumber(ret), source = this.descriptor(pid, args[0]);
+      if (to !== undefined) {
+        this.fdMap(pid).delete(to);
+        if (source) this.fdMap(pid).set(to, { ...source, closeOnExec: command === "F_DUPFD_CLOEXEC" });
+      }
+    } else if (command === "F_SETFD") {
+      const fd = fdNumber(args[0]), source = this.descriptor(pid, args[0]);
+      if (fd === undefined) return;
+      if (args[2] === "FD_CLOEXEC" || args[2] === "1" || args[2] === "0x1" || args[2] === "0") {
+        if (source) this.fdMap(pid).set(fd, { ...source, closeOnExec: args[2] !== "0" });
+      } else { this.fdMap(pid).delete(fd); this.diagnose("descriptor close-on-exec flags are unknown"); }
+    }
+  }
+
+  private resolvePath(raw: string | undefined, pid?: number, unscoped = false): AbsolutePath | undefined {
     if (raw === undefined) return undefined;
     const value = decodeStraceString(raw);
     if (value === undefined) return undefined;
-    return this.absolute(value, undefined, undefined, unscoped);
+    return this.absolute(value, undefined, pid, unscoped);
   }
 
   /** Resolves `(dirfd, path)` pairs, honoring an annotated dirfd and `AT_FDCWD`. */
@@ -473,20 +581,23 @@ class StraceParser {
    * The directory a relative path is resolved against, in order of evidence: the `-y` annotation
    * strace printed for the fd (`5</dir>`, `AT_FDCWD</dir>` — the tracee's working directory at the
    * moment of the syscall), the fd map for a bare descriptor whose `open` was recorded, and finally
-   * the parser's `cwd` guess. The annotation is returned untested so the caller root-filters the
+   * the observed cwd for AT_FDCWD only. Unknown numeric descriptors never imply cwd.
+   * The annotation is returned untested so the caller root-filters the
    * joined path: a directory outside the observe roots then drops the record as out of scope instead
    * of silently resolving it against `cwd`.
    */
   private baseDir(dirfd: string | undefined, pid: number | undefined): AbsolutePath | undefined {
-    if (dirfd === undefined || dirfd === "AT_FDCWD") return this.options.cwd;
+    if (dirfd === undefined || dirfd === "AT_FDCWD") return this.processState(pid).cwd.path;
     const annotated = fdAnnotation(dirfd);
-    if (annotated !== undefined && annotated.length > 0) return annotated;
+    if (annotated !== undefined && annotated.length > 0) {
+      if (dirfd.startsWith("AT_FDCWD")) this.setCwd(pid, annotated);
+      return annotated;
+    }
     const fd = fdNumber(dirfd);
     if (fd !== undefined) {
-      const mapped = this.fds.get(pidKey(pid))?.get(fd);
-      if (mapped !== undefined) return mapped;
+      return this.fdMap(pid).get(fd)?.path;
     }
-    return this.options.cwd;
+    return undefined;
   }
 }
 
@@ -732,9 +843,9 @@ function openHow(raw: string | undefined): { flags: string; mode?: string; resol
 }
 
 /** Creation bits are shared by supported Linux targets; O_PATH and unnamed tmpfiles name no new object. */
-function openFlags(raw: string): { known: boolean; created: boolean; exclusive: boolean; truncated: boolean } {
-  const named: Record<string, bigint> = { O_CREAT: 0x40n, O_EXCL: 0x80n, O_TRUNC: 0x200n, O_PATH: 0x200000n, O_TMPFILE: 0x400000n };
-  const ordinary = new Set(["O_RDONLY", "O_WRONLY", "O_RDWR", "O_APPEND", "O_ASYNC", "FASYNC", "O_CLOEXEC", "O_DIRECT", "O_DIRECTORY", "O_DSYNC", "O_LARGEFILE", "O_NOATIME", "O_NOCTTY", "O_NOFOLLOW", "O_NONBLOCK", "O_NDELAY", "O_SYNC", "O_RSYNC", "O_ACCMODE"]);
+function openFlags(raw: string): { known: boolean; created: boolean; exclusive: boolean; truncated: boolean; kind: Descriptor["kind"]; closeOnExec: boolean } {
+  const named: Record<string, bigint> = { O_CREAT: 0x40n, O_EXCL: 0x80n, O_TRUNC: 0x200n, O_PATH: 0x200000n, O_TMPFILE: 0x400000n, O_CLOEXEC: 0x80000n };
+  const ordinary = new Set(["O_RDONLY", "O_WRONLY", "O_RDWR", "O_APPEND", "O_ASYNC", "FASYNC", "O_DIRECT", "O_DIRECTORY", "O_DSYNC", "O_LARGEFILE", "O_NOATIME", "O_NOCTTY", "O_NOFOLLOW", "O_NONBLOCK", "O_NDELAY", "O_SYNC", "O_RSYNC", "O_ACCMODE"]);
   let bits = 0n, known = raw.length > 0;
   for (const part of raw.split("|").map(value => value.trim())) {
     if (Object.hasOwn(named, part)) bits |= named[part]!;
@@ -745,8 +856,25 @@ function openFlags(raw: string): { known: boolean; created: boolean; exclusive: 
     } else if (!ordinary.has(part)) known = false;
   }
   const naming = known && (bits & (0x200000n | 0x400000n)) === 0n;
-  return { known, created: naming && (bits & 0x40n) !== 0n, exclusive: naming && (bits & 0x80n) !== 0n,
+  return { known, kind: (bits & 0x400000n) !== 0n ? "unnamed" : (bits & 0x200000n) !== 0n ? "path-only" : "named",
+    closeOnExec: (bits & 0x80000n) !== 0n, created: naming && (bits & 0x40n) !== 0n, exclusive: naming && (bits & 0x80n) !== 0n,
     truncated: naming && (bits & 0x200n) !== 0n };
+}
+
+function cloneSharing(raw: string): { files: boolean; fs: boolean } | undefined {
+  const supported = new Set(["CLONE_VM", "CLONE_FS", "CLONE_FILES", "CLONE_SIGHAND", "CLONE_PIDFD", "CLONE_PTRACE", "CLONE_VFORK", "CLONE_PARENT", "CLONE_THREAD", "CLONE_NEWNS", "CLONE_SYSVSEM", "CLONE_SETTLS", "CLONE_PARENT_SETTID", "CLONE_CHILD_CLEARTID", "CLONE_DETACHED", "CLONE_UNTRACED", "CLONE_CHILD_SETTID", "CLONE_NEWCGROUP", "CLONE_NEWUTS", "CLONE_NEWIPC", "CLONE_NEWUSER", "CLONE_NEWPID", "CLONE_NEWNET", "CLONE_IO", "CLONE_CLEAR_SIGHAND", "CLONE_INTO_CGROUP", "CLONE_NEWTIME", "SIGCHLD"]);
+  let files = false, fs = false;
+  for (const flag of raw.split("|").map(value => value.trim())) {
+    if (/^(?:0x[0-9a-f]+|0[0-7]+|[1-9][0-9]*|0)$/i.test(flag)) {
+      const bits = BigInt(/^0[0-7]+$/.test(flag) ? `0o${flag.slice(1)}` : flag);
+      if (bits > 0x3ffffffffn) return;
+      files ||= (bits & 0x400n) !== 0n; fs ||= (bits & 0x200n) !== 0n;
+    } else {
+      if (!supported.has(flag)) return;
+      files ||= flag === "CLONE_FILES"; fs ||= flag === "CLONE_FS";
+    }
+  }
+  return { files, fs };
 }
 
 function parseMode(raw: string | undefined): number | undefined {
