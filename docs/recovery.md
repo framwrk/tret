@@ -46,6 +46,12 @@ record checkpoints and per-action native cursors/outcomes. Permitted before-imag
 are pinned and flushed before external execution. A persistence barrier failure
 refuses execution and cannot trigger fallback/reexecution.
 
+New operation payloads use logical version 2 inside the existing physical-v2
+envelope. This prevents older readers from reinterpreting exchanged or uncertain
+rename endpoints during recovery. Logical-v1 evidence is read without migration;
+only an explicit operation write upgrades it. Neither version grants cleanup
+approval. See [recovery retention](recovery-retention.md#chunked-operation-evidence).
+
 Strace event capture persists changed partial prefixes once per second, up to 32
 publications during foreground execution. Snapshot-only and disabled capture keep
 the baseline until close. Prefixes contain scoped metadata without repeated file

@@ -23,8 +23,8 @@ export type TracerRecord =
     }
   /** A `write`/`truncate`-style content change on an already-resolved path. */
   | { op: "write"; at: number; pid?: number; path: AbsolutePath }
-  /** A rename/move; `from` is gone and `to` now exists. */
-  | { op: "rename"; at: number; pid?: number; from: AbsolutePath; to: AbsolutePath }
+  /** Namespace change with the syscall's semantics retained, including both boundary spellings. */
+  | { op: "rename"; at: number; pid?: number; from: AbsolutePath; to: AbsolutePath; semantics?: "exchange" | "uncertain"; noReplace?: boolean }
   /** An unlink/remove of a non-directory node. */
   | { op: "unlink"; at: number; pid?: number; path: AbsolutePath }
   /** A mode change (chmod/fchmod/fchmodat). */
@@ -54,6 +54,8 @@ export type TracerOp = TracerRecord["op"];
 
 /** What a tracer produced: records in order plus any syscalls it saw but could not express. */
 export type TracerResult = {
+  /** Tracer staging is excluded after kernel-aware endpoint resolution. */
+  excludedRoots?: AbsolutePath[];
   records: TracerRecord[];
   /** Unsupported syscall names, deduplicated, for the coverage report. */
   unsupported: string[];

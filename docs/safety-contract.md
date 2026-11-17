@@ -71,9 +71,22 @@ granting removal authority. An installed content hash alone cannot upgrade the
 observation to creation proof.
 
 A rename retains the destination's captured before-state. Without destination
-evidence, the destination stays a mutation, never a newly owned file. A backup
-of the source is not a backup of an overwritten destination. Unsupported rename
-semantics and unobserved state remain limitations of capture.
+evidence, the destination stays a mutation, never a newly owned file. A successful
+`RENAME_NOREPLACE` supplies destination absence at that operation, without replacing
+an earlier window-start fact. A backup of the source is not a backup of an
+overwritten destination. `RENAME_EXCHANGE` retains both names and their separate
+window-start facts; it does not imply that the source disappeared.
+
+Whiteout/unknown flags, directory lineage, a surviving ordinary source (including
+a hard-link no-op), and renames crossing observation/exclusion boundaries remain
+uncertain. Only safely included endpoints become effects; outside, excluded and
+private endpoints are not inspected for content or made cleanup candidates.
+Known descendants of an uncertain directory remain detect-only observations,
+without inventing an inventory or creation proof. Final sampling can prove absence
+at close, not the history of an unobserved interval. These losses reduce coverage
+and are retained in bounded normalization explanations. Symlink metadata without
+a captured prior target stays unknown. Full directory subtree mapping and historical
+alias reconstruction remain open.
 
 Linux reconstruction resolves existing parent components through libc and checks
 that the kernel names the same object, before inspecting the final component.

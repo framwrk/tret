@@ -147,7 +147,7 @@ test("a large valid receipt can release evidence without dropping its retained l
     const paths = Array.from({ length: 2000 }, (_, i) => join(home, "retained-staging-location-".repeat(5) + i));
     writeFileSync(
       join(store.operations.directory, `${operation.id}.json`),
-      JSON.stringify({ ...operation, stage: "partial", retainedPaths: paths }),
+      JSON.stringify({ ...operation, version: 1, stage: "partial", retainedPaths: paths }),
     );
     const discarded = store.operations.discard(operation.id);
     expect(discarded.retainedPaths).toEqual(paths);

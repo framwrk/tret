@@ -137,7 +137,7 @@ test("discard publishes before chunk deletion, and purge retries a failed unlink
 test("legacy v1 is read without migration; invalid v2 envelope lengths never become empty evidence", async () => {
   const log = fixture();
   await withOperationLease(log.stateDir, async () => {
-    const op = log.begin("install");
+    const op = { ...log.begin("install"), version: 1 as const };
     const path = join(log.directory, `${op.id}.json`);
     writeFileSync(path, JSON.stringify(op));
     const before = readFileSync(path);

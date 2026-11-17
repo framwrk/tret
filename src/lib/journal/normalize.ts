@@ -29,6 +29,7 @@ type PathState = {
   removed?: "rename" | "delete";
   /** A change that carries no content hash (mode-only), tracked so it still reads as a mutation. */
   modeChanged: boolean;
+  namespaceChanged?: boolean;
 };
 
 /**
@@ -53,6 +54,7 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
   const available = availableBeforeImages ?? EMPTY_BEFORE_IMAGES;
   const diagnostics = new DiagnosticCollector();
   const states = new Map<string, PathState>();
+  const uncertainDirectories = new Set<string>();
 
   if (journal.completeness !== "complete") {
     diagnostics.push({
@@ -77,29 +79,45 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
   };
 
   const handleRename = (event: RenameEvent): void => {
+    const samePath = keyFor(event.from) === keyFor(event.to);
+    if (samePath && (event.semantics === undefined || (event.from === event.to && event.semantics === "exchange"))) return;
+    if (event.semantics) {
+      const uncertain = event.semantics === "uncertain";
+      const update = (path: AbsolutePath, before: NodeMetadata | null | undefined, after: NodeMetadata | null | undefined) => {
+        const state = stateFor(path);
+        if (state.initial === undefined && before !== undefined) state.initial = before === null ? null : nodeFrom(before);
+        if (uncertain) {
+          if (state.initial == null) state.initial = { kind: "unknown" };
+          state.namespaceChanged = true;
+          // Subtree lineage is unavailable: keep known descendants as detect-only observations.
+          uncertainDirectories.add(keyFor(path));
+        }
+        state.current = after === null ? null : after ? nodeFrom(after) : { kind: "unknown" };
+      };
+      if (event.inScope !== "to") update(event.from, event.before, event.sourceAfter);
+      if (event.inScope !== "from") update(event.to, event.destinationBefore, event.after);
+      diagnostics.push({ code: uncertain ? "unsupported" : "rename",
+        message: uncertain ? "rename endpoints or subtree lineage are uncertain; no creation proof is inferred" : "two path names were exchanged",
+        paths: [event.from, event.to] });
+      return;
+    }
     const from = stateFor(event.from);
-    if (keyFor(event.from) === keyFor(event.to)) return;
     if (from.initial === undefined && event.before) from.initial = nodeFrom(event.before);
-    const sourceNode = event.before ? nodeFrom(event.before) : from.current;
+    const sourceNode = from.current ?? (event.before ? nodeFrom(event.before) : null);
     from.current = null;
 
     const to = stateFor(event.to);
-    const destNode = event.after ? nodeFrom(event.after) : sourceNode;
+    const destNode = event.after === null ? null : event.after ? nodeFrom(event.after) : sourceNode ?? { kind: "unknown" as const };
     if (to.initial === undefined && event.destinationBefore !== undefined) {
       to.initial = event.destinationBefore === null ? null : nodeFrom(event.destinationBefore);
     }
     if (to.initial === undefined) {
       diagnostics.push({ code: "unsupported", message: "rename destination prior state is unknown", paths: [event.to] });
     }
-    to.current = destNode ?? { kind: "unknown" };
-
+    to.current = destNode;
     if (from.initial === null) {
       from.removed = "rename";
-      diagnostics.push({
-        code: "temp-rename",
-        message: "a temporary path was renamed onto its destination",
-        paths: [event.from, event.to],
-      });
+      diagnostics.push({ code: "temp-rename", message: "a temporary path was renamed onto its destination", paths: [event.from, event.to] });
     } else {
       diagnostics.push({ code: "rename", message: "a path was renamed", paths: [event.from, event.to] });
     }
@@ -203,6 +221,18 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
 
   const sorted = [...states.values()].sort((a, b) => comparePaths(a.path, b.path));
   for (const state of sorted) {
+    // Walk ancestors once per path, instead of scanning all states for each directory rename.
+    const components = keyFor(state.path).split("/");
+    let ancestor = "";
+    for (let index = 1; index < components.length - 1; index++) {
+      ancestor += "/" + components[index];
+      if (uncertainDirectories.has(ancestor)) {
+        if (state.initial == null) state.initial = { kind: "unknown" };
+        state.current = { kind: "unknown" };
+        state.namespaceChanged = true;
+        break;
+      }
+    }
     if (state.current !== null) {
       if (state.initial === null) {
         owned.push(ownedEntry(state.path, state.current));
@@ -210,7 +240,7 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
         // Present with no proof it pre-existed (a lone write); record a non-restorable mutation
         // rather than claim ownership of a path that may have existed before the install.
         mutated.push(mutatedEntry(state.path, undefined, state.current, backups, available));
-      } else if (changedFrom(state.initial, state.current, state.modeChanged)) {
+      } else if (state.namespaceChanged || changedFrom(state.initial, state.current, state.modeChanged)) {
         mutated.push(mutatedEntry(state.path, state.initial, state.current, backups, available));
       }
     } else if (state.initial === null) {
@@ -249,6 +279,8 @@ function symlinkNode(meta: SymlinkMetadata): NodeState {
 
 function nodeFrom(meta: NodeMetadata): NodeState {
   switch (meta.kind) {
+    case "unknown":
+      return { kind: "unknown" };
     case "file":
       return fileNode(meta);
     case "directory":
@@ -264,6 +296,7 @@ function nodeFrom(meta: NodeMetadata): NodeState {
  * mode observed by an earlier chmod survives, while a hash the chmod could not carry is adopted.
  */
 function enrichInitial(initial: NodeState, before: NodeState): NodeState {
+  if (initial.kind === "unknown") return initial;
   return {
     kind: initial.kind,
     hash: initial.hash ?? before.hash,
@@ -276,7 +309,7 @@ function enrichInitial(initial: NodeState, before: NodeState): NodeState {
 
 /** Whether a surviving pre-existing path changed, by kind, content, or mode. */
 function changedFrom(before: NodeState, after: NodeState, modeChanged: boolean): boolean {
-  if (modeChanged) return true;
+  if (modeChanged || (before.mode !== undefined && after.mode !== undefined && before.mode !== after.mode)) return true;
   if (before.kind !== after.kind) return true;
   if (before.kind === "symlink") return before.target !== after.target;
   if (before.kind === "file") return !sameContent(before, after);

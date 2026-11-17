@@ -8,10 +8,11 @@ import type {
   NodeMetadata,
   SymlinkMetadata,
 } from "../events";
-import type { TracerRecord, TracerResult } from "./raw";
 import { basename, dirname } from "node:path";
 import { hasExcludedAncestor, inRoots, normalizeAbsolutePath } from "./paths";
 import type { CaptureBudget } from "../budget";
+import type { TracerResult } from "./raw";
+import { privateStateFilter } from "../self-state";
 
 /**
  * Turns tracer records into journal events. It runs after the window closes and inspects the final
@@ -57,12 +58,20 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
   const { traced, inspector: sourceInspector, baseline, roots, fallbackAt } = input;
   const events: JournalEvent[] = [];
   const diagnostics: string[] = [];
+  const note = (message: string): void => {
+    const bounded = message.slice(0, 1024);
+    if (diagnostics.includes(bounded)) return;
+    if (diagnostics.length < 32) diagnostics.push(bounded);
+    else if (diagnostics.length === 32) diagnostics.push("additional reconstruction diagnostics omitted");
+  };
+  const privatePath = privateStateFilter();
+  const excluded = (path: string) => privatePath(path) || inRoots(path, traced.excludedRoots ?? []);
   const inspector: FsInspector = {
     resolve: (path) => sourceInspector.resolve(path),
     inspect: async (path, options) => {
       input.budget?.inspect(path);
       const info = await sourceInspector.inspect(path, input.metadataOnly ? { hash: false } : options);
-      if (info.kind === "unknown" && diagnostics.length < 32) diagnostics.push(`${path}: ${info.reason}`);
+      if (info.kind === "unknown") note(`${path}: ${info.reason}`);
       return input.metadataOnly && info.kind === "file" ? { ...info, hash: undefined } : info;
     },
   };
@@ -93,7 +102,7 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
     try {
       resolvedRoots.push({ root, resolved: await resolveCached(inspector, root, resolved) });
     } catch {
-      diagnostics.push(`observe root could not be resolved: ${root}`);
+      note(`observe root could not be resolved: ${root}`);
     }
   }
   resolvedRoots.sort((a, b) => b.resolved.length - a.resolved.length);
@@ -101,21 +110,62 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
   for (const { record } of ordered) {
     input.budget?.check();
     if (record.op === "unsupported") {
-      diagnostics.push(`unsupported syscall ${record.syscall}: ${record.reason}`);
+      note(`unsupported syscall ${record.syscall}: ${record.reason}`);
       continue;
     }
 
-    const check = await checkPaths(pathsOf(record), inspector, roots, resolvedRoots, resolved);
+    if (record.op === "rename") {
+      const fromCheck = await checkPaths([record.from], inspector, roots, resolvedRoots, resolved, excluded);
+      const toCheck = await checkPaths([record.to], inspector, roots, resolvedRoots, resolved, excluded);
+      const from = fromCheck.kind === "ok" ? fromCheck.paths[0] : undefined;
+      const to = toCheck.kind === "ok" ? toCheck.paths[0] : undefined;
+      if (!from && !to) {
+        if ([fromCheck, toCheck].some(check => check.kind === "escaped" || check.kind === "unresolved"))
+          note("rename endpoints could not be safely resolved inside the observe roots");
+        continue;
+      }
+      const before = from ? baselineNode(baseline, from) : undefined;
+      const destinationBefore = to ? baselineNode(baseline, to) : undefined;
+      const sourceAfter = from ? await sampledNode(inspector, from) : undefined;
+      const after = to ? await sampledNode(inspector, to) : undefined;
+      const directory = [before, destinationBefore, sourceAfter, after].some(node => node?.kind === "directory");
+      const selfRename = from !== undefined && from === to && record.semantics !== "uncertain";
+      const uncertain = !selfRename && (!from || !to || record.semantics === "uncertain" || directory ||
+        (record.semantics !== "exchange" && sourceAfter !== null));
+      if (uncertain || record.semantics === "exchange") {
+        if (uncertain) note(directory ? "directory rename lineage is uncertain; known descendants require reconciliation" :
+          from && to && record.semantics === undefined && sourceAfter !== null ?
+            "ordinary rename source still exists at sampling; no source removal is inferred" :
+            "rename has unsupported semantics or crosses an observation boundary; only included endpoints are retained");
+        push({ type: "rename", from: from ?? record.from, to: to ?? record.to,
+          semantics: uncertain ? "uncertain" : "exchange",
+          ...(!from ? { inScope: "to" as const } : !to ? { inScope: "from" as const } : {}),
+          before, destinationBefore, sourceAfter, after, pid: record.pid, at: record.at });
+        if (from) live.set(from, "existing");
+        if (to) live.set(to, "existing");
+      } else {
+        const wasCreated = live.get(from!) === "created";
+        push({ type: "rename", from: from!, to: to!,
+          before: before ?? (wasCreated ? undefined : { kind: "unknown" }), after,
+          destinationBefore: destinationBefore ?? (record.noReplace && !existedBefore(to!, baseline, live) ? null : undefined),
+          pid: record.pid, at: record.at });
+        live.delete(from!);
+        live.set(to!, wasCreated ? "created" : "existing");
+      }
+      continue;
+    }
+
+    const check = await checkPaths([record.path], inspector, roots, resolvedRoots, resolved, excluded);
     if (check.kind === "out-of-scope") continue;
     if (check.kind === "escaped") {
-      diagnostics.push(`a traced path was dropped because it does not stay inside the observe roots: ${check.path}`);
+      note(`a traced path was dropped because it does not stay inside the observe roots: ${check.path}`);
       continue;
     }
     if (check.kind === "unresolved") {
-      diagnostics.push(`a traced parent could not be safely resolved: ${check.path}`);
+      note(`a traced parent could not be safely resolved: ${check.path}`);
       continue;
     }
-    const target = withResolvedPaths(record, check.paths);
+    const target = { ...record, path: check.paths[0]! };
 
     switch (target.op) {
       case "open": {
@@ -145,31 +195,6 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
           path: target.path,
           before,
           after: await fileAfter(inspector, target.path),
-          pid: target.pid,
-          at: target.at,
-        });
-        break;
-      }
-      case "rename": {
-        const before = await beforeNode(inspector, target.from, baseline, live);
-        const after = await genericAfter(inspector, target.to);
-        const wasCreated = live.get(target.from) === "created";
-        live.delete(target.from);
-        live.set(target.to, wasCreated ? "created" : "existing");
-        const destination = baseline.metadata(target.to);
-        const destinationBefore =
-          destination === undefined
-            ? baseline.kind(target.to) === undefined
-              ? undefined
-              : kindOnly(baseline.kind(target.to)!)
-            : nodeMetadata(destination);
-        push({
-          type: "rename",
-          from: target.from,
-          to: target.to,
-          before,
-          after,
-          destinationBefore,
           pid: target.pid,
           at: target.at,
         });
@@ -236,18 +261,15 @@ async function checkPaths(
   roots: AbsolutePath[],
   resolvedRoots: { root: AbsolutePath; resolved: AbsolutePath }[],
   cache: Map<AbsolutePath, AbsolutePath>,
+  excluded: (path: string) => boolean,
 ): Promise<PathCheck> {
   const normalizedPaths: AbsolutePath[] = [];
   for (const raw of paths) {
     const normalized = normalizeAbsolutePath(raw);
     if (normalized === undefined || !inRoots(normalized, roots)) return { kind: "out-of-scope" };
-    // Contents of shared churn directories (`node_modules`, caches, `dist`) are out of scope, like
-    // in the scoped snapshot walk and the baseline. The whole record is dropped even when only one
-    // of a rename's paths is affected: recording the other side alone cannot be told from a fresh
-    // create, and inventing an effect is worse than a missing one.
     if (hasExcludedAncestor(normalized)) return { kind: "out-of-scope" };
     // The observe-root node itself is an object even when its final component is a symlink.
-    if (raw === normalized && roots.includes(raw)) {
+    if (raw === normalized && roots.includes(raw) && !excluded(raw)) {
       normalizedPaths.push(raw);
       continue;
     }
@@ -261,7 +283,7 @@ async function checkPaths(
     if (candidate === undefined) return { kind: "unresolved", path: raw };
     const alias = resolvedRoots.find(({ resolved }) => inRoots(candidate!, [resolved]));
     if (!alias) return { kind: "escaped", path: raw };
-    if (hasExcludedAncestor(candidate)) return { kind: "out-of-scope" };
+    if (hasExcludedAncestor(candidate) || excluded(candidate)) return { kind: "out-of-scope" };
     // Preserve the baseline's root spelling (/var versus /private/var), but never the raw
     // symlink/.. suffix: inspecting that lexical suffix could fingerprint an unrelated object.
     const suffix = alias.resolved === "/" ? candidate : candidate.slice(alias.resolved.length);
@@ -283,34 +305,24 @@ async function resolveCached(
   return resolved;
 }
 
-/** A copy of the record with its paths replaced by their resolved, root-relative forms. */
-function withResolvedPaths(
-  record: Exclude<TracerRecord, { op: "unsupported" }>,
-  paths: AbsolutePath[],
-): Exclude<TracerRecord, { op: "unsupported" }> {
-  if (record.op === "rename") {
-    const [from, to] = paths;
-    return from !== undefined && to !== undefined ? { ...record, from, to } : record;
-  }
-  const [path] = paths;
-  return path !== undefined ? { ...record, path } : record;
-}
-
-function pathsOf(record: TracerRecord): AbsolutePath[] {
-  switch (record.op) {
-    case "rename":
-      return [record.from, record.to];
-    case "unsupported":
-      return record.path === undefined ? [] : [record.path];
-    default:
-      return [record.path];
-  }
-}
-
 function existedBefore(path: AbsolutePath, baseline: Baseline, live: Map<AbsolutePath, LiveKind>): boolean {
   const state = live.get(path);
   if (state !== undefined) return state === "existing";
   return baseline.existed(path);
+}
+
+/** Prior facts only: final contents of a rename source can belong to the other endpoint. */
+function baselineNode(baseline: Baseline, path: AbsolutePath): NodeMetadata | undefined {
+  const captured = baseline.metadata(path);
+  if (captured) return nodeMetadata(captured) ?? { kind: "unknown" };
+  const kind = baseline.kind(path);
+  if (kind === "file" || kind === "directory") return { kind };
+  return baseline.existed(path) ? { kind: "unknown" } : undefined;
+}
+
+async function sampledNode(inspector: FsInspector, path: AbsolutePath): Promise<NodeMetadata | null> {
+  const info = await inspector.inspect(path);
+  return info.kind === "missing" ? null : nodeMetadata(info) ?? { kind: "unknown" };
 }
 
 /** Final metadata for a file, or a kind-only fallback when the path is gone. */
@@ -318,11 +330,6 @@ async function fileAfter(inspector: FsInspector, path: AbsolutePath): Promise<Fi
   const info = await inspector.inspect(path);
   if (info.kind !== "file") return { kind: "file" };
   return fileMetadata(info);
-}
-
-/** Final metadata for any node, or a kind-only fallback when the path is gone. */
-async function genericAfter(inspector: FsInspector, path: AbsolutePath): Promise<NodeMetadata | undefined> {
-  return nodeMetadata(await inspector.inspect(path));
 }
 
 /** The journal metadata for an inspected node; `missing` has none. */
