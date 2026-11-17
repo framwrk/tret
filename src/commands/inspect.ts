@@ -17,6 +17,7 @@ import { operationMatches, operationSummary } from "../lib/operation-log";
 import { FileStorage } from "../lib/store";
 import { buildCleanupPlan } from "../lib/cleanup-plan";
 import { fail } from "../lib/failure";
+import { formatTraceObservations } from "../lib/capture/trace-observations";
 import { formatWindow } from "../lib/session";
 import { log } from "../lib/utilities";
 import { ownershipConfidence } from "../lib/ownership";
@@ -224,6 +225,7 @@ export function formatInspect(report: InspectReport): string[] {
   for (const segment of report.capture.segments) {
     const reason = segment.partialReason === undefined ? "" : ` (${segment.partialReason})`;
     lines.push(`\tsegment ${segment.kind}: ${formatWindow(segment)}${reason}`);
+    for (const line of formatTraceObservations(segment.observations)) lines.push(`\t\t${line}`);
     for (const diagnostic of segment.normalization?.entries ?? []) {
       lines.push(`\t\t${diagnostic.code}: ${diagnostic.message}${diagnostic.paths.length ? ` (${diagnostic.paths.join(" → ")})` : ""}`);
     }

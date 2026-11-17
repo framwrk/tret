@@ -3,6 +3,7 @@ import type { CaptureDiagnostics } from "./lib/capture/diagnostics";
 import type { CaptureResourceReport } from "./lib/capture/budget";
 import type { CleanupApproval } from "./lib/cleanup-authority";
 import type { ScanCoverage } from "./lib/capture/scan-coverage";
+import type { TraceObservations } from "./lib/capture/trace-observations";
 
 // Units
 
@@ -80,6 +81,7 @@ export type Privilege = "user" | "root";
  * (D5). `tret find` records a "find" segment.
  */
 export type CaptureSegment = {
+  observations?: TraceObservations;
   normalization?: CaptureDiagnostics;
   roots?: AbsolutePath[];
   resources?: CaptureResourceReport;

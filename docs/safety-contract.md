@@ -110,6 +110,24 @@ trace segment, and apply the same shared-claim checks as a normal trace.
 Existing observation origins are preserved, new observations are labeled as
 trace-derived, and recovered candidates require fresh cleanup approval.
 
+Each trace segment also retains a bounded `observations` report, including changes
+to paths already tracked by the install and paths claimed by another record.
+It records window-before/window-after fingerprints when available, link text,
+prior modes and whether the effect became a new candidate or was skipped.
+These window facts do not replace the install's original fingerprints,
+before-images or cleanup decisions. Runtime documents remain observations;
+running `trace --yes` grants no cleanup approval.
+
+The report retains at most 32 entries and 64 KiB, with exact paths/link text up to
+4096 UTF-8 bytes each. Invalid or over-limit entries are counted as omitted,
+never shortened into a different name. `inspect`, `recover` and trace JSON expose
+the report and omitted count; human output labels fingerprints as window facts.
+The operation retains its bounded raw journal until explicit evidence disposal,
+including observations skipped by claim merging or omitted from this report.
+Interrupted recovery recomputes the report against the trace's prior record,
+preserves shared claims and never reruns the tool. Older records may lack the
+optional report; it carries no authority or additional blob pins.
+
 ## Revalidation and shared claims
 
 Cleanup compares the planned content/link state and filesystem identity again

@@ -2,6 +2,7 @@ import type { AbsolutePath, CaptureCompleteness } from "../../types";
 import type { BlobId } from "../storage";
 import type { CaptureDiagnostics } from "./diagnostics";
 import type { CaptureResourceReport } from "./budget";
+import type { TraceObservations } from "./trace-observations";
 
 /** Metadata for a regular file at the time an event was observed. */
 export type FileMetadata = {
@@ -121,6 +122,7 @@ export type JournalEventInput = DistributiveOmit<JournalEvent, "seq" | "at">;
 
 /** The ordered events and coverage metadata one capture window produced. */
 export type Journal = {
+  observations?: TraceObservations;
   normalization?: CaptureDiagnostics;
   resources?: CaptureResourceReport;
   backend: string;
