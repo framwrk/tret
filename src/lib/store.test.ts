@@ -121,7 +121,7 @@ describe("FileStorage records", () => {
     const raw = JSON.parse(readFileSync(recordsPath(home), "utf8"));
     expect(raw.version).toBe(4);
     expect(raw.records).toHaveLength(1);
-    expect(readdirSync(join(home, ".tret"))).toEqual(["operation.lock", "records.json"]);
+    expect(readdirSync(join(home, ".tret")).sort()).toEqual(["operation.lock", "records.json"]);
   });
 
   test("sets owner-only permissions on the records file and its directory", async () => {

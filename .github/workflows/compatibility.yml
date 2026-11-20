@@ -1,0 +1,31 @@
+name: compatibility
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 7 * * *"
+
+jobs:
+  test:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun test
+      - name: Build ${{ matrix.target }}
+        run: bash scripts/build.sh ${{ matrix.target }}
+      - name: Exercise the install script for ${{ matrix.target }}
+        run: bash scripts/install.test.sh

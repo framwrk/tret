@@ -241,6 +241,7 @@ tret inspect opencode --json | jq '.tool.actions'
 - Linux builds also compile the experimental `tret-fanotify` helper for explicit development use. The CLI never selects it automatically.
 - `bash scripts/build.sh <os>-<arch>` builds one target.
 - `scripts/install.test.sh` exercises the install script against the built archive.
+- Pull requests gate on `darwin-arm64` and `linux-x64`, including strict Linux acceptance and privileged fixtures. `darwin-x64` and `linux-arm64` run after merge to `main` and nightly.
 - Run the full verification suite before tagging a release.
 
 ## License

@@ -18,6 +18,7 @@ test("the audit writer cannot grow its private file beyond its byte budget", asy
     `#!/bin/sh
 set -eu
 out=""
+printf '%s\\n' "$@" > "$HOME/trace-args"
 while [ "$#" -gt 0 ]; do
   case "$1" in -o) out="$2"; shift 2;; *) shift;; esac
 done
@@ -39,6 +40,13 @@ done
     while ((await tracer.status()).active && performance.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 5));
     expect((await tracer.status()).active).toBe(false);
+    const args = readFileSync(join(root, "trace-args"), "utf8").split("\n");
+    expect(args).toContain("raw=execve,execveat");
+    expect(args).toContain("-q");
+    expect(args).not.toContain("-qq");
+    const calls = args.find(value => value.startsWith("trace="))!.slice(6).split(",");
+    for (const call of ["chdir", "fchdir", "fork", "vfork", "clone", "clone3", "execve", "execveat", "fcntl"])
+      expect(calls).toContain(call);
     const path = readFileSync(join(root, "trace-path"), "utf8");
     expect(statSync(path).size).toBeLessThanOrEqual(1024);
     await tracer.stop();

@@ -63,6 +63,7 @@ export type LinuxTracerFactory = (options: TracerAttachOptions) => Promise<Linux
  * `linux.smoke.test.ts` exercises this list against a real strace so an invalid name cannot ship.
  */
 export const STRACE_TRACE_SET = [
+  "chdir", "fchdir", "fork", "vfork", "clone", "clone3", "execve", "execveat", "fcntl",
   "open",
   "openat",
   "openat2",
@@ -155,17 +156,19 @@ export class StraceTracer implements LinuxTracer {
     this.outputDir = await mkdtemp(join(tmpdir(), "tret-strace-"));
     this.outputFile = join(this.outputDir, "trace");
     writeFileExclusive(this.outputFile, new Uint8Array(), 0o600);
-    this.parser = new StraceStreamParser({ cwd: this.options.cwd, roots: this.attach.roots, budget: this.budget,
+    this.parser = new StraceStreamParser({ cwd: this.options.cwd, roots: this.attach.roots, rootPid: this.attach.pid, budget: this.budget,
       excludedRoots: [...new Set([this.outputDir, await realpath(this.outputDir)])] });
     const args = [
       "-f",
       "-ttt",
       "-y",
-      "-qq",
+      "-q",
       "-s",
       "4096",
       "-e",
       `trace=${STRACE_TRACE_SET}`,
+      "-e",
+      "raw=execve,execveat",
       "-o",
       this.outputFile,
       "-p",

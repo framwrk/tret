@@ -90,6 +90,31 @@ and never seed a guessed descriptor path. This follows the decoded format in
 [strace's open implementation](https://github.com/strace/strace/blob/master/src/open.c);
 full constrained-path reconstruction remains pending.
 
+Linux capture distinguishes named descriptors, `O_PATH` handles and unnamed
+`O_TMPFILE` handles through duplication, close and reuse. Writes through unnamed
+handles do not invent a named file or turn their containing directory into a file.
+`O_PATH` handles can resolve directory-relative opens but cannot supply write effects.
+Successful fd replacement clears stale mappings even when the new source is unknown.
+A descriptor marked deleted supplies no verified live pathname. If its kind was
+not observed, capture retains a loss instead of inventing a named file from its
+annotation, including workers observed before clone completion.
+
+Observed process state tracks chdir/fchdir, fork/vfork/clone/clone3, shared
+`CLONE_FILES`/`CLONE_FS` state, and close-on-exec flags. Successful exec detaches the
+file-descriptor table and drops its close-on-exec entries; failed exec preserves it.
+Process exit notices stay enabled so exited state is discarded. Unknown numeric
+dirfds never imply cwd. Unknown clone flags, child observations before fork
+completion, or unresolvable cwd changes reduce coverage instead of supplying guessed
+inheritance. Copied descriptor tables and accumulated cwd spellings count against
+the capture metadata budget. This is observed state, not historical alias
+reconstruction or proof that no events were missed.
+
+Exec calls are requested in raw form so strace does not decode their argv or
+environment strings into the audit file. Other syscall detail and user-facing run
+logs can still contain installer output or arguments; this is not general log
+redaction. See [strace output options](https://man7.org/linux/man-pages/man1/strace.1.html).
+Child-launch tracing under stock Yama remains pending.
+
 A rename retains the destination's captured before-state. Without destination
 evidence, the destination stays a mutation, never a newly owned file. A successful
 `RENAME_NOREPLACE` supplies destination absence at that operation, without replacing

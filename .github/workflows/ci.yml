@@ -12,16 +12,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Every supported release target builds and tests on a native runner.
+        # Required PR gates; the remaining native targets run after merge and nightly.
         include:
           - target: darwin-arm64
             runner: macos-15
-          - target: darwin-x64
-            runner: macos-15-intel
           - target: linux-x64
             runner: ubuntu-latest
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
