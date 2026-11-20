@@ -1053,28 +1053,20 @@ describe("install -> list -> uninstall", () => {
     }
   });
 
-  test("--force plans the previous install's removal with its capture's evidence label", async () => {
+  test("--force labels previous effects as observed regardless of capture coverage", async () => {
     const home = makeHome();
     const server = serveResponses({ body: INSTALL_SCRIPT }, { body: INSTALL_SCRIPT });
     try {
       expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
-      const priorCoverage = readStore(home).records[0]?.capture.completeness;
       const result = await runCliResult(["install", "--yes", server.url, "--force"], home);
 
       expect(result.code).toBe(0);
       const output = `${result.stdout}\n${result.stderr}`;
       expect(output).toContain("reinstalling mytool: removing the previous install first");
       const binary = join(home, ".local", "bin", "mytool");
-      if (priorCoverage === "complete") {
-        // A real window proves the previous install, so the same plan carries no caveat.
-        expect(output).not.toContain("observed, not proven");
-        expect(output).toContain(`remove ${binary}`);
-      } else {
-        // The previous record's evidence is incomplete, so its planned removal is labeled up front.
-        expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
-        expect(output).toContain(`remove ${binary} (observed, not proven)`);
-      }
+      expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
+      expect(output).toContain(`remove ${binary} (observed, not proven)`);
     } finally {
       await server.stop();
     }

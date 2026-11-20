@@ -319,10 +319,17 @@ export async function install(
       pins: [...(session?.beforeImages?.keys() ?? [])],
       ...(session?.baseline ? { baseline: session.baseline } : {}),
     });
-    for (const [id, bytes] of session?.beforeImages ?? []) {
-      capturePlan.budget.check();
-      const stored = await storage.putBlob(bytes);
-      if (stored.id !== id) throw new Error("capture before-image does not match its content address");
+    const beforeImages = session?.beforeImages;
+    if (beforeImages?.size) {
+      const stored = await storage.putBlobs(function* () {
+        for (const bytes of beforeImages.values()) {
+          capturePlan.budget.check();
+          yield bytes;
+        }
+      }());
+      for (const [index, id] of [...beforeImages.keys()].entries()) {
+        if (stored[index]?.id !== id) throw new Error("capture before-image does not match its content address");
+      }
     }
     operation = storage.operations.checkpoint(operation, { stage: "running", unknownSince: new Date().toISOString() });
   };

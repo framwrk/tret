@@ -241,8 +241,7 @@ printf 'second\\n' > "$HOME/.config/newtool.conf"
 
       const result = await runCliResult(["install", "--yes", server.url, "--force", "--backup"], home);
 
-      expect(result.code).toBe(0);
-      // The old install was restored before removal, and its now-unreferenced blob was collected.
+      expect(result).toMatchObject({ code: 0 });
       expect(readFileSync(oldConfig, "utf8")).toBe("old-original\n");
       expect(existsSync(blobPath(home, oldBlob))).toBe(true);
       const saved = readRecords(home);

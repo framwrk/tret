@@ -43,7 +43,9 @@ Private operation evidence under `.tret/operations/` (manifests and their immuta
 chunks) contains prior records,
 before-image pins, baseline metadata, the latest prefix or closed capture journal, normalized
 record checkpoints and per-action native cursors/outcomes. Permitted before-images
-are pinned and flushed before external execution. A persistence barrier failure
+are pinned and flushed before external execution. Install accounts for retained
+blob bytes once per before-image batch and checks each new write against the
+store limit. A persistence barrier failure
 refuses execution and cannot trigger fallback/reexecution.
 
 New operation payloads use logical version 2 inside the existing physical-v2
