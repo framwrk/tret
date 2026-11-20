@@ -675,6 +675,16 @@ async function scenarioTraceYama(binary: string): Promise<void> {
       "trace did not report audit exhaustion");
     assertEqual(readFileSync(marker, "utf8"), "run\nrun\n", "audit loss does not replay the payload");
 
+    const tooSmall = await runProcess([binary, "trace", "traced", "--yes", "--json"], {
+      ...env, TRET_CAPTURE_MAX_AUDIT_BYTES: "1",
+    });
+    expectExit(tooSmall, 5, "refuse trace when the launcher startup audit exhausts the budget");
+    assert(`${tooSmall.stdout}\n${tooSmall.stderr}`.includes("capture budget exhausted: auditBytes"),
+      "startup refusal did not report audit exhaustion");
+    assertEqual(readFileSync(marker, "utf8"), "run\nrun\n", "startup budget refusal does not start the payload");
+    assert(!readdirSync(env.TMPDIR!).some(name => name.startsWith("tret-strace-")),
+      "startup budget refusal left a raw audit directory");
+
     const release = join(ctx.home, ".trace-release");
     const done = join(ctx.home, ".trace-background-done");
     try {

@@ -73,13 +73,14 @@ removal authority or discovering additional descendants.
 The default Linux tracer writes to a private audit file. The trusted launcher waits
 under strace while Tret confirms its kernel `TracerPid` and applies a soft file-size
 limit to the tracer alone. The launcher has already inherited the caller's original
-limits. The audit ceiling is checked before the launcher can run the installer, and
-an inherited stricter limit may stop the tracer earlier. Tret checks attachment
+limits. The private scratch file can exceed a very small configured ceiling while
+strace starts the launcher. Tret refuses execution and removes the scratch file
+if startup reaches that ceiling. An inherited stricter limit may stop the tracer
+earlier. Tret checks attachment
 again after durable pre-execution persistence. A killed or full tracer yields
 partial coverage. Raw output is read within the byte ceiling and removed at close.
 Diagnostics are bounded. Development-only fanotify injection also bounds incoming
-bytes, lines and retained metadata. Linux child-launch and the full lifecycle
-matrix remain separate work.
+bytes, lines and retained metadata.
 
 Blob writes hold the operation lease, count existing regular objects and staging
 bytes, and refuse new content when full. Deduplication at the ceiling still works.
