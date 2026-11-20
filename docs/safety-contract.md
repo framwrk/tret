@@ -47,17 +47,22 @@ with exit 5 before touching the prior install.
 
 ## Classification
 
-The Linux CLI attempts strace, including when already root. It does not discover
+The Linux CLI uses strace to launch install and trace commands, including when
+already root. The child relationship works with stock Linux Yama settings. A
+trusted launcher waits for kernel-confirmed attachment and durable intent before
+starting the requested program. Tret rechecks readiness after persistence, and
+the launcher confirms its tracer in procfs when it accepts permission to run.
+The CLI does not discover
 or select a fanotify helper from the executable directory, HOME or `TRET_FANOTIFY`.
-The labeled heuristic fallback requires the separate consent above. This does
-not fix strace readiness or establish assured machine-wide capture.
+The labeled heuristic fallback requires the separate consent above. Capture
+coverage remains limited to observed filesystem effects.
 
 Fanotify is available only to development code that explicitly injects
 `attachFanotify` into `LinuxCaptureBackend` with a chosen helper path. Its journal
 always reports partial coverage. Its event fidelity is unverified, and the partial
 label grants no cleanup authority; its candidates require the same explicit approvals.
 The packaged helper remains for experiments. Every record now requires per-effect
-cleanup approval; child-launch tracing and real-kernel fidelity tests remain open.
+cleanup approval. Experimental fanotify fidelity remains unverified.
 
 `find` also records candidate observations, with one shared resource budget for
 streamed name discovery and descendant fingerprinting. Nonmatching entries count
@@ -113,7 +118,11 @@ Exec calls are requested in raw form so strace does not decode their argv or
 environment strings into the audit file. Other syscall detail and user-facing run
 logs can still contain installer output or arguments; this is not general log
 redaction. See [strace output options](https://man7.org/linux/man-pages/man1/strace.1.html).
-Child-launch tracing under stock Yama remains pending.
+The foreground launcher supplies the program exit status through a private channel.
+A separate keeper holds the operation lease until foreground work finishes, even
+if Tret is killed. The installer and its descendants receive the control and lease
+descriptors closed. Capture may detach from live descendants after the foreground
+program exits, and the receipt reports that coverage loss.
 
 A rename retains the destination's captured before-state. Without destination
 evidence, the destination stays a mutation, never a newly owned file. A successful

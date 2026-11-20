@@ -70,14 +70,14 @@ readable siblings still retain known presence and absence. Executable naming use
 the bounded effect inventory, including observed mutations, without granting
 removal authority or discovering additional descendants.
 
-The default Linux tracer writes to a private bounded audit file. A child-only soft
-file-size limit is installed before strace starts; the installer does not inherit
-it because strace attaches to Tret. Shell units and an inherited stricter limit
-may stop the tracer earlier than the configured byte ceiling. Kernel `TracerPid`
-must confirm attachment, with a bounded readiness wait, and attachment is checked
-again after durable pre-execution persistence. A killed/full tracer yields partial
-coverage. Raw output is read within the byte ceiling and removed at close;
-diagnostics are bounded. Development-only fanotify injection also bounds incoming
+The default Linux tracer writes to a private audit file. The trusted launcher waits
+under strace while Tret confirms its kernel `TracerPid` and applies a soft file-size
+limit to the tracer alone. The launcher has already inherited the caller's original
+limits. The audit ceiling is checked before the launcher can run the installer, and
+an inherited stricter limit may stop the tracer earlier. Tret checks attachment
+again after durable pre-execution persistence. A killed or full tracer yields
+partial coverage. Raw output is read within the byte ceiling and removed at close.
+Diagnostics are bounded. Development-only fanotify injection also bounds incoming
 bytes, lines and retained metadata. Linux child-launch and the full lifecycle
 matrix remain separate work.
 

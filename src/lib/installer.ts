@@ -10,14 +10,18 @@ import { ttyOutput } from "./utilities";
 const TEMP_PREFIX = "tret-install-";
 
 /** Runs a downloaded install script: temp file, exec bit, spawn, then the exit code. */
-export async function runInstaller(script: string, args: string[] = []): Promise<number> {
+export function runInstaller(script: string, args: string[] = []): Promise<number> {
+  return withInstaller(script, (path) => runProgram(path, args));
+}
+
+export async function withInstaller<T>(script: string, run: (path: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), TEMP_PREFIX));
   const path = join(dir, "install.sh");
 
   try {
     await Bun.write(path, script);
     chmodSync(path, 0o755);
-    return await runProgram(path, args);
+    return await run(path);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -36,7 +40,7 @@ export async function runProgram(program: string, args: string[] = []): Promise<
   return await new Promise<number>((resolve) => {
     // Keep stderr attached to the terminal when it is one, so programs still see the same TTY.
     // In non-interactive runs, pipe it to retain the failure tail and forward synchronously.
-    const lease = currentOperationDescriptor(join(process.env.HOME ?? homedir(), ".tret"));
+    const lease = programLease();
     // A foreground supervisor holds the operation's kernel lease even if Tret is killed. Its
     // child gets fd 3 closed, so daemonized descendants cannot accidentally retain the lease.
     // Arguments remain positional data; none are evaluated as shell source.
@@ -46,17 +50,25 @@ export async function runProgram(program: string, args: string[] = []): Promise<
       : spawn("/bin/sh", ["-c", supervisor, "tret-supervisor", program, ...args], {
           stdio: ["inherit", "pipe", process.stderr.isTTY ? "inherit" : "pipe", lease],
         });
-    child.stdout?.on("data", (chunk: Buffer) => {
-      writeOutput(chunk);
-      runLogOutput(chunk);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      writeSync(2, chunk);
-      runLogOutput(chunk);
-    });
+    child.stdout?.on("data", forwardProgramStdout);
+    child.stderr?.on("data", forwardProgramStderr);
     child.once("close", (code) => resolve(code ?? 1));
     child.once("error", () => resolve(1));
   });
+}
+
+export function programLease(): number | undefined {
+  return currentOperationDescriptor(join(process.env.HOME ?? homedir(), ".tret"));
+}
+
+export function forwardProgramStdout(chunk: Buffer): void {
+  writeOutput(chunk);
+  runLogOutput(chunk);
+}
+
+export function forwardProgramStderr(chunk: Buffer): void {
+  writeSync(2, chunk);
+  runLogOutput(chunk);
 }
 
 /** Copies a chunk of program output to the terminal: stdout when it is one and JSON is off, else the controlling terminal, else stderr. */

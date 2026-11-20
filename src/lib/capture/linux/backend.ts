@@ -1,5 +1,5 @@
 import type { Baseline, CapturedBaseline, FsInspector } from "./inspect";
-import type { CaptureBackend, CaptureSession, CaptureStartOptions } from "../backend";
+import type { CaptureBackend, CaptureCommand, CaptureSession, CaptureStartOptions } from "../backend";
 import type { Journal, JournalEvent } from "../events";
 import type { LinuxTracer, LinuxTracerFactory, TracerAttachOptions } from "./tracer";
 import { MemoryBaseline, RealFsInspector, captureBaseline } from "./inspect";
@@ -67,9 +67,8 @@ export class LinuxCaptureBackend implements CaptureBackend {
     const budget = options.budget ?? new CaptureBudget();
     budget.ensurePhase();
     const attach: TracerAttachOptions = { pid: options.pid, roots: options.roots, budget };
-    // Known host restrictions always force the install into the heuristic fallback. Check them
-    // before a backups-enabled baseline reads every eligible file in the observation roots.
-    const tracerFactory = this.options.tracerFactory ?? defaultTracerFactoryForCurrentHost();
+    const command = this.options.tracerFactory ? undefined : options.command;
+    const tracerFactory = this.options.tracerFactory ?? defaultTracerFactoryForCurrentHost(command);
     if (!this.options.inspector) this.inspector = new RealFsInspector({ budget });
     const resolved = await this.resolveBaseline({ ...options, budget });
     budget.check();
@@ -83,6 +82,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
       backend: tracer.name,
       beforeImages: resolved.beforeImages,
       ...(resolved.baseline instanceof MemoryBaseline ? { baseline: resolved.baseline.snapshot() } : {}),
+      ...(command && tracer.runProgram ? { runProgram: tracer.runProgram } : {}),
       ready: async () => {
         if (!(await tracer.status()).active || (tracer.isAttached && !(await tracer.isAttached())))
           throw new Error("strace could not attach: capture was lost before external execution");
@@ -100,12 +100,12 @@ export class LinuxCaptureBackend implements CaptureBackend {
         return { backend: tracer.name, completeness: "partial", events: prefixEvents.slice(), resources: budget.report(),
           partialReason: ["live event prefix; end-of-window state and the subsequent interval remain unknown", ...budget.losses].join("; ") };
       } } : {}),
-      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, resolved, options.pid, budget),
+      stop: async (): Promise<Journal> => this.stop(tracer, options.roots, resolved, options.pid, budget, command !== undefined),
     };
   }
 
-  async preflight(): Promise<void> {
-    if (!this.options.tracerFactory) selectDefaultTracer();
+  async preflight(childLaunch = false): Promise<void> {
+    if (!this.options.tracerFactory) selectDefaultTracer(childLaunch);
   }
 
   private async stop(
@@ -114,6 +114,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     resolved: ResolvedBaseline,
     rootPid: number,
     budget: CaptureBudget,
+    childLaunch: boolean,
   ): Promise<Journal> {
     // A live tracer at the close of the window means tracees (a daemonized or detached descendant)
     // outlived the bounded install window; their later activity is not captured. The observed root
@@ -144,7 +145,7 @@ export class LinuxCaptureBackend implements CaptureBackend {
     if (traced.unsupported.length > 0) {
       reasons.add(`unsupported syscalls may change files without journal events: ${traced.unsupported.join(", ")}`);
     }
-    if (!settled && hasLiveDescendants(traced, rootPid, this.processAlive)) {
+    if (!settled && (childLaunch || hasLiveDescendants(traced, rootPid, this.processAlive))) {
       reasons.add(
         "capture closed while the tracer was still attached to live descendants (daemonized or detached processes were not observed to their end)",
       );
@@ -209,18 +210,20 @@ export async function defaultTracerFactory(attach: TracerAttachOptions): Promise
   return defaultTracerFactoryForCurrentHost()(attach);
 }
 
-function defaultTracerFactoryForCurrentHost(): LinuxTracerFactory {
-  const selection = selectDefaultTracer();
-  return (attach) => attachDefaultTracer(attach, selection);
+function defaultTracerFactoryForCurrentHost(command?: CaptureCommand): LinuxTracerFactory {
+  const selection = selectDefaultTracer(command !== undefined);
+  return (attach) => attachDefaultTracer(attach, selection, command);
 }
 
 type DefaultTracerSelection = { stracePath: string };
 
 /** Selects a tracer only when the host can plausibly attach it; this runs before the baseline scan. */
-function selectDefaultTracer(): DefaultTracerSelection {
-  if (parentAttachRestricted()) {
+function selectDefaultTracer(childLaunch = false): DefaultTracerSelection {
+  const scope = yamaScope();
+  if (childLaunch ? scope >= 3 || (scope >= 2 && !isRoot()) : scope >= 1 && !isRoot()) {
     throw new Error(
-      "strace cannot attach to this process: yama ptrace_scope restricts an unprivileged tracer from tracing its parent",
+      childLaunch ? "strace child launch is restricted by yama ptrace_scope" :
+        "strace cannot attach to this process: yama ptrace_scope restricts an unprivileged tracer from tracing its parent",
     );
   }
   const stracePath = Bun.which("strace");
@@ -231,8 +234,8 @@ function selectDefaultTracer(): DefaultTracerSelection {
 }
 
 /** Attaches the previously selected tracer only after the baseline has been captured. */
-async function attachDefaultTracer(attach: TracerAttachOptions, selection: DefaultTracerSelection): Promise<LinuxTracer> {
-  const tracer = await attachStrace(attach, { cwd: process.cwd(), stracePath: selection.stracePath });
+async function attachDefaultTracer(attach: TracerAttachOptions, selection: DefaultTracerSelection, command?: CaptureCommand): Promise<LinuxTracer> {
+  const tracer = await attachStrace(attach, { cwd: process.cwd(), stracePath: selection.stracePath, command });
   try { await requireAttached(tracer); }
   catch (error) {
     try { await tracer.stop(); } catch { /* Preserve the original attachment failure. */ }
@@ -245,16 +248,19 @@ async function attachDefaultTracer(attach: TracerAttachOptions, selection: Defau
  * True when the kernel's Yama LSM forbids this unprivileged process from tracing its own parent — the
  * relationship `strace -f -p <parent>` needs. Under `ptrace_scope >= 1` a child may only trace its
  * descendants, so the attach can never succeed; detecting that up front keeps the caller's heuristic
- * fallback deterministic instead of racing the tracer's exit. Exported so callers and tests can
- * predict which backend an install window will get.
+ * fallback deterministic instead of racing the tracer's exit. This applies to the direct-attach
+ * seam, not the CLI child launch.
  */
 export function parentAttachRestricted(): boolean {
-  if (isRoot()) return false;
+  return !isRoot() && yamaScope() >= 1;
+}
+
+function yamaScope(): number {
   try {
     const scope = Number.parseInt(readFileSync("/proc/sys/kernel/yama/ptrace_scope", "utf8").trim(), 10);
-    return Number.isFinite(scope) && scope >= 1;
+    return Number.isFinite(scope) ? scope : 0;
   } catch {
-    return false; // no Yama (or unreadable): assume the attach is allowed and let strace report
+    return 0;
   }
 }
 

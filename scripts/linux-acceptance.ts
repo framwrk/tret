@@ -395,7 +395,7 @@ function describeSnapshotDifference(before: HostSnapshotEntry[], after: HostSnap
 // Installer fixtures. They only write inside the temporary HOME; none of them needs root.
 
 const PROBE_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin" "$HOME/.config/probe"
 printf '#!/bin/sh\\necho probe\\n' > "$HOME/.local/bin/probe"
 chmod +x "$HOME/.local/bin/probe"
@@ -403,14 +403,44 @@ printf 'cfg\\n' > "$HOME/.config/probe/config"
 `;
 
 const TRACED_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin"
-printf '#!/bin/sh\\necho run >> "$HOME/.trace-runs"\\nmkdir -p "$HOME/.local/share/traced"\\nprintf "state\\\\n" > "$HOME/.local/share/traced/state"\\n' > "$HOME/.local/bin/traced"
+cat > "$HOME/.local/bin/traced" <<'PAYLOAD'
+#!/bin/sh
+set -e
+for fd in 3 4 5 6; do
+  if ( : >&"$fd" ) 2>/dev/null || ( : <&"$fd" ) 2>/dev/null; then
+    exit 99
+  fi
+done
+echo run >> "$HOME/.trace-runs"
+mkdir -p "$HOME/.local/share/traced"
+dd if=/dev/zero of="$HOME/.local/share/traced/large" bs=131072 count=1 status=none
+printf 'state\\n' > "$HOME/.local/share/traced/state"
+if [ "\${TRET_FIXTURE_STRESS_AUDIT:-}" = 1 ]; then
+  i=0
+  while [ "$i" -lt 1500 ]; do
+    : > /dev/null
+    i=$((i + 1))
+  done
+  wc -c < "$TMPDIR"/tret-strace-*/trace > "$HOME/.trace-audit-size"
+fi
+if [ "\${TRET_FIXTURE_BACKGROUND:-}" = 1 ]; then
+  (
+    i=0
+    while [ ! -e "$HOME/.trace-release" ] && [ "$i" -lt 300 ]; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+    printf 'done\\n' > "$HOME/.trace-background-done"
+  ) &
+fi
+PAYLOAD
 chmod +x "$HOME/.local/bin/traced"
 `;
 
 const SHARED_PARENT_A = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.sharedparent" "$HOME/.local/bin"
 printf '#!/bin/sh\\necho shared-a\\n' > "$HOME/.local/bin/shared-a"
 chmod +x "$HOME/.local/bin/shared-a"
@@ -418,7 +448,7 @@ printf 'a\\n' > "$HOME/.sharedparent/a.conf"
 `;
 
 const SHARED_PARENT_B = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.sharedparent" "$HOME/.local/bin"
 printf '#!/bin/sh\\necho shared-b\\n' > "$HOME/.local/bin/shared-b"
 chmod +x "$HOME/.local/bin/shared-b"
@@ -435,14 +465,14 @@ printf 'setting = 1\\n' > "$HOME/.config/nct/config"
 `;
 
 const NO_EXECUTABLE_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.config/noexec"
 printf 'config\\n' > "$HOME/.config/noexec/config"
 printf 'state\\n' > "$HOME/.local/share/noexec-state"
 `;
 
 const PATH_LINES_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho pathfixture\\n' > "$HOME/.local/bin/pathfixture"
 chmod +x "$HOME/.local/bin/pathfixture"
@@ -451,7 +481,7 @@ printf '%s\\n' 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
 `;
 
 const UNMARKED_PATH_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho unmarked\\n' > "$HOME/.local/bin/unmarked"
 chmod +x "$HOME/.local/bin/unmarked"
@@ -459,7 +489,7 @@ printf '%s\\n' 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
 `;
 
 const ETC_FIXTURE_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin" "$HOME/.config/etcfixture"
 printf '#!/bin/sh\\necho etcfixture\\n' > "$HOME/.local/bin/etcfixture"
 chmod +x "$HOME/.local/bin/etcfixture"
@@ -467,23 +497,23 @@ printf 'cfg\\n' > "$HOME/.config/etcfixture/config"
 `;
 
 const GC_KEEP_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin" "$HOME/.config/gctool"
 printf '#!/bin/sh\\necho gctool-keep\\n' > "$HOME/.local/bin/gctool-keep"
 chmod +x "$HOME/.local/bin/gctool-keep"
-printf 'keep-new\\n' > "$HOME/.config/gctool/keep.conf"
+printf 'keep-new\\n' >| "$HOME/.config/gctool/keep.conf"
 `;
 
 const GC_GONE_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin" "$HOME/.config/gconetool"
 printf '#!/bin/sh\\necho gctool-gone\\n' > "$HOME/.local/bin/gctool-gone"
 chmod +x "$HOME/.local/bin/gctool-gone"
-printf 'gone-new\\n' > "$HOME/.config/gconetool/gone.conf"
+printf 'gone-new\\n' >| "$HOME/.config/gconetool/gone.conf"
 `;
 
 const GC_TRIGGER_INSTALLER = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho gctrigger\\n' > "$HOME/.local/bin/gctrigger"
 chmod +x "$HOME/.local/bin/gctrigger"
@@ -592,10 +622,6 @@ async function scenarioJsonBeforeCommand(binary: string): Promise<void> {
   }
 }
 
-/**
- * Trace under stock Yama. With `ptrace_scope=1` the unprivileged strace primary cannot attach to
- * its parent, so the shipped binary must fall back to the labeled heuristic window exactly once.
- */
 async function scenarioTraceYama(binary: string): Promise<void> {
   const scope = yamaPtraceScope();
   if (scope !== "1") {
@@ -610,14 +636,19 @@ async function scenarioTraceYama(binary: string): Promise<void> {
   const server = FixtureServer.start();
   try {
     const url = server.add("/install.sh", TRACED_INSTALLER);
-    expectSuccess(await runTret(ctx.home, ["install", "--yes", url], binary), "install traced");
+    const env = childEnvironment(ctx.home);
+    const scopeFlags = ["/usr/bin", "/usr/local/bin"].flatMap(root => ["--observe-exclude", root]);
+    expectSuccess(await runProcess([binary, "install", "--yes", url, ...scopeFlags], env), "install traced");
 
-    const traced = await runTret(ctx.home, ["trace", "traced", "--yes", "--json"], binary);
+    const traced = await runProcess([binary, "trace", "traced", "--yes", "--json"], {
+      ...env, TRET_CAPTURE_MAX_AUDIT_BYTES: String(64 * 1024),
+    });
     expectSuccess(traced, "trace traced");
     const document = parseJson(traced.stdout, "trace --json");
-    assertEqual(document.backend, "linux-heuristic", "trace backend");
-    assertEqual(document.completeness, "heuristic", "trace completeness");
+    assertEqual(document.backend, "linux-strace", "trace backend");
     assertEqual(document.exitCode, 0, "trace tool exit code");
+    const large = join(ctx.home, ".local/share/traced/large");
+    assertEqual(statSync(large).size, 128 * 1024, "payload output exceeds the tracer-only file ceiling");
 
     const marker = join(ctx.home, ".trace-runs");
     assert(existsSync(marker), "traced tool was not executed");
@@ -626,9 +657,39 @@ async function scenarioTraceYama(binary: string): Promise<void> {
 
     const record = readRecords(ctx.home)[0];
     assert(record !== undefined, "traced install left no record");
+    assertEqual(record.capture.backend, "linux-strace", "install backend");
+    assert(record.owned.some(entry => entry.path === join(ctx.home, ".local/share/traced")), "trace missed the child directory creation");
     assertEqual(record.capture.segments.length, 2, "capture segment count after trace");
     assertEqual(record.capture.segments[1]?.kind, "trace", "second segment kind");
     assert(record.capture.segments[1]?.endedAt !== undefined, "trace segment has no end time");
+
+    const overflow = await runProcess([binary, "trace", "traced", "--yes", "--json"], {
+      ...env, TRET_CAPTURE_MAX_AUDIT_BYTES: String(64 * 1024), TRET_FIXTURE_STRESS_AUDIT: "1",
+    });
+    expectSuccess(overflow, "trace with exhausted audit");
+    const partial = parseJson(overflow.stdout, "trace with exhausted audit");
+    assertEqual(partial.exitCode, 0, "payload completes past audit exhaustion");
+    assertEqual(partial.completeness, "partial", "audit exhaustion downgrades coverage");
+    assertEqual(Number(readFileSync(join(ctx.home, ".trace-audit-size"), "utf8").trim()), 64 * 1024, "kernel audit ceiling");
+    assert(readRecords(ctx.home)[0]?.capture.segments.at(-1)?.partialReason?.includes("audit reached its file size limit"),
+      "trace did not report audit exhaustion");
+    assertEqual(readFileSync(marker, "utf8"), "run\nrun\n", "audit loss does not replay the payload");
+
+    const release = join(ctx.home, ".trace-release");
+    const done = join(ctx.home, ".trace-background-done");
+    try {
+      const background = await runProcess([binary, "trace", "traced", "--yes", "--json"], {
+        ...env, TRET_FIXTURE_BACKGROUND: "1",
+      });
+      expectSuccess(background, "trace with a live background writer");
+      assertEqual(parseJson(background.stdout, "background trace").exitCode, 0, "foreground exit status");
+      assert(!existsSync(done), "trace waited on a background process holding stdout");
+      assert(readRecords(ctx.home)[0]?.capture.segments.at(-1)?.partialReason?.includes("live descendants"),
+        "trace did not report the live descendant");
+    } finally {
+      writeFileSync(release, "go");
+      for (let i = 0; i < 100 && !existsSync(done); i++) await Bun.sleep(20);
+    }
   } finally {
     server.stop();
   }
@@ -1003,7 +1064,7 @@ async function scenarioInformationalOutput(binary: string): Promise<void> {
 
 /** Runs the scenarios in reported-finding order and stops at the first product failure. */
 const scenarios: { name: string; run: (binary: string) => Promise<void> }[] = [
-  { name: "trace under stock Yama uses linux-heuristic exactly once", run: scenarioTraceYama },
+  { name: "child launch under stock Yama traces install and trace exactly once", run: scenarioTraceYama },
   { name: "unsupported shell edits block replacement and preserve all profiles", run: scenarioForcedShellCleanup },
   { name: "forced replacement keeps a shared parent's other file and record", run: scenarioSharedParentReplacement },
   { name: "global --json before the command emits one document", run: scenarioJsonBeforeCommand },

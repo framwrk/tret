@@ -14,7 +14,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { extractBackupSizeFlag, parseObserveFlags, recordDisplayName } from "./install";
-import { isRoot, parentAttachRestricted } from "../lib/capture/linux/backend";
 import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { heuristicFallbackRoots } from "../lib/capture/fallback";
 import { install } from "./install";
@@ -28,14 +27,6 @@ import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
 const BUN = process.execPath;
 const TRET = join(import.meta.dir, "..", "..", "index.ts");
-
-/**
- * Whether an install here gets the real Linux window instead of the heuristic fallback: Linux with
- * strace present and a kernel that lets an unprivileged tracer attach to its parent (Yama
- * `ptrace_scope >= 1` — the stock Ubuntu/CI setting — forbids it). A real window proves the install
- * (`complete`); the fallback only observes it (`heuristic`).
- */
-const REAL_CAPTURE = process.platform === "linux" && Bun.which("strace") !== null && (isRoot() || !parentAttachRestricted());
 
 const homes: string[] = [];
 
@@ -147,6 +138,7 @@ printf 'setting = 1\\n' > "$HOME/.config/nct/config"
 `;
 
 const FAIL_SCRIPT = `#!/bin/bash
+set -C
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho boo\\n' > "$HOME/.local/bin/badtool"
 chmod +x "$HOME/.local/bin/badtool"
@@ -154,7 +146,7 @@ exit 3
 `;
 
 const FORCE_FAIL_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 if [ -e "$HOME/.local/bin/mytool" ]; then exit 99; fi
 mkdir -p "$HOME/.local/bin" "$HOME/.config/mytool"
 printf '#!/bin/sh\\necho replacement\\n' > "$HOME/.local/bin/mytool"
@@ -164,7 +156,7 @@ exit 7
 `;
 
 const FORCE_NO_EXECUTABLE_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 if [ -e "$HOME/.local/bin/mytool" ]; then exit 99; fi
 mkdir -p "$HOME/.config/mytool"
 printf 'recovery data\\n' > "$HOME/.config/mytool/recovery.txt"
@@ -172,7 +164,7 @@ exit 9
 `;
 
 const SHARED_PARENT_A_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.sharedparent" "$HOME/.local/bin"
 printf '#!/bin/sh\\necho shared-a\\n' > "$HOME/.local/bin/shared-a"
 chmod +x "$HOME/.local/bin/shared-a"
@@ -180,7 +172,7 @@ printf 'a\\n' > "$HOME/.sharedparent/a.conf"
 `;
 
 const SHARED_PARENT_B_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.sharedparent" "$HOME/.local/bin"
 printf '#!/bin/sh\\necho shared-b\\n' > "$HOME/.local/bin/shared-b"
 chmod +x "$HOME/.local/bin/shared-b"
@@ -190,7 +182,7 @@ printf 'b\\n' > "$HOME/.sharedparent/b.conf"
 // A fresh installer that changes tracked state but adds no executable. It must leave a partial
 // record so those changes stay inspectable and removable instead of untracked leftovers.
 const NO_EXECUTABLE_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.config/noexec"
 printf 'config\\n' > "$HOME/.config/noexec/config"
 printf 'state\\n' > "$HOME/.local/share/noexec-state"
@@ -198,7 +190,7 @@ printf 'state\\n' > "$HOME/.local/share/noexec-state"
 
 // The same shape with a non-zero exit, so the partial record also has to carry the failure reason.
 const NO_EXECUTABLE_FAIL_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.config/noexec"
 printf 'config\\n' > "$HOME/.config/noexec/config"
 exit 4
@@ -212,7 +204,7 @@ exit 0
 // Defect #3: an installer that writes a tool directory and a dotfile directly at `$HOME` (the shape
 // of `~/.claude/` + `~/.claude.json`) must be observed and removable.
 const HOME_ROOT_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 printf '#!/bin/sh\\necho hometool\\n' > "$HOME/.toolrc"
 mkdir -p "$HOME/.tool/bin"
 printf '#!/bin/sh\\necho hometool\\n' > "$HOME/.tool/bin/hometool"
@@ -223,7 +215,7 @@ chmod +x "$HOME/.tool/bin/hometool"
 // shared global state must not be owned, and the shim must mark the record as a managed package so
 // cleanup reports an unresolved scope instead of deleting state every other global install shares.
 const BUN_GLOBAL_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.bun/install/global/node_modules/@acme/tool" "$HOME/.bun/bin"
 printf '{"dependencies":{"@acme/tool":"^1.0.0"}}\\n' > "$HOME/.bun/install/global/package.json"
 printf 'lockfile\\n' > "$HOME/.bun/install/global/bun.lock"
@@ -236,7 +228,7 @@ ln -s ../install/global/node_modules/@acme/tool/cli.js "$HOME/.bun/bin/acmetool"
 // files live under the prefix's `lib/node_modules` (skipped) and the bin shim in the prefix's `bin`.
 // Detection must resolve the prefix from the shim and record it, since npm's prefix is not fixed.
 const NPM_GLOBAL_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/lib/node_modules/@acme/tool" "$HOME/.local/bin"
 printf '#!/usr/bin/env node\\nconsole.log(1)\\n' > "$HOME/.local/lib/node_modules/@acme/tool/cli.js"
 chmod +x "$HOME/.local/lib/node_modules/@acme/tool/cli.js"
@@ -248,7 +240,7 @@ ln -s ../lib/node_modules/@acme/tool/cli.js "$HOME/.local/bin/acmetool"
 // `node_modules` payload capture skips. The untracked payload is what stranded the record: every
 // ancestor stayed `not-empty` after the wrapper files were removed.
 const PI_MANAGED_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 ROOT="$HOME/.pi/agent/install"
 mkdir -p "$ROOT/releases/1.0.0/node_modules/acme" "$HOME/.pi/agent/bin"
 printf '{"kind":"pi-managed-install","schemaVersion":1,"layout":"releases-v1"}\\n' > "$ROOT/managed-install.json"
@@ -263,7 +255,7 @@ chmod +x "$HOME/.pi/agent/bin/pi"
 // via `--observe`) plus a normal executable, so the install itself succeeds without the flag too.
 function outsideScopeScript(extra: string): string {
   return `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho observetool\\n' > "$HOME/.local/bin/observetool"
 chmod +x "$HOME/.local/bin/observetool"
@@ -274,7 +266,7 @@ printf 'state\\n' > '${extra}/state.txt'
 // A dotfile directly under `$HOME` (covered only by the home root) plus an executable under the
 // curated `.local/bin` root, so excluding `$HOME` still leaves something to observe.
 const HOME_TOP_LEVEL_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho observetool\\n' > "$HOME/.local/bin/observetool"
 chmod +x "$HOME/.local/bin/observetool"
@@ -323,7 +315,9 @@ describe("install -> list -> uninstall", () => {
       const record = file.records.find((entry) => entry.name === "mytool");
       expect(record).toBeDefined();
       expect(record?.source).toBe("install");
-      expect(record?.capture.completeness).toBe(REAL_CAPTURE ? "complete" : "heuristic");
+      if (record?.capture.backend === "linux-strace")
+        expect(["complete", "partial"]).toContain(record.capture.completeness);
+      else expect(record?.capture.completeness).toBe("heuristic");
       expect(
         record?.owned.some((entry) => entry.path.endsWith("/.local/bin/mytool") && entry.installedHash !== undefined),
       ).toBe(true);
@@ -1065,18 +1059,19 @@ describe("install -> list -> uninstall", () => {
     try {
       expect(await runCli(["install", "--yes", server.url], home)).toBe(0);
 
+      const priorCoverage = readStore(home).records[0]?.capture.completeness;
       const result = await runCliResult(["install", "--yes", server.url, "--force"], home);
 
       expect(result.code).toBe(0);
       const output = `${result.stdout}\n${result.stderr}`;
       expect(output).toContain("reinstalling mytool: removing the previous install first");
       const binary = join(home, ".local", "bin", "mytool");
-      if (REAL_CAPTURE) {
+      if (priorCoverage === "complete") {
         // A real window proves the previous install, so the same plan carries no caveat.
         expect(output).not.toContain("observed, not proven");
         expect(output).toContain(`remove ${binary}`);
       } else {
-        // The previous record's evidence is heuristic, so its planned removal is labeled up front.
+        // The previous record's evidence is incomplete, so its planned removal is labeled up front.
         expect(output).toContain("note: these paths are observed, not proven to belong to this tool");
         expect(output).toContain(`remove ${binary} (observed, not proven)`);
       }

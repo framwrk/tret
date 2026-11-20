@@ -221,7 +221,7 @@ describe("post-command blob collection", () => {
     writeFileSync(oldConfig, "old-installed\n");
     const oldBlob = writeBlob(home, "old-original\n");
     const server = serve(`#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin" "$HOME/.config"
 printf '#!/bin/sh\\necho mytool-v2\\n' > "$HOME/.local/bin/mytool"
 chmod +x "$HOME/.local/bin/mytool"

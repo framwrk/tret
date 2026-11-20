@@ -173,7 +173,7 @@ rm -rf ~/.tret
 | Platform | Backend                                                                | Notes                                                                |
 | -------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | macOS    | `macos-heuristic`                                                      | Scoped before/after snapshot; no process attribution                 |
-| Linux    | `linux-strace`, then explicitly accepted `linux-heuristic` fallback (also when root) | `ptrace_scope=1` prevents parent attachment for unprivileged runs |
+| Linux    | `linux-strace`, then explicitly accepted `linux-heuristic` fallback (also when root) | strace launches the observed command under stock `ptrace_scope=1` |
 
 - Capture covers bounded observation roots under `$HOME`; `--observe` and `--observe-exclude` adjust them.
 - Tool updates preserve capture enablement, backup policy and size limit, and observation additions/exclusions. Older records without saved settings use the install defaults.
