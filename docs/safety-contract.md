@@ -95,6 +95,9 @@ Linux capture distinguishes named descriptors, `O_PATH` handles and unnamed
 handles do not invent a named file or turn their containing directory into a file.
 `O_PATH` handles can resolve directory-relative opens but cannot supply write effects.
 Successful fd replacement clears stale mappings even when the new source is unknown.
+A descriptor marked deleted supplies no verified live pathname. If its kind was
+not observed, capture retains a loss instead of inventing a named file from its
+annotation, including workers observed before clone completion.
 
 Observed process state tracks chdir/fchdir, fork/vfork/clone/clone3, shared
 `CLONE_FILES`/`CLONE_FS` state, and close-on-exec flags. Successful exec detaches the

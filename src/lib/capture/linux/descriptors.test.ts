@@ -105,3 +105,30 @@ test("constrained openat2 keeps unnamed fd identity even without a returned path
   expect(parsed.records).toEqual([]);
   expect(parsed.diagnostics.join(" ")).toContain("openat2");
 });
+
+test("a deleted descriptor annotation without inherited kind cannot invent a live named path", () => {
+  const parsed = parseStraceOutput(
+    [
+      '9 1.0 openat(AT_FDCWD, "/h/dir", O_RDWR|O_TMPFILE, 0600) = 3</h/dir/#123>(deleted)',
+      "9 2.0 clone(child_stack=NULL, flags=CLONE_FILES|SIGCHLD <unfinished ...>",
+      "10 3.0 dup(3</h/dir/#123>(deleted)) = 4</h/dir/#123>(deleted)",
+      "9 4.0 <... clone resumed>) = 10",
+      '10 5.0 write(4</h/dir/#123>(deleted), "anonymous bytes", 15) = 15',
+      "10 6.0 fchmod(4</h/dir/#123>(deleted), 0600) = 0",
+    ].join("\n"),
+    { roots: ["/h"], rootPid: 9 },
+  );
+  expect(parsed.records).toEqual([]);
+  expect(parsed.diagnostics.join(" ")).toContain("deleted descriptor");
+});
+
+test("a deleted named descriptor cannot be attributed to a reoccupied name", () => {
+  const parsed = trace(['open("/h/file", O_RDWR) = 3', 'write(3</h/file>(deleted), "x", 1) = 1']);
+  expect(parsed.records.filter((record) => record.op === "write")).toEqual([]);
+  expect(parsed.diagnostics.join(" ")).toContain("deleted descriptor");
+});
+
+test("deleted text inside a live filename is not a deleted descriptor marker", () => {
+  const parsed = trace(['write(3</h/file(deleted)>, "x", 1) = 1']);
+  expect(parsed.records).toMatchObject([{ op: "write", path: "/h/file(deleted)" }]);
+});

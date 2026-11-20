@@ -499,6 +499,10 @@ class StraceParser {
     const known = fd === undefined ? undefined : this.fdMap(pid).get(fd);
     if (known && known.kind !== "named") return known;
     const annotation = fdAnnotation(raw);
+    if (raw !== undefined && /^\d+<[^>]*>\(deleted\)/.test(raw.trim())) {
+      this.diagnose("deleted descriptor has no verified live pathname; named-path effect is unknown");
+      return undefined;
+    }
     if (annotation !== undefined) {
       const path = normalizeRoot(annotation, this.options);
       return path === undefined ? undefined : { kind: "named", path, closeOnExec: known?.closeOnExec ?? false };
@@ -646,6 +650,7 @@ function scanArgs(rest: string, start: number): { args: string; endIndex: number
   let inString = false;
   let inAnnotation = false;
   let escaped = false;
+  let depth = 0;
   for (let i = start; i < rest.length; i += 1) {
     const ch = rest[i]!;
     if (inAnnotation) {
@@ -669,7 +674,11 @@ function scanArgs(rest: string, start: number): { args: string; endIndex: number
       return { args: rest.slice(start, i).replace(/,\s*$/, ""), endIndex: -1, unfinished: true };
     }
     if (ch === "<") { inAnnotation = true; continue; }
-    if (ch === ")") return { args: rest.slice(start, i), endIndex: i + 1, unfinished: false };
+    if (ch === "(") depth++;
+    if (ch === ")") {
+      if (depth > 0) depth--;
+      else return { args: rest.slice(start, i), endIndex: i + 1, unfinished: false };
+    }
   }
   return { args: rest.slice(start), endIndex: -1, unfinished: false };
 }
