@@ -423,7 +423,7 @@ if [ "\${TRET_FIXTURE_STRESS_AUDIT:-}" = 1 ]; then
     : > /dev/null
     i=$((i + 1))
   done
-  wc -c < "$TMPDIR"/tret-strace-*/trace > "$HOME/.trace-audit-size"
+  for audit in "$TMPDIR"/tret-strace-*/trace; do wc -c < "$audit"; done > "$HOME/.trace-audit-size"
 fi
 if [ "\${TRET_FIXTURE_BACKGROUND:-}" = 1 ]; then
   (
