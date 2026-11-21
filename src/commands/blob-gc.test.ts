@@ -30,7 +30,10 @@ afterEach(() => {
 
 async function runCliResult(args: string[], home: string): Promise<{ code: number; stdout: string; stderr: string }> {
   await approveFixtureCandidates(home, args);
-  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args)], {
+  const scope = process.platform === "linux" && args[0] === "install"
+    ? ["/usr/bin", "/usr/local/bin"].flatMap(root => ["--observe-exclude", root])
+    : [];
+  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args), ...scope], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
