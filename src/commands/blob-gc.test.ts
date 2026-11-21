@@ -30,7 +30,10 @@ afterEach(() => {
 
 async function runCliResult(args: string[], home: string): Promise<{ code: number; stdout: string; stderr: string }> {
   await approveFixtureCandidates(home, args);
-  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args)], {
+  const scope = process.platform === "linux" && args[0] === "install"
+    ? ["/usr/bin", "/usr/local/bin"].flatMap(root => ["--observe-exclude", root])
+    : [];
+  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args), ...scope], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
@@ -221,7 +224,7 @@ describe("post-command blob collection", () => {
     writeFileSync(oldConfig, "old-installed\n");
     const oldBlob = writeBlob(home, "old-original\n");
     const server = serve(`#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin" "$HOME/.config"
 printf '#!/bin/sh\\necho mytool-v2\\n' > "$HOME/.local/bin/mytool"
 chmod +x "$HOME/.local/bin/mytool"
@@ -241,8 +244,7 @@ printf 'second\\n' > "$HOME/.config/newtool.conf"
 
       const result = await runCliResult(["install", "--yes", server.url, "--force", "--backup"], home);
 
-      expect(result.code).toBe(0);
-      // The old install was restored before removal, and its now-unreferenced blob was collected.
+      expect(result).toMatchObject({ code: 0 });
       expect(readFileSync(oldConfig, "utf8")).toBe("old-original\n");
       expect(existsSync(blobPath(home, oldBlob))).toBe(true);
       const saved = readRecords(home);

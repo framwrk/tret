@@ -31,7 +31,10 @@ afterEach(() => {
 /** Runs the CLI from source as a child process so its `process.exit` never kills the test runner. */
 async function runCli(args: string[], home: string): Promise<number> {
   await approveFixtureCandidates(home, args);
-  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args)], {
+  const scope = process.platform === "linux" && args[0] === "install"
+    ? ["/usr/bin", "/usr/local/bin"].flatMap(root => ["--observe-exclude", root])
+    : [];
+  const proc = Bun.spawn([BUN, TRET, ...withWeakerCaptureConsent(args), ...scope], {
     env: { ...process.env, HOME: home },
     stdin: "ignore",
     stdout: "pipe",
@@ -52,9 +55,9 @@ function serve(script: string): { url: string; stop: () => Promise<void> } {
 
 /** Overwrites one pre-existing config (tightening its mode), deletes another, and installs one executable. */
 const INSTALL_SCRIPT = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.config/mytool" "$HOME/.local/bin"
-printf 'installed-config\\n' > "$HOME/.config/mytool/keep.conf"
+printf 'installed-config\\n' >| "$HOME/.config/mytool/keep.conf"
 chmod 600 "$HOME/.config/mytool/keep.conf"
 rm -f "$HOME/.config/mytool/gone.conf"
 printf '#!/bin/sh\\necho mytool\\n' > "$HOME/.local/bin/mytool"

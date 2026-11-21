@@ -8,7 +8,6 @@ import { FileStorage } from "../lib/store";
 import type { NormalizedEffects } from "../lib/capture/normalize";
 import type { RecordV3 } from "../types";
 import { join } from "node:path";
-import { parentAttachRestricted } from "../lib/capture/linux/backend";
 import { tmpdir } from "node:os";
 import { withWeakerCaptureConsent } from "../lib/fixtures/capture-consent";
 
@@ -438,7 +437,7 @@ describe("trace capture fallback", () => {
 });
 
 describe.skipIf(process.platform !== "linux")("trace CLI on the host tracer", () => {
-  test("traces under the available backend and reports linux-heuristic when Yama blocks attach", async () => {
+  test("traces exactly once under the available Linux backend", async () => {
     const home = makeHome();
     const sentinel = join(home, "ran.log");
     const runner = join(home, "runner.sh");
@@ -451,12 +450,8 @@ describe.skipIf(process.platform !== "linux")("trace CLI on the host tracer", ()
     const output = JSON.parse(result.stdout) as { ok: boolean; backend: string; completeness: string };
     expect(output.ok).toBe(true);
 
-    if (parentAttachRestricted()) {
-      expect(output.backend).toBe("linux-heuristic");
-      expect(output.completeness).toBe("heuristic");
-    } else {
-      expect(["linux-strace", "linux-fanotify", "linux-heuristic"]).toContain(output.backend);
-    }
+    expect(["linux-strace", "linux-heuristic"]).toContain(output.backend);
+    if (output.backend === "linux-heuristic") expect(output.completeness).toBe("heuristic");
 
     // The observed work ran once no matter which backend won the pre-run selection.
     expect(readFileSync(sentinel, "utf8").trim().split("\n")).toEqual(["ran"]);

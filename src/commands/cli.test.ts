@@ -218,7 +218,7 @@ describe("update selector parsing", () => {
 
   test("update <tool> with flags after the selector still updates that tool", async () => {
     const script = `#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho updatetool\\n' > "$HOME/.local/bin/updatetool"
 chmod +x "$HOME/.local/bin/updatetool"
@@ -269,11 +269,11 @@ chmod +x "$HOME/.local/bin/updatetool"
     writeFileSync(large, "oversized-before\n");
     writeFileSync(deleted, "gone\n");
     const server = serve(`#!/bin/bash
-set -e
+set -eC
 mkdir -p "$HOME/.local/bin"
 printf '#!/bin/sh\\necho "%s"\\n' "$*" > "$HOME/.local/bin/capturetool"
 chmod +x "$HOME/.local/bin/capturetool"
-printf 'changed\\n' > "$TRET_TEST_OBSERVE_ROOT/small.conf"
+printf 'changed\\n' >| "$TRET_TEST_OBSERVE_ROOT/small.conf"
 printf 'more\\n' >> "$TRET_TEST_OBSERVE_ROOT/large.conf"
 rm -f "$TRET_TEST_OBSERVE_ROOT/deleted.conf"
 printf 'owned\\n' > "$TRET_TEST_OBSERVE_ROOT/owned.conf"

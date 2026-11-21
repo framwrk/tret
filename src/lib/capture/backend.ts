@@ -3,10 +3,13 @@ import type { BackupPolicy } from "./normalize";
 import type { CaptureBudget } from "./budget";
 import type { Journal } from "./events";
 
+export type CaptureCommand = { program: string; args: string[] };
+
 /** Inputs for one bounded capture window. */
 export type CaptureStartOptions = {
   /** Process id of the installer; its descendants are the attribution target. */
   pid: number;
+  command?: CaptureCommand;
   /** Privilege the install runs under, for sudo-aware handling (D8). */
   privilege: Privilege;
   /** Absolute roots to observe, already expanded from the active Platform table. */
@@ -27,6 +30,7 @@ export type CaptureSession = {
   readonly baseline?: readonly CaptureBaselineEntry[];
   /** Revalidates attach readiness after durable persistence and before external work. */
   ready?(): Promise<void>;
+  runProgram?(): Promise<number>;
   /** Cumulative append-only event prefix; snapshot-only backends omit it instead of inventing live coverage. */
   checkpoint?(): Promise<Journal | undefined>;
   stop(): Promise<Journal>;
@@ -53,7 +57,7 @@ export interface CaptureBackend {
   /** Coverage the backend can prove; advisory until a session reports its own journal. */
   readonly completeness: CaptureCompleteness;
   /** Cheap prerequisite checks without baseline scanning or external execution. */
-  preflight?(): Promise<void>;
+  preflight?(childLaunch?: boolean): Promise<void>;
   /** Begins observing the process tree for the bounded install window. */
   start(options: CaptureStartOptions): Promise<CaptureSession>;
 }

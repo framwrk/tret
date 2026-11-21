@@ -1,5 +1,5 @@
 import type { AbsolutePath, CaptureCompleteness, CaptureSegment, Privilege } from "../types";
-import type { CaptureBackend, CaptureSession } from "./capture/backend";
+import type { CaptureBackend, CaptureCommand, CaptureSession } from "./capture/backend";
 import type { BackupPolicy } from "./capture/normalize";
 import type { CaptureBudget } from "./capture/budget";
 import { CaptureBudgetError } from "./capture/budget";
@@ -50,6 +50,7 @@ export type BoundedSessionOptions<T> = {
    * its own pid, so capture can start before the child exists and the child is still inside the tree.
    */
   pid: number;
+  command?: CaptureCommand;
   /** Privilege the observed work runs under, for sudo-aware coverage (D8). */
   privilege: Privilege;
   /** Absolute roots to observe, already expanded from the active platform table. */
@@ -57,7 +58,7 @@ export type BoundedSessionOptions<T> = {
   /** Before-image backup policy (D2); off by default, so no content is captured unless opted in. */
   backups?: BackupPolicy;
   /** The bounded work to run while capture is attached. */
-  run: () => Promise<T>;
+  run: (session: CaptureSession) => Promise<T>;
   /** Durable barrier after baseline/attach, before external work. A failure never triggers fallback. */
   beforeRun?: (session: CaptureSession) => Promise<void>;
   /** Persists an available partial prefix while external work is running. */
@@ -98,6 +99,7 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
 
   const session = await options.backend.start({
     pid: options.pid,
+    ...(options.command ? { command: options.command } : {}),
     privilege: options.privilege,
     roots: options.roots,
     // Omit the key entirely when no policy is supplied, so a plain window's start options stay exact.
@@ -156,7 +158,7 @@ export async function runBoundedSession<T>(options: BoundedSessionOptions<T>): P
   options.budget?.pause();
   schedule();
   try {
-    value = await options.run();
+    value = await options.run(session);
   } catch (caught) {
     error = caught;
   }

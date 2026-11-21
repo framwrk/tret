@@ -186,3 +186,12 @@ test("growing relative cwd state consumes the shared metadata budget", () => {
   expect(budget.fatalError?.resource).toBe("metadataBytes");
   expect(stream.finish().diagnostics.join(" ")).toContain("metadataBytes");
 });
+
+
+test("only an exit notice for the observed root confirms launcher exit", () => {
+  const stream = new StraceStreamParser(options);
+  stream.write(Buffer.from("10 1.0 +++ exited with 0 +++\n"));
+  expect(stream.rootExitObserved()).toBe(false);
+  stream.write(Buffer.from("9 2.0 +++ exited with 0 +++\n"));
+  expect(stream.rootExitObserved()).toBe(true);
+});

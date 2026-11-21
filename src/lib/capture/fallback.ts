@@ -60,9 +60,9 @@ export async function runCaptureFallback<T>(options: CaptureFallbackOptions<T>):
     ...sessionOptions
   } = options;
   let executed = false;
-  const run = async () => {
+  const run: BoundedSessionOptions<T>["run"] = async (session) => {
     executed = true;
-    return options.run();
+    return options.run(session);
   };
 
   try {

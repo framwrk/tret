@@ -181,7 +181,7 @@ export async function trace(
   const capturePlan = await prepareCapture({
     primary: options.backend ?? captureBackendFor(platform, record.caseSensitive),
     fallback: options.fallbackBackend ?? heuristicCaptureBackendFor(platform, record.caseSensitive),
-    roots, backups: DEFAULT_BACKUP_POLICY, allowWeakerCapture: options.allowWeakerCapture,
+    roots, backups: DEFAULT_BACKUP_POLICY, childLaunch: !options.run, allowWeakerCapture: options.allowWeakerCapture,
   });
 
   // Ask before running the tool. Tracing runs the real program, so it is never silent: JSON mode and
@@ -197,7 +197,6 @@ export async function trace(
     }
   }
 
-  const run = options.run ?? (() => runProgram(record.executable));
   if (storage instanceof FileStorage) await storage.prepareCurrentFormat();
   const operationLog = storage instanceof FileStorage ? storage.operations : undefined;
   let operation = operationLog?.begin("trace", [record]);
@@ -211,6 +210,7 @@ export async function trace(
     primary: capturePlan.backend!,
     fallback: capturePlan.fallback,
     pid: process.pid,
+    ...(!options.run ? { command: { program: record.executable, args: [] } } : {}),
     privilege: processPrivilege(),
     roots: capturePlan.roots,
     fallbackRoots: heuristicFallbackRoots(roots),
@@ -231,7 +231,7 @@ export async function trace(
       if (operation && operationLog) operation = operationLog.checkpoint(operation, { stage: "running", checkpointAt: observedAt,
         capture: { backend: journal.backend, completeness: "partial", events: journal.events, partialReason: journal.partialReason, resources: journal.resources } });
     },
-    run,
+    run: (session) => options.run?.() ?? session.runProgram?.() ?? runProgram(record.executable),
     ...(options.now === undefined ? {} : { now: options.now }),
     onPrimaryFailure: (error) =>
       log(`capture unavailable (${message(error)}); tracing the tool with a heuristic window`),

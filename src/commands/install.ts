@@ -12,6 +12,7 @@ import { describeManagedInstall, detectManagedInstall, withoutManagedInstallPath
 import { describeManagedPackage, detectManagedPackage, withoutManagedGlobalPaths } from "../lib/package-manager";
 import { emitJson, emitJsonError, isJsonMode } from "../lib/json-output";
 import { heuristicFallbackRoots, runCaptureFallback } from "../lib/capture/fallback";
+import { runInstaller, runProgram, withInstaller } from "../lib/installer";
 import type { ApplianceOutcome } from "../lib/removal";
 import { BeforeExecutionError } from "../lib/session";
 import type { CaptureBackend } from "../lib/capture/backend";
@@ -35,7 +36,6 @@ import { pickExecutable } from "../lib/executable";
 import { prepareCapture } from "../lib/capture/preflight";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { runInstaller } from "../lib/installer";
 import { runLogPhase } from "../lib/runlog";
 import { runStoreOperation } from "../lib/command-operation";
 import { snapshot } from "../lib/snapshot";
@@ -247,7 +247,7 @@ export async function install(
   const capturePlan = await prepareCapture({
     primary: options.backend ?? captureBackendFor(platform, caseSensitive),
     fallback: heuristicCaptureBackendFor(platform, caseSensitive),
-    roots, backups, enabled: options.capture, allowWeakerCapture: options.allowWeakerCapture,
+    roots, backups, childLaunch: true, enabled: options.capture, allowWeakerCapture: options.allowWeakerCapture,
   });
   if (existing && force)
     log("replacement is non-atomic: an unexpected capture failure after approved old cleanup stops execution and retains recovery evidence");
@@ -319,10 +319,17 @@ export async function install(
       pins: [...(session?.beforeImages?.keys() ?? [])],
       ...(session?.baseline ? { baseline: session.baseline } : {}),
     });
-    for (const [id, bytes] of session?.beforeImages ?? []) {
-      capturePlan.budget.check();
-      const stored = await storage.putBlob(bytes);
-      if (stored.id !== id) throw new Error("capture before-image does not match its content address");
+    const beforeImages = session?.beforeImages;
+    if (beforeImages?.size) {
+      const stored = await storage.putBlobs(function* () {
+        for (const bytes of beforeImages.values()) {
+          capturePlan.budget.check();
+          yield bytes;
+        }
+      }());
+      for (const [index, id] of [...beforeImages.keys()].entries()) {
+        if (stored[index]?.id !== id) throw new Error("capture before-image does not match its content address");
+      }
     }
     operation = storage.operations.checkpoint(operation, { stage: "running", unknownSince: new Date().toISOString() });
   };
@@ -547,11 +554,11 @@ async function observeInstall(
     return legacyWindow();
   }
 
-  const attempt = await runCaptureFallback({
+  const attempt = await withInstaller(script, (program) => runCaptureFallback({
     primary: capturePlan.backend!,
     fallback: capturePlan.fallback,
-    // The installer is spawned as a child of this process, so observing this pid covers it.
     pid: process.pid,
+    command: { program, args: scriptArgs },
     privilege: processPrivilege(),
     roots: capturePlan.roots,
     fallbackRoots: heuristicFallbackRoots(roots),
@@ -560,12 +567,12 @@ async function observeInstall(
     budget: capturePlan.budget,
     beforeRun,
     onCheckpoint,
-    run: () => runInstaller(script, scriptArgs),
+    run: (session) => session.runProgram?.() ?? runProgram(program, scriptArgs),
     onPrimaryFailure: (error) =>
       log(`capture unavailable (${message(error)}); observing the install with a heuristic window`),
     onFallbackFailure: (error) =>
       log(`heuristic capture unavailable (${message(error)}); the install runs without an observation window`),
-  });
+  }));
 
   if (attempt.session === undefined) {
     // Both backends failed before the installer started, so it has not run yet. Keep the legacy

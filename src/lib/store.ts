@@ -305,22 +305,33 @@ export class FileStorage implements Storage {
    * the configured size limit. Existing bytes that fail their own integrity check are repaired.
    */
   async putBlob(content: Uint8Array): Promise<BlobRef> {
+    const [stored] = await this.putBlobs([content]);
+    return stored!;
+  }
+
+  async putBlobs(contents: Iterable<Uint8Array>): Promise<BlobRef[]> {
     return this.withOperation(async () => {
-    const size = content.byteLength;
-    const limits = this.resourceLimits ?? captureLimits();
-    const maximum = Math.min(this.backups.sizeLimitBytes, limits.maxBlobBytes);
-    if (size > maximum) {
-      throw new BlobTooLargeError(size, maximum);
-    }
-    const id = hashContent(content);
-    ensurePrivateDir(dirname(this.recordsPath));
-    assertDirectoryIfExists(this.objectsDir);
-    if (!this.blobIsValid(id)) {
-      if (this.objectBytes(limits) + size > limits.maxStoreBytes)
-        throw new CaptureBudgetError("blob store bytes including atomic staging", limits.maxStoreBytes);
-      writeFileAtomic(this.blobPath(id), content, PRIVATE_FILE_MODE);
-    }
-    return { id, size };
+      const limits = this.resourceLimits ?? captureLimits();
+      const maximum = Math.min(this.backups.sizeLimitBytes, limits.maxBlobBytes);
+      let storedBytes: number | undefined;
+      const stored: BlobRef[] = [];
+      for (const content of contents) {
+        const size = content.byteLength;
+        if (size > maximum) throw new BlobTooLargeError(size, maximum);
+        const id = hashContent(content);
+        ensurePrivateDir(dirname(this.recordsPath));
+        assertDirectoryIfExists(this.objectsDir);
+        const existing = readFileIfExists(this.blobPath(id), limits.maxBlobBytes);
+        if (existing === undefined || hashContent(existing) !== id) {
+          storedBytes ??= this.objectBytes(limits);
+          if (storedBytes + size > limits.maxStoreBytes)
+            throw new CaptureBudgetError("blob store bytes including atomic staging", limits.maxStoreBytes);
+          writeFileAtomic(this.blobPath(id), content, PRIVATE_FILE_MODE);
+          storedBytes += size - (existing?.byteLength ?? 0);
+        }
+        stored.push({ id, size });
+      }
+      return stored;
     }, true);
   }
 
@@ -433,12 +444,6 @@ export class FileStorage implements Storage {
       flushDirectory(dirname(this.recordsPath));
       return target;
     }), true);
-  }
-
-  /** Whether a stored blob for `id` exists and its bytes still hash to that address. */
-  private blobIsValid(id: BlobId): boolean {
-    const existing = readFileIfExists(this.blobPath(id), (this.resourceLimits ?? captureLimits()).maxBlobBytes);
-    return existing !== undefined && hashContent(existing) === id;
   }
 
   private blobPath(id: BlobId): string {

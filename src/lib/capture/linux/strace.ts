@@ -73,6 +73,7 @@ export class StraceStreamParser {
     });
   }
   snapshot(): TracerResult { return this.parser.result(); }
+  rootExitObserved(): boolean { return this.parser.rootExited; }
   finish(): TracerResult {
     this.consume(() => {
       this.pending += this.decoder.decode();
@@ -139,6 +140,7 @@ class StraceParser {
   private readonly processes = new Map<string, ProcessState>();
   private rootKey?: string;
   private seededRoot = false;
+  rootExited = false;
   private readonly seenUnsupported = new Set<string>();
 
   constructor(options: ParseStraceOptions) {
@@ -155,6 +157,7 @@ class StraceParser {
     const prefix = stripPrefix(line);
     if (prefix.rest.length === 0) return;
     if (/^\+\+\+ (?:exited|killed)/.test(prefix.rest)) {
+      if (pidKey(prefix.pid) === this.rootKey) this.rootExited = true;
       this.processes.delete(pidKey(prefix.pid));
       this.pending.delete(pidKey(prefix.pid));
       return;

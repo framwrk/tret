@@ -22,6 +22,7 @@ export async function prepareCapture(options: {
   roots: string[];
   backups: BackupPolicy;
   enabled?: boolean;
+  childLaunch?: boolean;
   allowWeakerCapture?: boolean;
 }) {
   let accepted = options.allowWeakerCapture === true;
@@ -50,7 +51,7 @@ export async function prepareCapture(options: {
   let reason = options.enabled === false ? "capture was disabled" : "selected capture is heuristic or partial";
   if (plan.backend) {
     try {
-      await plan.backend.preflight?.();
+      await plan.backend.preflight?.(options.childLaunch);
     } catch (error) {
       reason = `preferred capture is unavailable: ${message(error)}`;
       plan.backend = options.fallback;

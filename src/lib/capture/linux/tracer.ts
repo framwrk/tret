@@ -1,7 +1,9 @@
+import { ChildLaunch, capTracerAudit } from "./child-launch";
 import type { TracerRecord, TracerResult } from "./raw";
-import { mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { mkdtemp, open, realpath, rm, stat } from "node:fs/promises";
 import type { AbsolutePath } from "../../../types";
 import { CaptureBudget } from "../budget";
+import type { CaptureCommand } from "../backend";
 import { StraceStreamParser } from "./strace";
 import { constants } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +29,7 @@ export interface LinuxTracer {
   status(): Promise<TracerStatus>;
   /** Kernel confirmation for mechanisms that can establish attachment, rather than child liveness. */
   isAttached?(): Promise<boolean>;
+  runProgram?(): Promise<number>;
   /** Detaches and waits for the tracer to exit; safe to call more than once. */
   stop(): Promise<void>;
 }
@@ -111,6 +114,7 @@ export const STRACE_TRACE_SET = [
 ].join(",");
 
 export type StraceTracerOptions = {
+  command?: CaptureCommand;
   /** Path to the `strace` binary; overridable so tests can use a fake tracer script. */
   stracePath?: string;
   /** Grace period to let strace detach on its own after the installer exits. */
@@ -144,6 +148,10 @@ export class StraceTracer implements LinuxTracer {
   private readonly budget: CaptureBudget;
   private parser?: StraceStreamParser;
   private offset = 0;
+  private launch?: ChildLaunch;
+  private launcherPid?: number;
+  private tracerExitCode?: number;
+  private programExitCode?: number;
   private auditIdentity?: string;
 
   constructor(attach: TracerAttachOptions, options: StraceTracerOptions = {}) {
@@ -156,30 +164,20 @@ export class StraceTracer implements LinuxTracer {
     this.outputDir = await mkdtemp(join(tmpdir(), "tret-strace-"));
     this.outputFile = join(this.outputDir, "trace");
     writeFileExclusive(this.outputFile, new Uint8Array(), 0o600);
-    this.parser = new StraceStreamParser({ cwd: this.options.cwd, roots: this.attach.roots, rootPid: this.attach.pid, budget: this.budget,
-      excludedRoots: [...new Set([this.outputDir, await realpath(this.outputDir)])] });
     const args = [
-      "-f",
-      "-ttt",
-      "-y",
-      "-q",
-      "-s",
-      "4096",
-      "-e",
-      `trace=${STRACE_TRACE_SET}`,
-      "-e",
-      "raw=execve,execveat",
-      "-o",
-      this.outputFile,
-      "-p",
-      String(this.attach.pid),
+      "-f", "-ttt", "-y", "-q", "-s", "4096",
+      "-e", `trace=${STRACE_TRACE_SET}`,
+      "-e", "raw=execve,execveat",
+      "-o", this.outputFile,
     ];
-    // Only the tracer inherits this soft limit: the installer is a child of Tret, not strace.
-    // Shell file-size units vary (512/1024 bytes); rounding down with 1024 is conservative.
+    const env = this.options.env === undefined ? process.env : { ...process.env, ...this.options.env };
+    const strace = this.options.stracePath ?? "strace";
+    if (this.options.command) {
+      this.launch = new ChildLaunch(strace, [...args, "-I", "2"], this.options.command, env);
+    }
     const limit = Math.floor(this.budget.limits.maxAuditBytes / 1024);
-    const child = spawn("/bin/sh", ["-c", 'requested=$1; shift; inherited=$(ulimit -S -f) || exit 125; case "$inherited" in unlimited) ;; *[!0-9]*|"") exit 125;; *) if [ "$inherited" -lt "$requested" ]; then requested=$inherited; fi;; esac; ulimit -S -f "$requested" || exit 125; exec "$@"', "tret-strace-budget", String(limit), this.options.stracePath ?? "strace", ...args], {
-      stdio: ["ignore", "ignore", "pipe"],
-      env: this.options.env === undefined ? process.env : { ...process.env, ...this.options.env },
+    const child = this.launch?.child ?? spawn("/bin/sh", ["-c", 'requested=$1; shift; inherited=$(ulimit -S -f) || exit 125; case "$inherited" in unlimited) ;; *[!0-9]*|"") exit 125;; *) if [ "$inherited" -lt "$requested" ]; then requested=$inherited; fi;; esac; ulimit -S -f "$requested" || exit 125; exec "$@"', "tret-strace-budget", String(limit), strace, ...args, "-p", String(this.attach.pid)], {
+      stdio: ["ignore", "ignore", "pipe"], env,
     });
     this.child = child;
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -188,8 +186,9 @@ export class StraceTracer implements LinuxTracer {
       if (chunk.byteLength > remaining && this.lossReasons.length < 32) this.lossReasons.push("strace audit diagnostics exceeded their byte limit");
     });
     this.exit = new Promise<void>((resolve) => {
-      child.once("close", (code, signal) => {
-        if (signal || (code !== null && code !== 0)) this.lossReasons.push(`strace audit writer exited: ${signal ?? code}`);
+      child.once(this.launch ? "exit" : "close", (code, signal) => {
+        if (this.launch && code !== null) this.tracerExitCode = code;
+        else if (signal || (code !== null && code !== 0)) this.lossReasons.push(`strace audit writer exited: ${signal ?? code}`);
         resolve();
       });
       child.once("error", (error) => {
@@ -197,7 +196,26 @@ export class StraceTracer implements LinuxTracer {
         resolve();
       });
     });
+    if (this.launch) {
+      this.launcherPid = await this.launch.waitForReady(5000);
+      if (!await this.isAttached() || child.pid === undefined) throw new Error("strace child attachment was not confirmed");
+      capTracerAudit(child.pid, this.budget.limits.maxAuditBytes);
+      const size = (await stat(this.outputFile)).size;
+      if (size >= this.budget.limits.maxAuditBytes) this.budget.consume("auditBytes", size + 1);
+    }
+    this.parser = new StraceStreamParser({ cwd: this.options.cwd, roots: this.attach.roots, rootPid: this.launcherPid ?? this.attach.pid, budget: this.budget,
+      excludedRoots: [...new Set([this.outputDir, await realpath(this.outputDir)])] });
   }
+
+  runProgram = async (): Promise<number> => {
+    const status = await this.launch?.run();
+    if (status === undefined) {
+      this.lossReasons.push("traced launcher did not report a foreground exit status");
+      return 1;
+    }
+    this.programExitCode = status;
+    return status;
+  };
 
   async records(): Promise<TracerResult> {
     if (!this.stopped && this.child && !this.isAlive() && this.cached === undefined) this.cached = await this.collect(true);
@@ -228,6 +246,8 @@ export class StraceTracer implements LinuxTracer {
         this.parser.write(bytes.subarray(0, bytesRead));
       }
       if (node.size > this.budget.limits.maxAuditBytes) this.budget.consume("auditBytes", node.size);
+      if (this.launch && node.size === this.budget.limits.maxAuditBytes)
+        this.budget.note("strace audit reached its file size limit");
     } catch (error) {
       if (this.lossReasons.length < 32) this.lossReasons.push(`strace audit read failed: ${String(error).slice(0, 1024)}`);
       if (final) this.cached = this.parser.finish();
@@ -239,10 +259,16 @@ export class StraceTracer implements LinuxTracer {
       const reason = trimmed.slice(0, 1024);
       if (this.lossReasons.length < 32 && !this.lossReasons.includes(reason) && (looksLikeTraceLoss(trimmed) || trimmed.startsWith("strace:"))) this.lossReasons.push(reason);
     }
-    return final ? this.parser.finish() : this.parser.snapshot();
+    if (!final) return this.parser.snapshot();
+    const result = this.parser.finish();
+    if (this.programExitCode !== undefined && !this.parser.rootExitObserved())
+      this.lossReasons.push("trace ended without observing the launcher exit; final coverage remains unknown");
+    return result;
   }
 
   losses(): string[] {
+    if (this.tracerExitCode !== undefined && this.tracerExitCode !== 0 && this.tracerExitCode !== this.programExitCode)
+      return dedupe([...this.lossReasons, `strace audit writer exited: ${this.tracerExitCode}`]);
     return dedupe(this.lossReasons);
   }
 
@@ -251,6 +277,7 @@ export class StraceTracer implements LinuxTracer {
   }
 
   async isAttached(): Promise<boolean> {
+    if (this.launch) return this.launcherPid !== undefined && this.launch.attached(this.launcherPid);
     if (!this.isAlive() || this.child?.pid === undefined) return false;
     // procfs status reports size zero despite returning text; read a bounded prefix directly.
     let file;
@@ -266,6 +293,7 @@ export class StraceTracer implements LinuxTracer {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.launch?.cancel();
     const child = this.child;
     if (child && this.isAlive()) {
       // SIGINT makes strace detach from every tracee and exit cleanly.
@@ -275,7 +303,10 @@ export class StraceTracer implements LinuxTracer {
     await this.exit;
     // Parse before removing the output directory so `records()` stays usable after `stop()`.
     try { if (this.cached === undefined) this.cached = await this.collect(true); }
-    finally { if (this.outputDir !== undefined) await rm(this.outputDir, { recursive: true, force: true }); }
+    finally {
+      this.launch?.close();
+      if (this.outputDir !== undefined) await rm(this.outputDir, { recursive: true, force: true });
+    }
   }
 
   private isAlive(): boolean {
@@ -294,8 +325,13 @@ export class StraceTracer implements LinuxTracer {
 /** Starts a strace tracer for one window; used as the default `LinuxTracerFactory`. */
 export async function attachStrace(attach: TracerAttachOptions, options: StraceTracerOptions = {}): Promise<LinuxTracer> {
   const tracer = new StraceTracer(attach, options);
-  await tracer.attachProcess();
-  return tracer;
+  try {
+    await tracer.attachProcess();
+    return tracer;
+  } catch (error) {
+    try { await tracer.stop(); } catch { /* Preserve the startup failure. */ }
+    throw error;
+  }
 }
 
 // --- fanotify (privileged kernel helper) ---------------------------------------------------------

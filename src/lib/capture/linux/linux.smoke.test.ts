@@ -16,11 +16,8 @@ import { tmpdir } from "node:os";
  * deterministic; this one runs a representative installer through the real `strace` parser,
  * `reconstruct`, and `LinuxCaptureBackend` on Linux, with no elevated permissions.
  *
- * Production attaches with `strace -f -p <installer>`. Under Yama `ptrace_scope=1` an unprivileged
- * tracer may only trace its own descendants, so this test instead runs the installer *under*
- * `strace` (strace as parent), which the kernel always permits. The `-p` spawn/attach plumbing is
- * covered separately by the fake-strace tests; what is exercised here is the syscall parsing,
- * path resolution, reconstruction, and coverage reporting against genuine kernel output.
+ * This fixture launches the installer directly under strace to isolate syscall parsing and
+ * reconstruction. The compiled Linux acceptance scenarios exercise the production launch gate.
  */
 
 const STRACE = Bun.which("strace");
