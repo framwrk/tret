@@ -1,4 +1,4 @@
-import { candidateEffects, observedRecord, readRecordFile, validateRecordFileV4 } from "./records-v4";
+import { candidateEffects, observedRecord, readRecordFile, validateRecordFileV4, withTracedEvidence } from "./records-v4";
 import { expect, test } from "bun:test";
 import type { RecordV3 } from "../types";
 import { migrateRecordFileV2ToV3 } from "./records";
@@ -107,4 +107,22 @@ test("unsupported authority and duplicate record revisions are rejected", () => 
   expect(() => validateRecordFileV4(unsupported)).toThrow();
   file.records.push(observedRecord({ ...record(), id: "another" }, 1, "capture"));
   expect(() => validateRecordFileV4(file)).toThrow();
+});
+
+test("process creation evidence describes the syscall while leaving cleanup unapproved", () => {
+  const original = record();
+  const updated = withTracedEvidence(original, {
+    backend: "linux-strace",
+    completeness: "partial",
+    events: [{ type: "create", path: original.executable, pid: 123, at: 45, seq: 0, after: { kind: "file" } }],
+  }, "capture");
+  expect(updated.evidence?.[0]).toMatchObject({
+    tracedEvent: { pid: 123, at: 45, observation: "creation" },
+    authority: "none",
+  });
+  expect(updated.evidence?.[1]?.tracedEvent).toBeUndefined();
+  const v4 = { version: 4, sequence: 1, records: [observedRecord(updated, 1, "capture", true)] };
+  expect(readRecordFile(v4).records[0]?.evidence).toEqual(updated.evidence);
+  const v3 = { version: 3, records: [updated] };
+  expect(readRecordFile(v3).records[0]?.evidence.every((entry) => entry.tracedEvent === undefined)).toBe(true);
 });

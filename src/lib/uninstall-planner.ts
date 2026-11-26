@@ -78,6 +78,7 @@ export type UninstallAction =
 
 /** A conservative, side-effect-free uninstall plan; applying it lands in phase 7. */
 export type UninstallPlan = {
+  coverageGaps?: string[];
   scope?: "recorded-effects" | "approved-effects";
   retained?: Array<{ path: string; reason: string }>;
   force?: boolean;

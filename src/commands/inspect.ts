@@ -70,6 +70,8 @@ export type InspectReport = {
   mutated: InspectChanged[];
   deleted: InspectChanged[];
   actions: InspectAction[];
+  coverageGaps: string[];
+  evidence: RecordV3["evidence"];
   requiresSudo: boolean;
   incomplete: boolean;
   shell: { blocked: string[] };
@@ -181,6 +183,8 @@ export async function buildInspectReport(
     mutated,
     deleted,
     actions,
+    coverageGaps: plan.coverageGaps ?? [],
+    evidence: target.record.evidence,
     requiresSudo: plan.requiresSudo,
     incomplete: plan.incomplete || conflicts.length > 0 || blocked.length > 0 || blockedShell.length > 0,
     shell: { blocked: blockedShell },
@@ -225,6 +229,10 @@ export function formatInspect(report: InspectReport): string[] {
   for (const segment of report.capture.segments) {
     const reason = segment.partialReason === undefined ? "" : ` (${segment.partialReason})`;
     lines.push(`\tsegment ${segment.kind}: ${formatWindow(segment)}${reason}`);
+    if (segment.backend) lines.push(`\t\tbackend ${segment.backend}${segment.captureEngineVersion ? ` (Tret ${segment.captureEngineVersion})` : ""}`);
+    if (segment.exitCode !== undefined) lines.push(`\t\tprogram exited ${segment.exitCode}`);
+    for (const root of segment.roots ?? []) lines.push(`\t\tobserved root ${root}`);
+    for (const root of segment.excludedRoots ?? []) lines.push(`\t\tomitted root entry ${root}`);
     for (const line of formatTraceObservations(segment.observations)) lines.push(`\t\t${line}`);
     for (const diagnostic of segment.normalization?.entries ?? []) {
       lines.push(`\t\t${diagnostic.code}: ${diagnostic.message}${diagnostic.paths.length ? ` (${diagnostic.paths.join(" → ")})` : ""}`);
@@ -243,7 +251,13 @@ export function formatInspect(report: InspectReport): string[] {
     for (const entry of report.deleted) lines.push(`\t${describeChanged(entry, "deleted")}`);
   }
 
+  for (const entry of report.evidence ?? []) {
+    if (entry.tracedEvent) lines.push(`\tobserved ${entry.tracedEvent.observation} syscall for ${entry.path} (pid ${entry.tracedEvent.pid})`);
+    if (entry.authority === "user-approved") lines.push(`\tuser approved ${entry.approval.action} for ${entry.path}`);
+  }
+
   lines.push("what uninstall would do");
+  for (const gap of report.coverageGaps) lines.push(`\tcapture gap: ${gap}`);
   if (report.shell.blocked.length > 0) {
     for (const path of report.shell.blocked) lines.push(`\tblocked shell edit: ${path} (no supported edit provenance or before-image; manual reconciliation required)`);
     for (const reason of report.delegated.blocked) lines.push(`\tblocked: ${reason}`);
@@ -276,19 +290,12 @@ export async function inspect(selector: string | undefined): Promise<void> {
   }
 
   const selection = selectRecord(records, selector);
+  const receipts = relatedReceipts(selection.ok ? selection.record.id : selector);
   if (!selection.ok) {
     if (selection.reason === "ambiguous") {
       for (const candidate of formatSelectionCandidates(selection)) log(`\t${candidate}`);
       fail("inspect-ambiguous", selection.message, EXIT_AMBIGUOUS);
     }
-    const receipts = (() => {
-      try { return new FileStorage().operations.list().filter((operation) => operationMatches(operation, selector)); }
-      catch (error) {
-        if (error instanceof RecoveryLimitError) fail("inspect-limits", error.message, EXIT_USAGE);
-        if (error instanceof RecoveryRetentionError) fail("inspect-retention", error.message, EXIT_BLOCKED);
-        throw error;
-      }
-    })();
     if (receipts.length) {
       if (isJsonMode()) emitJson({ ok: true, command: "inspect", tool: { name: selector, state: "receipt-only", receipts: receipts.map(operationSummary) } });
       else {
@@ -302,12 +309,13 @@ export async function inspect(selector: string | undefined): Promise<void> {
 
   const report = await buildInspectReport(selection.record, records);
   if (isJsonMode()) {
-    emitJson({ ok: true, command: "inspect", tool: report });
+    emitJson({ ok: true, command: "inspect", tool: { ...report, receipts: receipts.map(operationSummary) } });
     return;
   }
 
   log(`inspect ${report.name}`);
   for (const line of formatInspect(report)) log(`\t${line}`);
+  for (const receipt of receipts) log(`\treceipt ${receipt.id} (${receipt.stage})`);
 }
 
 /** The human plan lines for the report, reusing the uninstall formatter so both read identically. */
@@ -343,7 +351,7 @@ function describeOwned(entry: InspectOwned): string {
 
 function describeChanged(entry: InspectChanged, kind: "mutated" | "deleted"): string {
   const state = entry.exists ? "present" : "absent";
-  const restore = entry.restorable ? "restorable" : "detect-only, no before-image";
+  const restore = entry.restorable ? "restorable" : "restoration unavailable";
   return `${entry.path} (${kind}, ${state}, ${restore}${entry.changedSinceInstall ? ", changed since install" : ""})`;
 }
 
@@ -362,6 +370,15 @@ function executableIsPresent(record: RecordV3, options: InspectOptions): boolean
   if (record.executable === "") return false;
   if (options.executableExists !== undefined) return options.executableExists(record.executable);
   return inspectPath(record.executable).exists;
+}
+
+function relatedReceipts(selector: string) {
+  try { return new FileStorage().operations.list().filter((operation) => operationMatches(operation, selector)); }
+  catch (error) {
+    if (error instanceof RecoveryLimitError) fail("inspect-limits", error.message, EXIT_USAGE);
+    if (error instanceof RecoveryRetentionError) fail("inspect-retention", error.message, EXIT_BLOCKED);
+    throw error;
+  }
 }
 
 function message(error: unknown): string {

@@ -1,5 +1,6 @@
+import { EXCLUDED_PATHS, isExcludedDirName } from "../../../constants";
 import type { AbsolutePath } from "../../../types";
-import { isExcludedDirName } from "../../../constants";
+import { join } from "node:path";
 
 /**
  * Path-boundary rules for the Linux capture pipeline. `normalizeAbsolutePath` collapses lexical
@@ -47,4 +48,16 @@ export function hasExcludedAncestor(path: AbsolutePath): boolean {
     if (segment !== undefined && isExcludedDirName(segment)) return true;
   }
   return false;
+}
+
+
+export function linuxObservationExcluded(roots: AbsolutePath[], home = process.env.HOME) {
+  const homeExclusions = home ? EXCLUDED_PATHS.map((path) => join(home, path)) : [];
+  const specificFirst = [...roots].sort((a, b) => b.length - a.length);
+  return (path: AbsolutePath): boolean => {
+    const root = specificFirst.find((candidate) => inRoots(path, [candidate]));
+    if (!root) return true;
+    if (homeExclusions.some((excluded) => inRoots(path, [excluded]) && !inRoots(root, [excluded]))) return true;
+    return hasExcludedAncestor(`/${path.slice(root.length).replace(/^\//, "")}`);
+  };
 }

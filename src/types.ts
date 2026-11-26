@@ -81,6 +81,10 @@ export type Privilege = "user" | "root";
  * (D5). `tret find` records a "find" segment.
  */
 export type CaptureSegment = {
+  backend?: string;
+  captureEngineVersion?: string;
+  exitCode?: number;
+  excludedRoots?: AbsolutePath[];
   observations?: TraceObservations;
   normalization?: CaptureDiagnostics;
   roots?: AbsolutePath[];
@@ -243,6 +247,7 @@ export type EffectEvidence = {
   origin: "legacy-v2" | "legacy-v3" | "capture" | "trace" | "find" | "adoption";
   attribution: "unknown" | "observed";
   beforeImage: "referenced" | "unavailable";
+  tracedEvent?: { pid: number; at: number; observation: "creation" | "change" };
 } & ({ authority: "none" } | { authority: "user-approved"; approval: CleanupApproval });
 
 /** Semantic storage boundary: v3 readers must refuse this wrapper. */

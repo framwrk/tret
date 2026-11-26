@@ -443,6 +443,8 @@ function sampleReport(overrides: Partial<InspectReport> = {}): InspectReport {
     mutated: [],
     deleted: [],
     actions: [{ path: "/home/.local/bin/mytool", action: "remove", kind: "file" }],
+    coverageGaps: [],
+    evidence: undefined,
     requiresSudo: false,
     incomplete: false,
     shell: { blocked: [] },
@@ -547,7 +549,7 @@ describe("formatInspect", () => {
     );
 
     expect(lines).toContain("\t/h/restorable (mutated, present, restorable, changed since install)");
-    expect(lines).toContain("\t/h/detect-only (mutated, present, detect-only, no before-image)");
+    expect(lines).toContain("\t/h/detect-only (mutated, present, restoration unavailable)");
     expect(lines).toContain("\t/h/deleted (deleted, absent, restorable)");
   });
 

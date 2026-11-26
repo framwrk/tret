@@ -132,11 +132,13 @@ test("uncertain rename diagnostics stay bounded under many distinct paths", asyn
 });
 
 test.each(["RENAME_NOREPLACE", "1", "0x1"])(
-  "successful no-replace %s proves only destination absence at that operation",
+  "successful no-replace %s confirms a known baseline absence",
   async (flags) => {
+    const baseline = new MemoryBaseline([["/h/a", "file"]]);
+    baseline.complete("/h");
     const { effects: e } = await effects(
       trace(flags),
-      new MemoryBaseline([["/h/a", "file"]]),
+      baseline,
       new FakeFsInspector([["/h/b", file(A)]]),
     );
     expect(e.owned).toEqual([{ path: "/h/b", kind: "file", installedHash: A }]);
@@ -280,4 +282,108 @@ test("exchanging two exclusively created files keeps both final fingerprints (pr
     { path: "/h/a", kind: "file", installedHash: B },
     { path: "/h/b", kind: "file", installedHash: A },
   ]);
+});
+
+test("successful no-replace cannot convert a pruned destination into a known window-start absence", async () => {
+  const baseline = new MemoryBaseline([["/h/a", "file"]]);
+  baseline.complete("/h");
+  baseline.unknown("/h/b", "permission denied");
+  const { effects: e } = await effects(trace("RENAME_NOREPLACE"), baseline, new FakeFsInspector([["/h/b", file(B)]]));
+  expect(e.owned).toEqual([]);
+  expect(e.mutated).toEqual([{ path: "/h/b", installedHash: B }]);
+});
+
+test("unlink never uses a reoccupied name as the before-image", async () => {
+  const traced = trace("0");
+  traced.records = [{ op: "unlink", path: "/h/b", at: 1 }];
+  const { result, effects: e } = await effects(traced, new MemoryBaseline(), new FakeFsInspector([["/h/b", file(B)]]));
+  expect(result.events).toMatchObject([
+    { type: "unlink", before: { kind: "unknown" } },
+    { type: "observation", reason: "removal-reoccupied", path: "/h/b" },
+  ]);
+  expect(e.deleted).toEqual([]);
+  expect(e.mutated).toEqual([{ path: "/h/b", installedHash: B }]);
+});
+
+test.each([false, true])("baseline and rename filtering agree for overlapping home roots with backups %s", async (enabled) => {
+  const baseline = new MemoryBaseline([["/h/source", "file"], ["/h/Documents/project/dest", "file"]]);
+  if (enabled) baseline.setNode("/h/Documents/project/dest", file(A));
+  const records = trace("0", "/h/source", "/h/Documents/project/dest");
+  const inspector = new FakeFsInspector([["/h/Documents/project/dest", file(B)]]);
+  const roots = ["/h", "/h/Documents/project"];
+  const result = await reconstruct({ traced: records, baseline, inspector, roots, home: "/h", fallbackAt: 0 });
+  const resolved = normalizeJournal({
+    journal: { backend: "linux-strace", completeness: "complete", events: result.events },
+    backups: { enabled, sizeLimitBytes: 1024 }, availableBeforeImages: new Set([A, B]), caseSensitive: true,
+  });
+  expect(resolved.owned).toEqual([]);
+  expect(resolved.mutated).toEqual([{
+    path: "/h/Documents/project/dest", installedHash: B,
+    ...(enabled ? { beforeHash: A, beforeBlob: A, mode: 0o640 } : {}),
+  }]);
+  const excluded = await reconstruct({ traced: records, baseline, inspector, roots: ["/h"], home: "/h", fallbackAt: 0 });
+  expect(excluded.events).toMatchObject([{ type: "rename", inScope: "from" }]);
+});
+
+test("a case-only rename leaves a reconciliation diagnostic without cleanup candidates", () => {
+  const resolved = normalizeJournal({
+    journal: { backend: "linux-strace", completeness: "complete", events: [
+      { type: "rename", seq: 0, at: 1, from: "/h/Name", to: "/h/name", before: file(A), after: file(A) },
+    ] },
+    backups: { enabled: true, sizeLimitBytes: 1024 }, availableBeforeImages: new Set([A]), caseSensitive: false,
+  });
+  expect(resolved.owned).toEqual([]);
+  expect(resolved.mutated).toEqual([{ path: "/h/name", installedHash: A }]);
+  expect(resolved.diagnostics).toContainEqual(expect.objectContaining({ code: "unsupported" }));
+});
+
+test("a directory move retains both known descendants for reconciliation", async () => {
+  const baseline = new MemoryBaseline([["/h/a", "directory"]]);
+  baseline.setNode("/h/a/child", file(A));
+  const { effects: e, result } = await effects(trace("0"), baseline, new FakeFsInspector([
+    ["/h/b", { kind: "directory" }],
+    ["/h/b/child", file(A)],
+  ]));
+  expect(result.events).toContainEqual(expect.objectContaining({
+    type: "observation", path: "/h/a/child", before: expect.objectContaining({ hash: A }), after: null,
+  }));
+  expect(e.owned).toEqual([]);
+  expect(e.mutated).toContainEqual({ path: "/h/b/child", installedHash: A });
+  expect(e.deleted).toContainEqual({ path: "/h/a/child" });
+});
+
+test.each([false, true])("a repeated rename retains the earliest prior state (backups %s)", async (enabled) => {
+  const baseline = new MemoryBaseline([["/h/a", "file"], ["/h/b", "file"], ["/h/c", "file"]]);
+  if (enabled) for (const [path, hash] of [["/h/a", A], ["/h/b", B], ["/h/c", B]] as const) baseline.setNode(path, file(hash));
+  const traced = trace("0");
+  traced.records.push({ op: "rename", from: "/h/b", to: "/h/c", at: 2 });
+  const result = await reconstruct({
+    traced, baseline, inspector: new FakeFsInspector([["/h/c", file(A)]]), roots: ["/h"], fallbackAt: 0,
+  });
+  const e = normalizeJournal({
+    journal: { backend: "linux-strace", completeness: "complete", events: result.events },
+    backups: { enabled, sizeLimitBytes: 1024 }, availableBeforeImages: new Set([A, B]), caseSensitive: true,
+  });
+  expect(e.owned).toEqual([]);
+  expect(e.deleted).toEqual([
+    { path: "/h/a", ...(enabled ? { beforeHash: A, beforeBlob: A, mode: 0o640 } : {}) },
+    { path: "/h/b", ...(enabled ? { beforeHash: B, beforeBlob: B, mode: 0o640 } : {}) },
+  ]);
+  expect(e.mutated).toEqual([
+    { path: "/h/c", installedHash: A, ...(enabled ? { beforeHash: B, beforeBlob: B, mode: 0o640 } : {}) },
+  ]);
+});
+
+test("a repeated directory move retains the final known descendant as an observation", async () => {
+  const baseline = new MemoryBaseline([["/h/a", "directory"]]);
+  baseline.setNode("/h/a/child", file(A));
+  const traced = trace("0");
+  traced.records.push({ op: "rename", from: "/h/b", to: "/h/c", at: 2 });
+  const { effects: e } = await effects(traced, baseline, new FakeFsInspector([
+    ["/h/c", { kind: "directory" }],
+    ["/h/c/child", file(A)],
+  ]));
+  expect(e.owned).toEqual([]);
+  expect(e.mutated).toContainEqual({ path: "/h/c/child", installedHash: A });
+  expect(e.deleted).toContainEqual({ path: "/h/a/child" });
 });

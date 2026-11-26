@@ -303,7 +303,7 @@ describe("uninstall record lifecycle", () => {
     ]);
 
     const result = await runCliResult(["uninstall", "mytool", "--yes"], home);
-    expect(result.code).toBe(0);
+    expect(result.code).toBe(1);
     expect(readFileSync(zshrc, "utf8")).toBe(before);
     expect(readRecords(home).records).toHaveLength(0);
   });
@@ -318,7 +318,7 @@ describe("uninstall record lifecycle", () => {
     expect(readFileSync(file, "utf8")).toBe("changed");
     expect(readRecords(home).records).toHaveLength(1);
 
-    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(0);
+    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(1);
     expect(existsSync(file)).toBe(false);
     expect(readRecords(home).records).toHaveLength(0);
   });
@@ -334,9 +334,47 @@ describe("uninstall record lifecycle", () => {
     expect(readlinkSync(link)).toBe("changed-target");
     expect(readRecords(home).records).toHaveLength(1);
 
-    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(0);
+    expect(await runCli(["uninstall", "mytool", "--yes", "--force"], home)).toBe(1);
     expect(linkExists(link)).toBe(false);
     expect(readRecords(home).records).toHaveLength(0);
+  });
+
+  test("reports incomplete capture after applying every tracked action and keeps a receipt", async () => {
+    const home = makeHome();
+    const path = join(home, "tool");
+    writeFileSync(path, "installed");
+    writeRecords(home, [record({ executable: path, owned: [{ path, kind: "file", installedHash: sha256("installed") }] })]);
+
+    const preview = await runCliResult(["uninstall", "mytool", "--dry-run", "--json"], home);
+    expect(JSON.parse(preview.stdout)).toMatchObject({ expectedOutcome: "partial", coverageGaps: expect.any(Array) });
+    const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: false, trackedActionsCompleted: true, removed: [path] });
+    expect(existsSync(path)).toBe(false);
+
+    const inspected = await runCliResult(["inspect", "mytool", "--json"], home);
+    expect(JSON.parse(inspected.stdout).tool.receipts).toContainEqual(expect.objectContaining({
+      stage: "partial",
+      outcomes: [{ path, outcome: "removed" }],
+    }));
+  });
+
+  test("an empty failed capture leaves a partial receipt", async () => {
+    const home = makeHome();
+    writeRecords(home, [record({
+      capture: {
+        backend: "linux-strace",
+        completeness: "partial",
+        segments: [{ kind: "install", startedAt: "2026-10-09", partialReason: "capture failed to close" }],
+      },
+    })]);
+    const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      trackedActionsCompleted: true,
+      removed: [],
+      coverageGaps: expect.arrayContaining(["capture failed to close"]),
+    });
   });
 
   test("a restorable mutation whose blob is missing still conflicts and retains the record", async () => {
@@ -879,7 +917,7 @@ describe("uninstall JSON mode", () => {
       record({ executable: binary, owned: [{ path: binary, kind: "file", installedHash: sha256("installed") }] }),
     ]);
 
-    const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
+    const result = await runCliResult(["uninstall", "mytool", "--yes", "--approved-only", "--json"], home);
 
     expect(result.code).toBe(0);
     const doc = JSON.parse(result.stdout);

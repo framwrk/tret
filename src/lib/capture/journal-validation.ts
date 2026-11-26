@@ -27,6 +27,7 @@ export function validJournalEvents(events: unknown[], version: 1 | 2): events is
     if (!object(event)) return false;
     if (version === 1)
       return (
+        event.type !== "observation" &&
         event.semantics === undefined &&
         event.inScope === undefined &&
         event.sourceAfter === undefined &&
@@ -56,6 +57,9 @@ export function validJournalEvents(events: unknown[], version: 1 | 2): events is
     if (event.semantics !== undefined || event.inScope !== undefined || event.sourceAfter !== undefined || !path(event.path))
       return false;
     switch (event.type) {
+      case "observation":
+        return ["rename-descendant", "removal-reoccupied", "baseline-unknown"].includes(String(event.reason))
+          && node(event.before, true) && node(event.after, false, true);
       case "create":
         return node(event.after);
       case "write":

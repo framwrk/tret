@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { approveFixtureCandidates } from "../lib/fixtures/approve-candidates";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -27,7 +27,7 @@ async function runCliOutput(
   args: string[],
   home: string,
   extraEnv: Record<string, string> = {},
-): Promise<{ code: number; output: string }> {
+): Promise<{ code: number; output: string; stdout: string }> {
   await approveFixtureCandidates(home, args);
   const proc = Bun.spawn([BUN, TRET, ...args], {
     env: { ...process.env, ...extraEnv, HOME: home },
@@ -41,7 +41,7 @@ async function runCliOutput(
     new Response(proc.stderr).text(),
   ]);
   // `log` writes to the terminal, not a piped stdout, so read the combined output.
-  return { code, output: `${stdout}\n${stderr}` };
+  return { code, stdout, output: `${stdout}\n${stderr}` };
 }
 
 type StoredRecord = {
@@ -114,4 +114,31 @@ describe("find", () => {
     expect(dryRun.output).toContain(`conflict ${edited} (modified)`);
     expect(dryRun.output).toContain(`conflict ${folder} (not-empty)`);
   });
+});
+
+test("find lists the exact candidates and a later descendant has no approval", async () => {
+  const home = makeDir("tret-find-scope-");
+  const name = "tretfindscope";
+  const folder = join(home, `.${name}`);
+  const tool = join(folder, name);
+  const existing = join(folder, "existing");
+  const later = join(folder, "later");
+  mkdirSync(folder);
+  writeFileSync(tool, "#!/bin/sh\n", { mode: 0o755 });
+  writeFileSync(existing, "keep");
+  const result = await runCliOutput(["find", name, "--json"], home, { PATH: `${folder}:${process.env.PATH ?? ""}` });
+  expect(result.code).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    cleanupAuthority: "none",
+    candidates: expect.arrayContaining([{ path: existing, kind: "file", installedHash: expect.any(String) }]),
+  });
+  expect(await runCli(["approve", name, tool, "--remove", "--yes"], home)).toBe(0);
+  writeFileSync(later, "new user data");
+  const child = Bun.spawn([BUN, TRET, "uninstall", name, "--approved-only", "--yes"], {
+    env: { ...process.env, HOME: home }, stdin: "ignore", stdout: "ignore", stderr: "ignore",
+  });
+  expect(await child.exited).toBe(0);
+  expect(existsSync(tool)).toBe(false);
+  expect(readFileSync(existing, "utf8")).toBe("keep");
+  expect(readFileSync(later, "utf8")).toBe("new user data");
 });

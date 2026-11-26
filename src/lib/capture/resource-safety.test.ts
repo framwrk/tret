@@ -68,7 +68,7 @@ test("an unreadable before-scan does not prove a later observation was created",
   const { known, uncertain } = snapshots();
   const events = diffScopedSnapshots(uncertain, known);
   expect(events.some((event) => event.type === "create")).toBe(false);
-  expect(events.some((event) => event.type === "write")).toBe(true);
+  expect(events.some((event) => event.type === "observation" && event.reason === "baseline-unknown")).toBe(true);
 });
 test("an unreadable after-scan does not prove a known file was deleted", () => {
   const { known, uncertain } = snapshots();

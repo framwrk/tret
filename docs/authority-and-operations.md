@@ -90,10 +90,13 @@ incomplete rollback keeps recovery evidence. Empty directories are removed
 non-recursively. Special nodes and unsupported metadata remain unresolved.
 
 Exit 5 means refusal before target application. A change during apply, failed
-postcondition or unresolved requested effect yields exit 1 and a durable partial
-receipt. Exit 0 means the explicitly requested, enumerated scope was verified
-complete. It does not mean machine-wide or historical reversal. A deliberately
-narrower approved scope names retained data and unknown coverage explicitly.
+postcondition or a gap in capture coverage for full recorded-scope cleanup yields
+exit 1 and a durable partial receipt. JSON reports `trackedActionsCompleted`
+separately from success and lists `coverageGaps`. Dry-run reports the expected
+outcome while preserving the store. Exit 0 means the requested, enumerated scope
+was verified complete. Use `--approved-only` to explicitly select approved
+actions. Its receipt names retained paths and unknown coverage, and makes no
+claim about machine-wide or historical reversal.
 
 ## Supported scope and remaining limits
 
@@ -109,6 +112,10 @@ refused. Native metadata handles use Linux O_PATH or Darwin O_EVTONLY/O_SYMLINK;
 content is read only after regular-file inspection and descriptor revalidation.
 Private staging and pinned parents protect names/object identity; they do not
 freeze writes through existing descriptors or sandbox hostile same-user processes.
+Private writes and native staging create files at owner-only mode before
+applying final permissions. Darwin uses the fixed-argument libc entry point
+for directory-relative creation because the public variadic API places the
+mode on the stack on arm64. [Apple ARM64 ABI](https://developer.apple.com/documentation/xcode/writing-arm64-code-for-apple-platforms)
 Content verification streams 64 KiB chunks, with a 4 GiB/30-second per-file budget.
 Operation manifests are capped at 16 MiB and are read with an actual byte bound.
 Larger logical operations use verified immutable 1 MiB chunks up to a 64 MiB

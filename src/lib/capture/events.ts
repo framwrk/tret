@@ -108,9 +108,17 @@ export type RmdirEvent = JournalEventBase & {
   before: DirectoryMetadata;
 };
 
+export type ObservationEvent = JournalEventBase & {
+  type: "observation";
+  path: AbsolutePath;
+  reason: "rename-descendant" | "removal-reoccupied" | "baseline-unknown";
+  before?: NodeMetadata;
+  after: NodeMetadata | null;
+};
+
 /** Every filesystem operation a capture backend can report. */
 export type JournalEvent =
-  CreateEvent | WriteEvent | RenameEvent | UnlinkEvent | ChmodEvent | SymlinkEvent | MkdirEvent | RmdirEvent;
+  CreateEvent | WriteEvent | RenameEvent | UnlinkEvent | ChmodEvent | SymlinkEvent | MkdirEvent | RmdirEvent | ObservationEvent;
 
 /** The discriminant of `JournalEvent`. */
 export type JournalEventType = JournalEvent["type"];

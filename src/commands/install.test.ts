@@ -278,7 +278,7 @@ type StoredRecord = {
   name: string;
   source: string;
   executable: string;
-  capture: { backend?: string; completeness: string; segments: { kind: string; partialReason?: string }[] };
+  capture: { backend?: string; completeness: string; segments: { kind: string; partialReason?: string; exitCode?: number }[] };
   owned: { path: string; kind?: string; installedHash?: string; linkTarget?: string }[];
   mutated?: { path: string; installedHash?: string }[];
   managedBy?: { manager: string; package: string; globalRoot?: string };
@@ -329,7 +329,7 @@ describe("install -> list -> uninstall", () => {
       expect(await runCli(["uninstall", "mytool", "--dry-run"], home)).toBe(0);
       expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(true);
 
-      expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
+      expect(await runCli(["uninstall", "mytool", "--yes", "--approved-only"], home)).toBe(0);
       expect(existsSync(join(home, ".local", "bin", "mytool"))).toBe(false);
 
       const after = readStore(home);
@@ -398,7 +398,7 @@ describe("install -> list -> uninstall", () => {
       expect(record?.owned.every((entry) => entry.kind !== "unknown")).toBe(true);
 
       // An ordinary uninstall verifies those fingerprints, removes the additions, and drops the record.
-      expect(await runCli(["uninstall", "nct", "--yes"], home)).toBe(0);
+      expect(await runCli(["uninstall", "nct", "--yes", "--approved-only"], home)).toBe(0);
       expect(existsSync(executable)).toBe(false);
       expect(existsSync(link)).toBe(false);
       expect(existsSync(configDir)).toBe(false);
@@ -474,7 +474,7 @@ describe("install -> list -> uninstall", () => {
     }
   });
 
-  test("a failed installer leaves a labeled partial v3 record and exits non-zero (D6)", async () => {
+  test("a failed installer records its exit status independently of capture coverage", async () => {
     const home = makeHome();
     const server = serve(FAIL_SCRIPT);
     try {
@@ -484,8 +484,7 @@ describe("install -> list -> uninstall", () => {
       expect(file.version).toBe(4);
       const record = file.records.find((entry) => entry.name === "badtool");
       expect(record).toBeDefined();
-      expect(record?.capture.completeness).toBe("partial");
-      expect(record?.capture.segments[0]?.partialReason).toContain("3");
+      expect(record?.capture.segments[0]?.exitCode).toBe(3);
       expect(record?.owned.some((entry) => entry.path.endsWith("/.local/bin/badtool"))).toBe(true);
     } finally {
       await server.stop();
@@ -529,8 +528,8 @@ describe("install -> list -> uninstall", () => {
       expect(readFileSync(executable, "utf8")).toContain("echo replacement");
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
-      expect(records[0]).toMatchObject({ name: "mytool", executable, capture: { completeness: "partial" } });
-      expect(records[0]?.capture.segments[0]?.partialReason).toContain("7");
+      expect(records[0]).toMatchObject({ name: "mytool", executable });
+      expect(records[0]?.capture.segments[0]?.exitCode).toBe(7);
       expect(records[0]?.owned.some((entry) => entry.path === executable)).toBe(true);
     } finally {
       await server.stop();
@@ -611,13 +610,13 @@ describe("install -> list -> uninstall", () => {
       expect(readFileSync(recoveryPath, "utf8")).toBe("recovery data\n");
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
-      expect(records[0]).toMatchObject({ name: "mytool", executable: "", capture: { completeness: "partial" } });
-      expect(records[0]?.capture.segments[0]?.partialReason).toContain("9");
-      expect(records[0]?.capture.segments[0]?.partialReason).toContain("no executable command");
+      expect(records[0]).toMatchObject({ name: "mytool", executable: "" });
+      expect(records[0]?.capture.segments[0]?.exitCode).toBe(9);
+
       expect(records[0]?.owned.some((entry) => entry.path === recoveryPath)).toBe(true);
 
       expect(await runCli(["list"], home)).toBe(0);
-      expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
+      expect(await runCli(["uninstall", "mytool", "--yes", "--approved-only"], home)).toBe(0);
       expect(existsSync(recoveryPath)).toBe(false);
       expect(readStore(home).records).toHaveLength(0);
     } finally {
@@ -701,8 +700,8 @@ describe("install -> list -> uninstall", () => {
       expect(records).toHaveLength(1);
       const record = records[0]!;
       // Without --name, the final URL path segment (`install.sh`) is the deterministic fallback.
-      expect(record).toMatchObject({ name: "install", executable: "", capture: { completeness: "partial" } });
-      expect(record.capture.segments[0]?.partialReason).toContain("no executable command");
+      expect(record).toMatchObject({ name: "install", executable: "" });
+
       expect(record.owned.some((entry) => entry.path === config)).toBe(true);
 
       // `list` shows it as a partial record with no binary; `inspect` can read it.
@@ -720,7 +719,7 @@ describe("install -> list -> uninstall", () => {
       expect(traced.code).toBe(2);
       expect(traced.stderr).toContain("no tracked executable to run");
 
-      expect(await runCli(["uninstall", "install", "--yes"], home)).toBe(0);
+      expect(await runCli(["uninstall", "install", "--yes", "--approved-only"], home)).toBe(0);
       expect(existsSync(config)).toBe(false);
       expect(readStore(home).records).toHaveLength(0);
     } finally {
@@ -738,12 +737,12 @@ describe("install -> list -> uninstall", () => {
       const records = readStore(home).records;
       expect(records).toHaveLength(1);
       const record = records[0]!;
-      expect(record).toMatchObject({ name: "noexec-tool", executable: "", capture: { completeness: "partial" } });
-      expect(record.capture.segments[0]?.partialReason).toContain("4");
-      expect(record.capture.segments[0]?.partialReason).toContain("no executable command");
+      expect(record).toMatchObject({ name: "noexec-tool", executable: "" });
+      expect(record.capture.segments[0]?.exitCode).toBe(4);
+
       expect(record.owned.some((entry) => entry.path === config)).toBe(true);
 
-      expect(await runCli(["uninstall", "noexec-tool", "--yes"], home)).toBe(0);
+      expect(await runCli(["uninstall", "noexec-tool", "--yes", "--approved-only"], home)).toBe(0);
       expect(existsSync(config)).toBe(false);
       expect(readStore(home).records).toHaveLength(0);
     } finally {
@@ -776,7 +775,7 @@ describe("install -> list -> uninstall", () => {
       expect(record?.owned.some((entry) => entry.path === join(home, ".toolrc"))).toBe(true);
       expect(record?.owned.some((entry) => entry.path === join(home, ".tool", "bin", "hometool"))).toBe(true);
 
-      expect(await runCli(["uninstall", "hometool", "--yes"], home)).toBe(0);
+      expect(await runCli(["uninstall", "hometool", "--yes", "--approved-only"], home)).toBe(0);
       expect(existsSync(join(home, ".toolrc"))).toBe(false);
       expect(existsSync(join(home, ".tool", "bin", "hometool"))).toBe(false);
     } finally {

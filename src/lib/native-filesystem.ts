@@ -1,6 +1,7 @@
 import { CString, type Pointer, dlopen, toArrayBuffer } from "bun:ffi";
 import { basename, dirname, isAbsolute } from "node:path";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, openSync, readSync, statSync, writeSync } from "node:fs";
+import { getSystemErrorName } from "node:util";
 
 /** Decimal strings preserve inode/device precision across JSON and JavaScript. */
 export type NodeIdentity = {
@@ -19,7 +20,7 @@ export type NodeIdentity = {
 /** Narrow unprivileged bindings to the platform's existing libc; no helper executable. */
 function bind() {
   const symbols = {
-    openat: { args: ["i32", "ptr", "i32", "i32"], returns: "i32" },
+    renameat: { args: ["i32", "ptr", "i32", "ptr"], returns: "i32" },
     mkdirat: { args: ["i32", "ptr", "i32"], returns: "i32" },
     unlinkat: { args: ["i32", "ptr", "i32"], returns: "i32" },
     readlinkat: { args: ["i32", "ptr", "ptr", "u64"], returns: "i64" },
@@ -30,10 +31,13 @@ function bind() {
     const library = dlopen("/usr/lib/libSystem.B.dylib", {
       ...symbols,
       __error: { args: [], returns: "ptr" },
+      __openat: { args: ["i32", "ptr", "i32", "u16"], returns: "i32" },
       renameatx_np: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" },
     });
     return {
       ...library.symbols,
+      // Darwin's public openat is variadic. Its ARM64 ABI passes the creation mode on the stack.
+      openat: library.symbols.__openat,
       errno: () => errorNumber(library.symbols.__error()),
       renameExclusive: (from: number, name: Uint8Array, to: number, target: Uint8Array) =>
         library.symbols.renameatx_np(from, name, to, target, 4),
@@ -47,6 +51,7 @@ function bind() {
     const library = dlopen("libc.so.6", {
       ...symbols,
       __errno_location: { args: [], returns: "ptr" },
+      openat: { args: ["i32", "ptr", "i32", "i32"], returns: "i32" },
       renameat2: { args: ["i32", "ptr", "i32", "ptr", "u32"], returns: "i32" },
     });
     return {
@@ -128,9 +133,9 @@ export class NativeDirectory {
   readonly identity: NodeIdentity;
   private closed = false;
 
-  constructor(path: string, relative?: { directory: NativeDirectory; name: string }) {
+  constructor(path: string, relative?: { directory: NativeDirectory; name: string } | "no-follow") {
     try {
-      if (relative) {
+      if (relative && relative !== "no-follow") {
         this.fd = this.native.openat(
           relative.directory.fd,
           nameBytes(relative.name),
@@ -141,7 +146,7 @@ export class NativeDirectory {
       } else {
         if (!isAbsolute(path) || path.split("/").includes("..") || path.includes("\0"))
           throw new Error("native directory path must be absolute without parent traversal");
-        this.fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY);
+        this.fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | (relative === "no-follow" ? constants.O_NOFOLLOW : 0));
       }
       this.identity = descriptorIdentity(this.fd);
     } catch (error) {
@@ -232,17 +237,32 @@ export class NativeDirectory {
     }
   }
 
-  writeExclusive(name: string, bytes: Uint8Array, mode: number): NodeIdentity {
+  replaceFile(name: string, target: string): void {
     this.assertOpen();
-    if (!Number.isSafeInteger(mode) || mode < 0 || mode > 0o777)
-      throw new Error("restoration supports ordinary permission bits only");
+    if (this.native.renameat(this.fd, nameBytes(name), this.fd, nameBytes(target)) !== 0)
+      throw new Error("directory-relative file replacement refused");
+  }
+
+  openExclusive(name: string): number {
+    this.assertOpen();
     const fd = this.native.openat(
       this.fd,
       nameBytes(name),
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       0o600,
     );
-    if (fd < 0) throw new Error("cannot exclusively create restored content");
+    if (fd < 0) {
+      const code = getSystemErrorName(-this.native.errno());
+      throw Object.assign(new Error(`cannot exclusively create file: ${code}`), { code });
+    }
+    return fd;
+  }
+
+  writeExclusive(name: string, bytes: Uint8Array, mode: number): NodeIdentity {
+    this.assertOpen();
+    if (!Number.isSafeInteger(mode) || mode < 0 || mode > 0o777)
+      throw new Error("restoration supports ordinary permission bits only");
+    const fd = this.openExclusive(name);
     try {
       let offset = 0;
       while (offset < bytes.byteLength) {

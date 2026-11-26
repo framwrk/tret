@@ -142,7 +142,10 @@ export class MacosHeuristicCaptureBackend implements CaptureBackend {
       if (node.kind !== "file" || node.size > backups.sizeLimitBytes || isSensitiveBackupPath(node.path)) continue;
       const used = budget.used.backupBytes;
       const bytes = await this.read(node.path, { budget, maxBytes: Math.min(backups.sizeLimitBytes, budget.limits.maxBlobBytes) });
-      if (bytes === undefined || bytes.byteLength > backups.sizeLimitBytes) continue;
+      if (bytes === undefined || bytes.byteLength > backups.sizeLimitBytes) {
+        budget.note(`before-image unavailable for content comparison: ${node.path}`);
+        continue;
+      }
       if (used === budget.used.backupBytes && !budget.tryConsume("backupBytes", bytes.byteLength)) continue;
       if (!budget.tryConsume("hashBytes", bytes.byteLength)) continue;
       node.hash = hashBytes(bytes);

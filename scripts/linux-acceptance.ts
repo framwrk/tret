@@ -43,7 +43,7 @@ type CapturedRecord = {
   capture: {
     backend: string;
     completeness: string;
-    segments: { kind: string; startedAt: string; endedAt?: string; partialReason?: string }[];
+    segments: { kind: string; startedAt: string; endedAt?: string; partialReason?: string; exitCode?: number }[];
   };
   privilege: string;
   caseSensitive: boolean;
@@ -581,7 +581,7 @@ async function scenarioNoCaptureUninstall(binary: string): Promise<void> {
     assert(/^[0-9a-f]{64}$/.test(owned.get(executable)?.installedHash ?? ""), "nct executable was not fingerprinted");
     assert(record.owned.every((entry) => entry.kind !== "unknown"), "no-capture additions kept an unknown kind");
 
-    expectSuccess(await runTret(ctx.home, ["uninstall", "nct", "--yes"], binary), "uninstall nct");
+    expectSuccess(await runTret(ctx.home, ["uninstall", "nct", "--yes", "--approved-only"], binary), "uninstall nct");
     assert(!existsSync(executable), "uninstall left the nct executable");
     assert(!existsSync(link), "uninstall left the nct symlink");
     assert(!existsSync(configDir), "uninstall left the nct config directory");
@@ -952,11 +952,7 @@ async function scenarioNoExecutablePartialRecord(binary: string): Promise<void> 
     const record = records[0]!;
     assertEqual(record.name, "noexec-tool", "partial record name");
     assertEqual(record.executable, "", "partial record executable");
-    assertEqual(record.capture.completeness, "partial", "partial record completeness");
-    assert(
-      record.capture.segments[0]?.partialReason?.includes("no executable command") === true,
-      "partial record does not explain the missing executable",
-    );
+    assertEqual(record.capture.segments[0]?.exitCode, 0, "installer exit status");
     assert(
       record.owned.some((entry) => entry.path === config),
       "partial record does not own the installer's config file",
@@ -968,7 +964,7 @@ async function scenarioNoExecutablePartialRecord(binary: string): Promise<void> 
     assert(row !== undefined, `list did not show noexec-tool:\n${listed.stdout}`);
     assert(/\bpartial\s+-\s/.test(row), `list did not show the partial record without a binary: ${row}`);
 
-    expectSuccess(await runTret(ctx.home, ["uninstall", "noexec-tool", "--yes"], binary), "uninstall noexec-tool");
+    expectSuccess(await runTret(ctx.home, ["uninstall", "noexec-tool", "--yes", "--approved-only"], binary), "uninstall noexec-tool");
     assert(!existsSync(config), "uninstall left the no-executable config file");
     assert(!existsSync(configDir), "uninstall left the no-executable config directory");
     assert(!existsSync(state), "uninstall left the no-executable state file");
@@ -1009,7 +1005,7 @@ async function scenarioBackupBlobGc(binary: string): Promise<void> {
     assert(existsSync(keepObject), "referenced keep blob is missing after install");
     assert(existsSync(goneObject), "gone blob is missing after install");
 
-    expectSuccess(await runTret(ctx.home, ["uninstall", "gctool-gone", "--yes"], binary), "uninstall gctool-gone");
+    expectSuccess(await runTret(ctx.home, ["uninstall", "gctool-gone", "--yes", "--approved-only"], binary), "uninstall gctool-gone");
     assertEqual(readFileSync(join(ctx.home, ".config", "gconetool", "gone.conf"), "utf8"), "gone-original\n", "restored gone.conf");
     assert(existsSync(goneObject), "uninstall immediately reclaimed a fresh blob inside the grace window");
 
@@ -1019,13 +1015,13 @@ async function scenarioBackupBlobGc(binary: string): Promise<void> {
 
     // A receipt still pins the removed install's evidence, even after the grace window.
     expectSuccess(await runTret(ctx.home, ["install", "--yes", triggerUrl], binary), "install gctrigger");
-    expectSuccess(await runTret(ctx.home, ["uninstall", "gctrigger", "--yes"], binary), "uninstall gctrigger");
+    expectSuccess(await runTret(ctx.home, ["uninstall", "gctrigger", "--yes", "--approved-only"], binary), "uninstall gctrigger");
 
     assert(existsSync(goneObject), "GC reclaimed a blob retained by an uninstall receipt");
     assert(existsSync(keepObject), "GC reclaimed a blob still referenced by a record");
     assertEqual(readFileSync(join(ctx.home, ".config", "gctool", "keep.conf"), "utf8"), "keep-new\n", "keep.conf before uninstall");
 
-    expectSuccess(await runTret(ctx.home, ["uninstall", "gctool-keep", "--yes"], binary), "uninstall gctool-keep");
+    expectSuccess(await runTret(ctx.home, ["uninstall", "gctool-keep", "--yes", "--approved-only"], binary), "uninstall gctool-keep");
     assertEqual(readFileSync(join(ctx.home, ".config", "gctool", "keep.conf"), "utf8"), "keep-original\n", "restored keep.conf");
     assertEqual(readRecords(ctx.home).length, 0, "records after backup uninstalls");
   } finally {

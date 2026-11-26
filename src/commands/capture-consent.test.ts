@@ -208,3 +208,65 @@ test.each([false, true])(
     }
   },
 );
+
+test.each([false, true])("simultaneous install requests preserve unrelated data (heuristic backend %s)", async (heuristic) => {
+  const home = mkdtempSync(join(tmpdir(), "tret-concurrent-observations-"));
+  homes.push(home);
+  const ready = join(home, "ready");
+  const sentinel = join(home, "user-data.txt");
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      const name = new URL(request.url).pathname === "/first.sh" ? "first" : "second";
+      const rendezvous = name === "first"
+        ? 'touch "$HOME/ready"\nfor n in 1 2 3 4 5 6 7 8 9 10; do [ ! -e "$HOME/user-data.txt" ] || break; sleep 0.1; done\n[ -f "$HOME/user-data.txt" ] || exit 42\n'
+        : "";
+      return new Response(`#!/bin/sh\n${rendezvous}printf '#!/bin/sh\\nexit 0\\n' > "$HOME/bin/${name}"\nchmod +x "$HOME/bin/${name}"\n`);
+    },
+  });
+  mkdirSync(join(home, "bin"));
+  const preload = join(home, "capture-preflight.ts");
+  if (heuristic) writeFileSync(preload, `
+    import { LinuxCaptureBackend } from ${JSON.stringify(join(import.meta.dir, "../lib/capture/linux/backend.ts"))};
+    LinuxCaptureBackend.prototype.preflight = async () => { throw new Error("use the heuristic fixture backend"); };
+  `);
+  const run = async (args: string[]) => {
+    const child = Bun.spawn([process.execPath, ...(heuristic ? ["--preload", preload] : []), cli, "--json", ...args], {
+      env: { ...process.env, HOME: home }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+    ]);
+    return { code, stdout, stderr };
+  };
+  const install = (name: string) => run([
+    "install", `http://127.0.0.1:${server.port}/${name}.sh`, "--yes", "--allow-weaker-capture", ...(heuristic ? [] : ["--no-capture"]),
+  ]);
+  try {
+    const first = install("first");
+    let started = false;
+    for (let n = 0; n < 150; n++) {
+      if (existsSync(ready)) { started = true; break; }
+      await Bun.sleep(10);
+    }
+    const second = install("second");
+    writeFileSync(sentinel, "unrelated user work");
+    const results = await Promise.all([first, second]);
+    expect(started).toBe(true);
+    expect(results.map(({ code }) => code)).toEqual([0, 0]);
+    const records = await new FileStorage({ homeDir: home }).loadRecords();
+    expect(records.map((record) => record.name).sort()).toEqual(["first", "second"]);
+    expect(records.find((record) => record.name === "first")?.evidence).toContainEqual(
+      expect.objectContaining({ path: sentinel, authority: "none" }),
+    );
+    expect((await run(["uninstall", "first", "--yes"])).code).toBe(5);
+    expect((await run(["approve", "first", join(home, "bin/first"), "--remove", "--yes"])).code).toBe(0);
+    expect((await run(["uninstall", "first", "--yes", "--approved-only"])).code).toBe(0);
+    expect(existsSync(join(home, "bin/first"))).toBe(false);
+    expect(existsSync(join(home, "bin/second"))).toBe(true);
+    expect(readFileSync(sentinel, "utf8")).toBe("unrelated user work");
+  } finally {
+    await server.stop(true);
+  }
+});

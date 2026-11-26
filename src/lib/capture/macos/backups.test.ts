@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { hashBytes, readFileBytes } from "./scoped";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { MacosHeuristicCaptureBackend } from "./backend";
 import { join } from "node:path";
 import { normalizeJournal } from "../../journal/normalize";
@@ -76,4 +76,32 @@ describe("macOS heuristic before-image capture (D2)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+test.each([false, true])("same-stamp changes are detected only with start and end hashes (backups %s)", async (enabled) => {
+  const root = mkdtempSync(join(tmpdir(), "tret-same-stamp-"));
+  try {
+    const path = join(root, "file");
+    const transient = join(root, "transient");
+    writeFileSync(path, "old");
+    utimesSync(path, 1700000000, 1700000000);
+    const before = statSync(path);
+    const backend = new MacosHeuristicCaptureBackend();
+    const session = await backend.start({ pid: process.pid, privilege: "user", roots: [root], backups: { enabled, sizeLimitBytes: 1024 } });
+    writeFileSync(path, "new");
+    writeFileSync(transient, "was present between snapshots");
+    unlinkSync(transient);
+    utimesSync(path, 1700000000, 1700000000);
+    const after = statSync(path);
+    expect([after.ino, after.size, after.mtimeMs]).toEqual([before.ino, before.size, before.mtimeMs]);
+    const journal = await session.stop();
+    expect(journal.completeness).toBe("heuristic");
+    expect(journal.events).toHaveLength(enabled ? 1 : 0);
+    if (enabled) {
+      expect(journal.events[0]).toMatchObject({ type: "write", path });
+      expect(journal.events[0]?.pid).toBeUndefined();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

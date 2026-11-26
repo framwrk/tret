@@ -340,8 +340,14 @@ function captureIssues(value: unknown, issues: string[]): void {
     if (segment.resources !== undefined && !validCaptureResources(segment.resources)) issues.push(`${where}.resources is invalid`);
     if (segment.observations !== undefined && (segment.kind !== "trace" || !validTraceObservations(segment.observations))) issues.push(`${where}.observations is invalid`);
     if (segment.normalization !== undefined && !validCaptureDiagnostics(segment.normalization)) issues.push(`${where}.normalization is invalid`);
-    if (segment.roots !== undefined && (!Array.isArray(segment.roots) || !segment.roots.every((path) => typeof path === "string" && path.startsWith("/") && !path.includes("\0"))))
-      issues.push(`${where}.roots must contain absolute paths`);
+    if (segment.backend !== undefined) requireNonEmptyString(segment.backend, `${where}.backend`, issues);
+    if (segment.captureEngineVersion !== undefined) requireNonEmptyString(segment.captureEngineVersion, `${where}.captureEngineVersion`, issues);
+    if (segment.exitCode !== undefined && !Number.isInteger(segment.exitCode)) issues.push(`${where}.exitCode must be an integer`);
+    for (const key of ["roots", "excludedRoots"] as const) {
+      const paths = segment[key];
+      if (paths !== undefined && (!Array.isArray(paths) || !paths.every((path) => typeof path === "string" && path.startsWith("/") && !path.includes("\0"))))
+        issues.push(`${where}.${key} must contain absolute paths`);
+    }
   });
 }
 

@@ -130,7 +130,7 @@ describe("post-command blob collection", () => {
     ageBlob(home, goneBlob);
     ageBlob(home, keptBlob);
 
-    const result = await runCliResult(["uninstall", "gone", "--yes", "--json"], home);
+    const result = await runCliResult(["uninstall", "gone", "--yes", "--approved-only", "--json"], home);
 
     expect(result.code).toBe(0);
     // The removed record's blob was still available while the restore ran, then collected.
@@ -267,7 +267,7 @@ printf 'second\\n' > "$HOME/.config/newtool.conf"
     // An objects path that is not a directory makes the sweep throw; the command must still succeed.
     writeFileSync(objectsDir(home), "not a directory");
 
-    const result = await runCliResult(["uninstall", "mytool", "--yes", "--json"], home);
+    const result = await runCliResult(["uninstall", "mytool", "--yes", "--approved-only", "--json"], home);
 
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, command: "uninstall" });

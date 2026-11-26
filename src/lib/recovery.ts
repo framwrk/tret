@@ -9,6 +9,7 @@ import { normalizationDetails } from "./capture/diagnostics";
 import { normalizeJournal } from "./journal/normalize";
 import { reduceRecordForRetry } from "./removal";
 import { traceObservations } from "./capture/trace-observations";
+import { withTracedEvidence } from "./records-v4";
 
 /** Explicit recovery replays filesystem protocol steps, never external code. */
 export async function resumeOperation(storage: FileStorage, id: string): Promise<DurableOperation> {
@@ -91,7 +92,7 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
           },
         };
       }
-      const recovered: RecordV3 = {
+      let recovered: RecordV3 = {
         ...available,
         ...(current ? { revision: current.revision } : {}),
         evidence:
@@ -105,6 +106,8 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
             index === all.length - 1
               ? {
                   ...segment,
+                  ...(operation.capture ? { backend: operation.capture.backend } : {}),
+                  ...(operation.execution?.exitCode === undefined ? {} : { exitCode: operation.execution.exitCode }),
                   partialReason: [segment.partialReason, "interrupted operation: only durable checkpoints are available"]
                     .filter(Boolean)
                     .join("; "),
@@ -113,6 +116,7 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
           ),
         },
       };
+      if (operation.capture) recovered = withTracedEvidence(recovered, operation.capture, operation.kind === "trace" ? "trace" : "capture");
       if (!current) delete recovered.revision;
       await storage.saveRecord(recovered, operation.kind === "trace" ? "trace" : "capture");
       return storage.operations.checkpoint(operation, {
@@ -205,13 +209,16 @@ export async function resumeOperation(storage: FileStorage, id: string): Promise
         await storage.saveRecord(reduced);
       }
     } else if (current) await storage.removeRecord(current.id, current.revision);
+    const coverageIncomplete = application.plan.scope === "recorded-effects" && !!application.plan.coverageGaps?.length;
     return storage.operations.checkpoint(operation, {
-      stage: operation.kind === "replace" ? "partial" : "completed",
+      stage: operation.kind === "replace" || coverageIncomplete ? "partial" : "completed",
       checkpoint: reduced,
       reason:
         operation.kind === "replace"
           ? "previous cleanup reconciled; replacement installer was not rerun"
-          : "requested cleanup scope reconciled without repeating completed actions",
+          : coverageIncomplete
+            ? "tracked actions reconciled; capture gaps leave the requested scope unresolved"
+            : "requested cleanup scope reconciled without repeating completed actions",
     });
   }, true);
 }

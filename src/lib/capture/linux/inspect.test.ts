@@ -112,7 +112,8 @@ describe("linux capture baseline: backup exclusions", () => {
     await mkdir(documents, { recursive: true });
     await writeFile(file, "project\n");
 
-    const { baseline, beforeImages } = await captureBaseline([documents], {
+    const { baseline, beforeImages } = await captureBaseline([home, documents], {
+      home,
       backups: { enabled: true, sizeLimitBytes: 1024 },
     });
 

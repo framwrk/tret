@@ -341,7 +341,7 @@ printf 'excluded\\n' >> "$HOME/.capture-excluded"
         expect(readFileSync(saved.executable, "utf8")).toContain("--flavor strict");
       }
 
-      const removed = await runCliResult(["uninstall", original.id, "--json", "--yes", ...(limit === 8 ? ["--approved-only"] : [])], home);
+      const removed = await runCliResult(["uninstall", original.id, "--json", "--yes", "--approved-only"], home);
       expect(removed.code).toBe(0);
       expect(readFileSync(small, "utf8")).toBe("before\n");
       expect(readFileSync(deleted, "utf8")).toBe("gone\n");
@@ -400,11 +400,11 @@ describe("uninstall selector output", () => {
       }),
     ]);
 
-    const result = await runCliResult(["uninstall", "rec-human", "--yes"], home);
+    const result = await runCliResult(["uninstall", "rec-human", "--yes", "--approved-only"], home);
     expect(result.code).toBe(0);
     expect(existsSync(binary)).toBe(false);
     const output = runLogText(home);
-    expect(output).toContain("completed recorded-effects cleanup for mytool-human");
+    expect(output).toContain("completed approved-effects cleanup for mytool-human");
     expect(output).not.toContain("removed rec-human");
   });
 
@@ -422,7 +422,7 @@ describe("uninstall selector output", () => {
       }),
     ]);
 
-    const result = await runCliResult(["--json", "uninstall", "rec-json", "--yes"], home);
+    const result = await runCliResult(["--json", "uninstall", "rec-json", "--yes", "--approved-only"], home);
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,

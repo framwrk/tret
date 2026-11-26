@@ -188,21 +188,28 @@ for (const target of ["lock", "original"] as const) {
         `import * as fs from "node:fs";
 import { mock } from "bun:test";
 const real = { ...fs };
-const paths = new Map();
 const target = ${JSON.stringify(target)};
 const phase = ${JSON.stringify(phase)};
 let active = false;
 let injected = false;
 let partial = false;
-const selected = (fd) => target === "lock" ? paths.get(fd)?.endsWith(".lock") : paths.get(fd)?.includes(".legacy-v2-");
+const dir = process.argv[2] + "/.tret";
+const selected = (fd) => {
+  const file = real.readdirSync(dir).find((name) => target === "lock" ? name === "records.json.lock" : name.includes(".legacy-v2-"));
+  if (!file) return false;
+  const descriptor = real.fstatSync(fd, { bigint: true });
+  const named = real.lstatSync(dir + "/" + file, { bigint: true });
+  if (descriptor.dev !== named.dev || descriptor.ino !== named.ino) return false;
+  active = true;
+  return true;
+};
 const fail = () => { injected = true; throw new Error("synthetic exclusive-write failure"); };
 mock.module("node:fs", () => ({
   ...real,
-  openSync: (...args) => { const fd = real.openSync(...args); paths.set(fd, args[0]); if (selected(fd)) active = true; return fd; },
-  closeSync: (fd) => { paths.delete(fd); return real.closeSync(fd); },
-  fchmodSync: (fd, mode) => { if (!injected && selected(fd) && phase === "chmod") fail(); return real.fchmodSync(fd, mode); },
+  fchmodSync: (fd, mode) => { if (!injected && phase === "chmod" && selected(fd)) fail(); return real.fchmodSync(fd, mode); },
   writeSync: (fd, bytes, offset = 0, length = bytes.length - offset) => {
-    if (!injected && selected(fd) && phase === "write") {
+    if (!injected && phase === "directory-flush") selected(fd);
+    if (!injected && phase === "write" && selected(fd)) {
       if (partial) fail();
       partial = true;
       return real.writeSync(fd, bytes, offset, Math.min(2, length));
@@ -210,7 +217,7 @@ mock.module("node:fs", () => ({
     return real.writeSync(fd, bytes, offset, length);
   },
   fsyncSync: (fd) => {
-    if (!injected && active && ((phase === "file-flush" && selected(fd)) || (phase === "directory-flush" && real.fstatSync(fd).isDirectory()))) fail();
+    if (!injected && ((phase === "file-flush" && selected(fd)) || (phase === "directory-flush" && active && real.fstatSync(fd).isDirectory()))) fail();
     return real.fsyncSync(fd);
   },
 }));
@@ -413,4 +420,34 @@ catch (error) { if (error.message !== "synthetic storage full") throw error; }
   );
   expect(readFileSync(join(root, "records.json"), "utf8")).toBe("original");
   expect(readdirSync(root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+});
+
+test("an atomic write refuses to publish through a substituted parent", async () => {
+  const root = home();
+  await probe(root, `import * as fs from "node:fs";
+import { mock } from "bun:test";
+const root = process.argv[2];
+const parent = root + "/parent";
+const outside = root + "/unrelated";
+fs.mkdirSync(parent);
+fs.mkdirSync(outside);
+fs.writeFileSync(parent + "/records.json", "original");
+fs.writeFileSync(outside + "/records.json", "sentinel");
+const real = { ...fs };
+let swapped = false;
+mock.module("node:fs", () => ({ ...real, writeSync: (...args) => {
+  if (!swapped) {
+    swapped = true;
+    real.renameSync(parent, root + "/moved");
+    real.symlinkSync(outside, parent);
+  }
+  return real.writeSync(...args);
+} }));
+const { writeFileAtomic } = await import(${JSON.stringify(atomic)});
+try { writeFileAtomic(parent + "/records.json", "replacement", 0o600); throw new Error("expected refusal"); }
+catch (error) { if (!error.message.includes("atomic write parent changed")) throw error; }
+`);
+  expect(readFileSync(join(root, "moved", "records.json"), "utf8")).toBe("original");
+  expect(readFileSync(join(root, "unrelated", "records.json"), "utf8")).toBe("sentinel");
+  expect(readdirSync(join(root, "moved"))).toEqual(["records.json"]);
 });

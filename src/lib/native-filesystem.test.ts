@@ -1,6 +1,6 @@
 import { NativeDirectory, nativeParent } from "./native-filesystem";
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -96,6 +96,20 @@ test("special nodes are inspected without blocking and cannot be hashed", () => 
     expect(() => directory.hash(name, state)).toThrow("requires a regular file");
     expect(directory.inspect("absent")).toBeUndefined();
     expect(() => directory.inspect("../outside")).toThrow("one path component");
+  } finally {
+    directory.close();
+  }
+});
+
+test("exclusive creation starts with private permission bits before chmod", () => {
+  const directory = new NativeDirectory(fixture());
+  try {
+    const fd = directory.openExclusive("private");
+    try {
+      expect(fstatSync(fd).mode & 0o7777).toBe(0o600 & ~process.umask());
+    } finally {
+      closeSync(fd);
+    }
   } finally {
     directory.close();
   }

@@ -117,6 +117,8 @@ tret recover
   restoration, shared claims and unsupported scopes refuse before any target changes
   (exit `5`). `--approved-only` explicitly narrows the scope and names retained effects;
   those effects and their record remain available after the executable is gone.
+  If full recorded-scope cleanup has capture gaps, it exits `1` with a receipt
+  even when every tracked action completes.
 - A dry-run uses the same preflight as apply. Restore requires a valid before-image;
   a stored reference alone is insufficient. Native application uses pinned directory
   descriptors, private staging and no-replace renames. Unsupported capabilities refuse work.

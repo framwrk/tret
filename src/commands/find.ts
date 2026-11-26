@@ -1,5 +1,6 @@
 import { caseSensitiveForPaths, currentPlatform, processPrivilege } from "../lib/platform";
 import { detectManagedInstall, withoutManagedInstallPaths } from "../lib/managed-install";
+import { emitJson, isJsonMode } from "../lib/json-output";
 import { findRelated, relatedSearchRoots } from "../lib/related";
 import { CaptureBudget } from "../lib/capture/budget";
 import { EXIT_USAGE } from "../constants";
@@ -50,16 +51,10 @@ export async function find(name: string | undefined): Promise<void> {
   const platform = currentPlatform();
   const budget = new CaptureBudget();
   const paths = findRelated(name, executable, platform, budget);
-  log(`found ${paths.length} files and folders for ${name}`);
-  for (const path of paths) {
-    log(`\t${path}`);
-  }
-
   const installedAt = new Date().toISOString();
   // Inventory descendants under the same budget; unavailable fingerprints remain unknown,
   // and every candidate still needs separate object approval before cleanup.
   const found = adoptedEntries(paths, budget);
-  if (found.length > paths.length) log(`\tinventoried ${found.length} paths inside those folders`);
   // Recognized manager/layout scopes remain unresolved; discovery cannot authorize their cleanup.
   const managedBy = detectManagedPackage(executable, found);
   const managedInstall = detectManagedInstall(executable, found);
@@ -81,8 +76,8 @@ export async function find(name: string | undefined): Promise<void> {
     capture: {
       backend: "find",
       completeness: "heuristic",
-      segments: [{ kind: "find", startedAt: installedAt, resources, roots: [...new Set([executable, ...relatedSearchRoots(platform)])].sort(),
-        partialReason: ["adopted by tret find: no install journal exists", ...resources.losses].join("; ") }],
+      segments: [{ kind: "find", backend: "find", startedAt: installedAt, endedAt: installedAt, resources, roots: [...new Set([executable, ...relatedSearchRoots(platform)])].sort(),
+        partialReason: ["observed by tret find: no install journal exists", ...resources.losses].join("; ") }],
     },
     privilege: processPrivilege(),
     // Every adopted path is fingerprinted in this record, so the case flag is probed over all of
@@ -96,7 +91,13 @@ export async function find(name: string | undefined): Promise<void> {
   };
 
   await storage.saveRecord(record);
-  log(`recorded ${name}`);
+  if (isJsonMode()) {
+    emitJson({ ok: true, command: "find", tool: name, id: record.id, candidates: owned, cleanupAuthority: "none", resources });
+    return;
+  }
+  log(`recorded ${owned.length} candidate paths for ${name}`);
+  for (const entry of owned) log(`\t${entry.path} (${entry.kind})`);
+  log(`use tret approve ${record.id} <path> --remove to authorize an exact candidate`);
 }
 
 function message(error: unknown): string {

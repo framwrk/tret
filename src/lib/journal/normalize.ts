@@ -30,6 +30,7 @@ type PathState = {
   /** A change that carries no content hash (mode-only), tracked so it still reads as a mutation. */
   modeChanged: boolean;
   namespaceChanged?: boolean;
+  finalSampled?: boolean;
 };
 
 /**
@@ -80,7 +81,21 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
 
   const handleRename = (event: RenameEvent): void => {
     const samePath = keyFor(event.from) === keyFor(event.to);
-    if (samePath && (event.semantics === undefined || (event.from === event.to && event.semantics === "exchange"))) return;
+    if (event.from === event.to && event.semantics !== "uncertain") return;
+    if (samePath && event.from !== event.to) {
+      const path = event.inScope === "from" ? event.from : event.to;
+      const state = stateFor(path);
+      const after = event.inScope === "from" ? event.sourceAfter : event.after;
+      state.initial = { kind: "unknown" };
+      state.current = after === null ? null : after ? nodeFrom(after) : { kind: "unknown" };
+      state.namespaceChanged = true;
+      diagnostics.push({
+        code: "unsupported",
+        message: "case-only rename requires namespace reconciliation",
+        paths: [event.from, event.to],
+      });
+      return;
+    }
     if (event.semantics) {
       const uncertain = event.semantics === "uncertain";
       const update = (path: AbsolutePath, before: NodeMetadata | null | undefined, after: NodeMetadata | null | undefined) => {
@@ -128,6 +143,20 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
   const events = [...journal.events].sort((a, b) => a.seq - b.seq);
   for (const event of events) {
     switch (event.type) {
+      case "observation": {
+        const state = stateFor(event.path);
+        state.initial = { kind: "unknown" };
+        state.current = event.after === null ? null : nodeFrom(event.after);
+        state.finalSampled = true;
+        state.namespaceChanged = true;
+        const messages = {
+          "rename-descendant": "a directory move left a descendant to reconcile",
+          "removal-reoccupied": "a path observed removed was present at the end of capture",
+          "baseline-unknown": "the final object was observed without a known baseline",
+        };
+        diagnostics.push({ code: "unsupported", message: messages[event.reason], paths: [event.path] });
+        break;
+      }
       case "create": {
         const state = stateFor(event.path);
         if (state.initial === undefined) state.initial = null;
@@ -227,8 +256,8 @@ export function normalizeJournal(input: NormalizeInput): NormalizedEffects {
     for (let index = 1; index < components.length - 1; index++) {
       ancestor += "/" + components[index];
       if (uncertainDirectories.has(ancestor)) {
-        if (state.initial == null) state.initial = { kind: "unknown" };
-        state.current = { kind: "unknown" };
+        state.initial = { kind: "unknown" };
+        if (!state.finalSampled) state.current = { kind: "unknown" };
         state.namespaceChanged = true;
         break;
       }

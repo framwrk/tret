@@ -125,7 +125,7 @@ test("native file exchange recovers two mutations without replay and restores ea
   expect((await cli(home, ["uninstall", "exchange", "--yes"])).code).toBe(5);
   expect((await cli(home, ["approve", "exchange", a, "--restore", "--yes"])).code).toBe(0);
   expect((await cli(home, ["approve", "exchange", b, "--restore", "--yes"])).code).toBe(0);
-  const removed = await cli(home, ["uninstall", "exchange", "--yes"]);
+  const removed = await cli(home, ["uninstall", "exchange", "--yes", "--approved-only"]);
   expect(removed).toMatchObject({ code: 0 });
   expect(readFileSync(a, "utf8")).toBe("original A");
   expect(statSync(a).mode & 0o777).toBe(0o640);
@@ -153,8 +153,8 @@ test.each(["symlink", "directory"])("native %s exchanges preserve both names wit
     backups: { enabled: false, sizeLimitBytes: 1024 },
   });
   expect(effects.owned).toEqual([]);
-  expect(effects.deleted).toEqual([]);
-  expect(effects.mutated.map((entry) => entry.path)).toEqual([a, b]);
+  expect(effects.deleted).toEqual(kind === "directory" ? [{ path: join(a, "child") }] : []);
+  expect(effects.mutated.map((entry) => entry.path)).toEqual(kind === "directory" ? [a, b, join(b, "child")] : [a, b]);
   expect(effects.mutated.every((entry) => entry.beforeBlob === undefined)).toBe(true);
   if (kind === "directory") expect(readFileSync(join(b, "child"), "utf8")).toBe("keep me");
 });

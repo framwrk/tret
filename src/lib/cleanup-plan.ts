@@ -53,7 +53,19 @@ export async function buildCleanupPlan(record: RecordV3, records: RecordV3[], op
           : action,
       )
     : selected;
+  const coverageGaps = new Set<string>();
+  if (record.capture.completeness !== "complete") coverageGaps.add(`capture coverage: ${record.capture.completeness}`);
+  for (const segment of record.capture.segments) {
+    if (!segment.endedAt) coverageGaps.add(`${segment.kind} observation window did not close`);
+    if (segment.partialReason) coverageGaps.add(segment.partialReason);
+    for (const loss of segment.resources?.losses ?? []) coverageGaps.add(loss);
+    for (const entry of segment.normalization?.entries ?? []) {
+      if (entry.code === "coverage" || entry.code === "unsupported") coverageGaps.add(entry.message);
+    }
+    if (segment.normalization?.omitted) coverageGaps.add("some normalization diagnostics were omitted");
+  }
   const plan: UninstallPlan = {
+    coverageGaps: [...coverageGaps],
     ...fullPlan,
     actions,
     retained,

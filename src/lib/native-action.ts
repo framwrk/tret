@@ -78,12 +78,7 @@ export async function applyNativeAction(options: NativeActionOptions): Promise<N
   try {
     if (receipt.path !== expected.path || !/^\.tret-stage-[0-9a-f-]{36}$/.test(receipt.stageName))
       throw new Error("invalid native recovery cursor");
-    if (!(["dev", "ino", "kind", "mode", "uid", "gid"] as const).every((key) => parent.identity[key] === expected.parent[key]))
-      throw new Error("approved parent directory changed");
-    const ancestors = { ...expected.ancestors };
-    delete ancestors[expected.path];
-    if (!sameFilesystemIdentity(ancestors, filesystemIdentity(dirname(expected.path))))
-      throw new Error("approved ancestor chain changed");
+    verifyParent();
 
     if (receipt.step === "finished") {
       verifyPostcondition();
@@ -94,6 +89,7 @@ export async function applyNativeAction(options: NativeActionOptions): Promise<N
       // No namespace change precedes the initial durable cursor.
       verifyCaptured(parent, name, approval, true);
       await persist({});
+      verifyParent();
       stage = parent.createDirectory(receipt.stageName);
       parent.sync();
       await persist({ step: "staged", directory: stage.identity });
@@ -105,6 +101,7 @@ export async function applyNativeAction(options: NativeActionOptions): Promise<N
     }
 
     if (receipt.step === "staged") {
+      verifyParent();
       if (expected.node && !stage.inspect("original")) {
         verifyCaptured(parent, name, approval, true);
         parent.moveExclusive(name, stage, "original");
@@ -115,6 +112,7 @@ export async function applyNativeAction(options: NativeActionOptions): Promise<N
       await persist({ step: "quarantined" });
     }
 
+    verifyParent();
     if (approval.action === "remove") {
       if (receipt.step !== "quarantined" && receipt.step !== "committed") throw new Error("unexpected removal recovery stage");
       const original = stage.inspect("original");
@@ -134,6 +132,7 @@ export async function applyNativeAction(options: NativeActionOptions): Promise<N
         await persist({ step: "replacement-staged", replacement });
       }
       if (receipt.step === "replacement-staged") {
+        verifyParent();
         if (!receipt.replacement) throw new Error("replacement identity is missing");
         const staged = stage.inspect("replacement");
         if (staged) {
@@ -155,8 +154,11 @@ export async function applyNativeAction(options: NativeActionOptions): Promise<N
     }
     verifyPostcondition();
     await persist({ step: "finished" });
-    // Only a now-empty private directory is removed. Unknown children are never recursed.
-    parent.unlink(receipt.stageName, "directory");
+    verifyParent();
+    const namedStage = parent.inspect(receipt.stageName);
+    if (namedStage && (namedStage.dev !== stage.identity.dev || namedStage.ino !== stage.identity.ino))
+      throw new Error("private staging name was substituted");
+    if (namedStage) parent.unlink(receipt.stageName, "directory");
     parent.sync();
     return receipt;
   } catch (error) {
@@ -185,16 +187,18 @@ export async function applyNativeAction(options: NativeActionOptions): Promise<N
     parent.close();
   }
 
-  function verifyPostcondition(): void {
+  function verifyParent(): void {
     const currentParent = descriptorIdentity(parent.fd);
     const ancestors = { ...expected.ancestors };
     delete ancestors[expected.path];
-    if (
-      !(["dev", "ino", "kind", "mode", "uid", "gid"] as const).every((key) => currentParent[key] === expected.parent[key]) ||
-      !sameFilesystemIdentity(ancestors, filesystemIdentity(dirname(expected.path)))
-    ) {
+    if (!(["dev", "ino", "kind", "mode", "uid", "gid"] as const).every((key) => currentParent[key] === expected.parent[key]))
+      throw new Error("approved parent directory changed");
+    if (!sameFilesystemIdentity(ancestors, filesystemIdentity(dirname(expected.path))))
       throw new Error("ancestor namespace changed during application; the new namespace was preserved");
-    }
+  }
+
+  function verifyPostcondition(): void {
+    verifyParent();
     const actual = parent.inspect(name);
     if (approval.action === "remove") {
       if (actual) throw new Error("removed name was reoccupied; the new object was preserved");

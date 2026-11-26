@@ -1,4 +1,3 @@
-import type { AbsolutePath, OwnedKind } from "../../../types";
 import type { Baseline, FsInspector, NodeInfo } from "./inspect";
 import type {
   DirectoryMetadata,
@@ -9,7 +8,8 @@ import type {
   SymlinkMetadata,
 } from "../events";
 import { basename, dirname } from "node:path";
-import { hasExcludedAncestor, inRoots, normalizeAbsolutePath } from "./paths";
+import { inRoots, linuxObservationExcluded, normalizeAbsolutePath } from "./paths";
+import type { AbsolutePath } from "../../../types";
 import type { CaptureBudget } from "../budget";
 import type { TracerResult } from "./raw";
 import { privateStateFilter } from "../self-state";
@@ -30,6 +30,7 @@ export type ReconstructInput = {
   /** Prefixes preserve live-kind/order state while avoiding repeated content hashing. */
   state?: ReconstructState;
   metadataOnly?: boolean;
+  home?: string;
   budget?: CaptureBudget;
   traced: TracerResult;
   inspector: FsInspector;
@@ -64,7 +65,8 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
     if (diagnostics.length < 32) diagnostics.push(bounded);
     else if (diagnostics.length === 32) diagnostics.push("additional reconstruction diagnostics omitted");
   };
-  const privatePath = privateStateFilter();
+  const privatePath = privateStateFilter(input.home);
+  const outsideScope = linuxObservationExcluded(roots, input.home);
   const excluded = (path: string) => privatePath(path) || inRoots(path, traced.excludedRoots ?? []);
   const inspector: FsInspector = {
     resolve: (path) => sourceInspector.resolve(path),
@@ -77,6 +79,8 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
   };
   const live = input.state?.live ?? new Map<AbsolutePath, LiveKind>();
   const resolved = new Map<AbsolutePath, AbsolutePath>();
+  const lastRemovals = new Set<AbsolutePath>();
+  const movedDirectories = new Map<AbsolutePath, Set<AbsolutePath>>();
   let seq = input.state?.nextSequence ?? 0;
 
   const ordered = traced.records
@@ -115,8 +119,8 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
     }
 
     if (record.op === "rename") {
-      const fromCheck = await checkPaths([record.from], inspector, roots, resolvedRoots, resolved, excluded);
-      const toCheck = await checkPaths([record.to], inspector, roots, resolvedRoots, resolved, excluded);
+      const fromCheck = await checkPaths([record.from], inspector, roots, resolvedRoots, resolved, excluded, outsideScope);
+      const toCheck = await checkPaths([record.to], inspector, roots, resolvedRoots, resolved, excluded, outsideScope);
       const from = fromCheck.kind === "ok" ? fromCheck.paths[0] : undefined;
       const to = toCheck.kind === "ok" ? toCheck.paths[0] : undefined;
       if (!from && !to) {
@@ -130,6 +134,14 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
       const after = to ? await sampledNode(inspector, to) : undefined;
       const directory = [before, destinationBefore, sourceAfter, after].some(node => node?.kind === "directory");
       const selfRename = from !== undefined && from === to && record.semantics !== "uncertain";
+      if (!selfRename) {
+        if (from) lastRemovals.delete(from);
+        if (to) lastRemovals.delete(to);
+        if (directory && !input.metadataOnly) {
+          if (from) rememberDirectory(from, to);
+          if (to) rememberDirectory(to, from);
+        }
+      }
       const uncertain = !selfRename && (!from || !to || record.semantics === "uncertain" || directory ||
         (record.semantics !== "exchange" && sourceAfter !== null));
       if (uncertain || record.semantics === "exchange") {
@@ -147,7 +159,7 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
         const wasCreated = live.get(from!) === "created";
         push({ type: "rename", from: from!, to: to!,
           before: before ?? (wasCreated ? undefined : { kind: "unknown" }), after,
-          destinationBefore: destinationBefore ?? (record.noReplace && !existedBefore(to!, baseline, live) ? null : undefined),
+          destinationBefore: destinationBefore ?? (record.noReplace && baseline.state?.(to!) === "absent" && !live.has(to!) ? null : undefined),
           pid: record.pid, at: record.at });
         live.delete(from!);
         live.set(to!, wasCreated ? "created" : "existing");
@@ -155,7 +167,7 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
       continue;
     }
 
-    const check = await checkPaths([record.path], inspector, roots, resolvedRoots, resolved, excluded);
+    const check = await checkPaths([record.path], inspector, roots, resolvedRoots, resolved, excluded, outsideScope);
     if (check.kind === "out-of-scope") continue;
     if (check.kind === "escaped") {
       note(`a traced path was dropped because it does not stay inside the observe roots: ${check.path}`);
@@ -167,6 +179,8 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
     }
     const target = { ...record, path: check.paths[0]! };
 
+    if (target.op !== "unlink" && target.op !== "rmdir" && (target.op !== "open" || target.created || target.truncated))
+      lastRemovals.delete(target.path);
     switch (target.op) {
       case "open": {
         const existed = existedBefore(target.path, baseline, live);
@@ -201,12 +215,14 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
         break;
       }
       case "unlink": {
-        const before = await beforeNode(inspector, target.path, baseline, live);
+        lastRemovals.add(target.path);
+        const before = baselineNode(baseline, target.path) ?? { kind: "unknown" as const };
         live.delete(target.path);
         push({ type: "unlink", path: target.path, before, pid: target.pid, at: target.at });
         break;
       }
       case "rmdir": {
+        lastRemovals.add(target.path);
         live.delete(target.path);
         push({ type: "rmdir", path: target.path, before: { kind: "directory" }, pid: target.pid, at: target.at });
         break;
@@ -236,6 +252,58 @@ export async function reconstruct(input: ReconstructInput): Promise<ReconstructR
     }
   }
 
+  if (!input.metadataOnly) {
+    for (const path of lastRemovals) {
+      const after = await sampledNode(inspector, path);
+      if (after === null) continue;
+      note("a removed name was present at final sampling; its reoccupation requires reconciliation");
+      push({ type: "observation", path, reason: "removal-reoccupied", before: baselineNode(baseline, path), after });
+    }
+    if (movedDirectories.size && baseline.paths) {
+      const directoryGroups = new Map<AbsolutePath, Set<AbsolutePath>>();
+      for (const root of movedDirectories.keys()) {
+        if (directoryGroups.has(root)) continue;
+        const group = new Set([root]);
+        for (const member of group) {
+          input.budget?.check();
+          directoryGroups.set(member, group);
+          for (const peer of movedDirectories.get(member) ?? []) group.add(peer);
+        }
+      }
+      const descendants = new Set<AbsolutePath>();
+      for (const path of baseline.paths()) {
+        input.budget?.check();
+        let parent = dirname(path);
+        while (parent !== "/") {
+          const peers = directoryGroups.get(parent);
+          if (peers) {
+            for (const peer of peers) {
+              input.budget?.inspect(path);
+              descendants.add(peer + path.slice(parent.length));
+            }
+          }
+          parent = dirname(parent);
+        }
+      }
+      for (const path of descendants) {
+        input.budget?.check();
+        const checked = await checkPaths([path], inspector, roots, resolvedRoots, resolved, excluded, outsideScope);
+        if (checked.kind !== "ok") continue;
+        const target = checked.paths[0]!;
+        const before = baselineNode(baseline, target);
+        const after = await sampledNode(inspector, target);
+        if (before === undefined && after === null) continue;
+        push({ type: "observation", path: target, reason: "rename-descendant", before, after });
+      }
+    }
+  }
+
+  function rememberDirectory(path: AbsolutePath, peer: AbsolutePath | undefined) {
+    const peers = movedDirectories.get(path) ?? new Set<AbsolutePath>();
+    if (peer) peers.add(peer);
+    movedDirectories.set(path, peers);
+  }
+
   return { events, diagnostics };
 }
 
@@ -262,12 +330,13 @@ async function checkPaths(
   resolvedRoots: { root: AbsolutePath; resolved: AbsolutePath }[],
   cache: Map<AbsolutePath, AbsolutePath>,
   excluded: (path: string) => boolean,
+  outsideScope: (path: string) => boolean,
 ): Promise<PathCheck> {
   const normalizedPaths: AbsolutePath[] = [];
   for (const raw of paths) {
     const normalized = normalizeAbsolutePath(raw);
     if (normalized === undefined || !inRoots(normalized, roots)) return { kind: "out-of-scope" };
-    if (hasExcludedAncestor(normalized)) return { kind: "out-of-scope" };
+    if (!raw.split("/").includes("..") && outsideScope(normalized)) return { kind: "out-of-scope" };
     // The observe-root node itself is an object even when its final component is a symlink.
     if (raw === normalized && roots.includes(raw) && !excluded(raw)) {
       normalizedPaths.push(raw);
@@ -283,11 +352,13 @@ async function checkPaths(
     if (candidate === undefined) return { kind: "unresolved", path: raw };
     const alias = resolvedRoots.find(({ resolved }) => inRoots(candidate!, [resolved]));
     if (!alias) return { kind: "escaped", path: raw };
-    if (hasExcludedAncestor(candidate) || excluded(candidate)) return { kind: "out-of-scope" };
+    if (excluded(candidate)) return { kind: "out-of-scope" };
     // Preserve the baseline's root spelling (/var versus /private/var), but never the raw
     // symlink/.. suffix: inspecting that lexical suffix could fingerprint an unrelated object.
     const suffix = alias.resolved === "/" ? candidate : candidate.slice(alias.resolved.length);
-    normalizedPaths.push(normalizeAbsolutePath(`${alias.root}/${suffix}`)!);
+    const scoped = normalizeAbsolutePath(`${alias.root}/${suffix}`)!;
+    if (outsideScope(scoped) || excluded(scoped)) return { kind: "out-of-scope" };
+    normalizedPaths.push(scoped);
   }
   return { kind: "ok", paths: normalizedPaths };
 }
@@ -353,42 +424,7 @@ function baselineFile(baseline: Baseline, path: AbsolutePath): FileMetadata | un
   return info === undefined || info.kind !== "file" ? undefined : fileMetadata(info);
 }
 
-/**
- * The before-state of a removal or rename source: the pre-window metadata the baseline captured
- * (backups enabled) when the path was not created in this window, else the current node when one
- * still exists, else the baseline kind (or a file fallback) so a temporary path still collapses.
- */
-async function beforeNode(
-  inspector: FsInspector,
-  path: AbsolutePath,
-  baseline: Baseline,
-  live: Map<AbsolutePath, LiveKind>,
-): Promise<NodeMetadata> {
-  const created = live.get(path) === "created";
-  const captured = created ? undefined : baseline.metadata(path);
-  const capturedNode = captured === undefined ? undefined : nodeMetadata(captured);
-  if (capturedNode !== undefined) return capturedNode;
-  const current = nodeMetadata(await inspector.inspect(path));
-  if (current !== undefined) return current;
-  const kind = created ? inferredKind(path, baseline) : (baseline.kind(path) ?? inferredKind(path, baseline));
-  return kindOnly(kind);
-}
 
-function inferredKind(path: AbsolutePath, baseline: Baseline): OwnedKind {
-  return baseline.kind(path) ?? "file";
-}
-
-function kindOnly(kind: OwnedKind): NodeMetadata {
-  switch (kind) {
-    case "directory":
-      return { kind: "directory" };
-    case "symlink":
-      return { kind: "symlink", target: "" };
-    case "file":
-    case "unknown":
-      return { kind: "file" };
-  }
-}
 
 function fileMetadata(info: Extract<NodeInfo, { kind: "file" }>): FileMetadata {
   const metadata: FileMetadata = { kind: "file" };

@@ -8,7 +8,7 @@
 // records this window's coverage next to it.
 
 import type { AbsolutePath, CaptureSegment, DeletedEntry, MutatedEntry, OwnedEntry, RecordV3 } from "../types";
-import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE } from "../constants";
+import { EXIT_AMBIGUOUS, EXIT_BLOCKED, EXIT_ERROR, EXIT_NOT_FOUND, EXIT_USAGE, VERSION } from "../constants";
 import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
 import { claimedByOthers, sharedClaim } from "../lib/uninstall-planner";
 import { confirm, log } from "../lib/utilities";
@@ -31,6 +31,7 @@ import { normalizeJournal } from "../lib/journal/normalize";
 import { prepareCapture } from "../lib/capture/preflight";
 import { runProgram } from "../lib/installer";
 import { runStoreOperation } from "../lib/command-operation";
+import { withTracedEvidence } from "../lib/records-v4";
 
 /** Why a path the trace saw was not merged into the record. */
 export type TraceSkipReason = "already-tracked" | "claimed-by-other";
@@ -254,7 +255,7 @@ export async function trace(
     operation = operationLog.checkpoint(operation, { stage: "captured", capture: {
       backend: window.journal.backend, completeness: window.journal.completeness,
       events: window.journal.events, ...(window.journal.resources ? { resources: window.journal.resources } : {}), ...(window.journal.partialReason ? { partialReason: window.journal.partialReason } : {}),
-    } });
+    }, execution: { ...operation.execution!, exitCode: window.value } });
   }
 
   const effects = normalizeJournal({
@@ -266,11 +267,19 @@ export async function trace(
 
   const merged = mergeTraceEffects(record, effects, records);
   const observations = traceObservations(record, effects, records);
-  const segment: CaptureSegment = { ...window.coverage.segment, observations, ...normalizationDetails(effects) };
-  const updated: RecordV3 = {
+  const segment: CaptureSegment = {
+    ...window.coverage.segment,
+    backend: window.coverage.backend,
+    captureEngineVersion: VERSION,
+    exitCode: window.value,
+    excludedRoots: roots.filter((root) => !window.coverage.roots.includes(root)),
+    observations,
+    ...normalizationDetails(effects),
+  };
+  const updated = withTracedEvidence({
     ...merged.record,
     capture: { ...record.capture, ...(window.captureError !== undefined ? { completeness: record.capture.completeness === "heuristic" ? "heuristic" as const : "partial" as const } : {}), segments: [...(record.capture.segments ?? []), segment] },
-  };
+  }, window.journal, "trace");
   if (operation && operationLog) operation = operationLog.checkpoint(operation, { checkpoint: updated, capture: { ...operation.capture!, observations, ...normalizationDetails(effects) } });
   await storage.saveRecord(updated, "trace");
   if (operation && operationLog) operationLog.checkpoint(operation, { stage: window.error !== undefined || window.captureError !== undefined || window.value !== 0 || capturePlan.budget.fatalError ? "partial" : "completed" });

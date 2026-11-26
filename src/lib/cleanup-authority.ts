@@ -1,8 +1,8 @@
 import { type FilesystemIdentity, filesystemIdentity, sameFilesystemIdentity } from "./filesystem-identity";
-import { type NodeIdentity, nativeParent, sameNode } from "./native-filesystem";
+import { type NodeIdentity, nativeParent, nativeRealpath, sameNode } from "./native-filesystem";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { currentPlatform } from "./platform";
 import { privateStateFilter } from "./capture/self-state";
-import { realpathSync } from "node:fs";
 
 export type CleanupSnapshot = {
   path: string;
@@ -21,7 +21,7 @@ export type CleanupApproval = {
 
 export function canonicalCandidate(path: string): string {
   try {
-    return join(realpathSync(dirname(path)), basename(path));
+    return join(nativeRealpath(dirname(path)), basename(path));
   } catch {
     return path;
   }
@@ -32,11 +32,13 @@ export function protectedCleanupPath(path: string, home = process.env.HOME): str
   if (!isAbsolute(path) || path.includes("\0") || path.split("/").includes("..")) return "unsafe path spelling";
   let canonical: string;
   try {
-    canonical = join(realpathSync(dirname(path)), basename(path));
+    canonical = join(nativeRealpath(dirname(path)), basename(path));
   } catch {
     return "parent cannot be resolved safely";
   }
+  const platform = currentPlatform();
   const protectedRoots = new Set([
+    ...platform.sharedAbsolute,
     "/",
     "/bin",
     "/sbin",
@@ -61,7 +63,7 @@ export function protectedCleanupPath(path: string, home = process.env.HOME): str
   if (home) {
     let actualHome: string;
     try {
-      actualHome = realpathSync(home);
+      actualHome = nativeRealpath(home);
     } catch {
       actualHome = resolve(home);
     }
@@ -76,6 +78,7 @@ export function protectedCleanupPath(path: string, home = process.env.HOME): str
         "bin",
         "Library",
         "Library/Application Support",
+        ...platform.sharedInHome,
       ]) {
         protectedRoots.add(join(root, suffix));
       }

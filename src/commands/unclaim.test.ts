@@ -248,7 +248,7 @@ describe("unclaim CLI", () => {
     expect(existsSync(path)).toBe(true);
 
     // The owner's plan applies as-is, with no --force, and removes only what it still owns.
-    const removed = await runCliResult(["uninstall", "othertool", "--yes", "--json"], home);
+    const removed = await runCliResult(["uninstall", "othertool", "--yes", "--approved-only", "--json"], home);
     expect(removed.code).toBe(0);
     expect(existsSync(path)).toBe(false);
   });

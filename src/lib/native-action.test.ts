@@ -9,6 +9,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -138,6 +139,7 @@ test("an ancestor swap during application preserves the new namespace and report
     }),
   ).rejects.toThrow("ancestor namespace changed");
   expect(readFileSync(join(unrelated, "file"), "utf8")).toBe("keep sentinel");
+  expect(readFileSync(join(root, "moved-parent", "file"), "utf8")).toBe("approved");
 });
 
 test.each([false, true])("recovery after SIGKILL verifies an already committed restore (later edit: %s)", async (edit) => {
@@ -185,3 +187,43 @@ test.each([false, true])("recovery after SIGKILL verifies an already committed r
     expect(readFileSync(path, "utf8")).toBe("before");
   }
 });
+
+test("a substituted staging directory is preserved at cleanup", async () => {
+  const root = fixture();
+  const path = join(root, "file");
+  writeFileSync(path, "approved");
+  let stage = "";
+  await expect(applyNativeAction({
+    approval: approval(path, "remove"),
+    checkpoint: async (receipt) => {
+      if (receipt.step !== "finished") return;
+      stage = join(root, receipt.stageName);
+      renameSync(stage, join(root, "original-stage"));
+      mkdirSync(stage);
+    },
+  })).rejects.toThrow("private staging name was substituted");
+  expect(existsSync(stage)).toBe(true);
+});
+
+test.skipIf(process.platform !== "linux" || !existsSync("/dev/shm"))(
+  "moving an ancestor onto a different device invalidates restoration approval",
+  async () => {
+    const root = fixture();
+    const outside = mkdtempSync("/dev/shm/tret-native-action-");
+    roots.push(outside);
+    const parent = join(root, "parent");
+    mkdirSync(parent);
+    const path = join(parent, "file");
+    writeFileSync(path, "approved");
+    writeFileSync(join(outside, "file"), "unrelated");
+    expect(statSync(parent, { bigint: true }).dev).not.toBe(statSync(outside, { bigint: true }).dev);
+    const decision = approval(path, "restore");
+    renameSync(parent, join(root, "old-parent"));
+    symlinkSync(outside, parent);
+    await expect(applyNativeAction({
+      approval: decision, bytes: new TextEncoder().encode("prior"), checkpoint: async () => {},
+    })).rejects.toThrow("approved parent directory changed");
+    expect(readFileSync(join(outside, "file"), "utf8")).toBe("unrelated");
+    expect(readFileSync(join(root, "old-parent", "file"), "utf8")).toBe("approved");
+  },
+);

@@ -58,6 +58,9 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   if (!approvedOnly && blockedShell.length) fail("uninstall-shell-unverified", `shell edits have no supported edit provenance or before-image: ${blockedShell.join(", ")}; manual reconciliation is required; ${name} is unchanged`, EXIT_BLOCKED);
   const scope = plan.scope!;
   const retained = plan.retained!;
+  const coverageGaps = plan.coverageGaps ?? [];
+  const coverageIncomplete = !approvedOnly && coverageGaps.length > 0;
+  const report = { scope, retained, coverageGaps };
   if (approvedOnly && plan.actions.length === 0 && (fullPlan.actions.length > 0 || retained.length > 0)) fail("uninstall-unapproved", "no current candidate has a cleanup approval; use tret approve <tool> <path> --remove or --restore", EXIT_BLOCKED);
 
   if (dryRun) {
@@ -68,7 +71,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
         dryRun: true,
         tool: name,
         id: record.id,
-        scope, retained, incomplete: plan.incomplete,
+        ...report, incomplete: plan.incomplete, expectedOutcome: plan.incomplete ? "blocked" : coverageIncomplete ? "partial" : "completed",
         actions: plan.actions.map((action) => {
           if (action.action !== "remove" && action.action !== "restore") return action;
           return { action: action.action, path: action.path, kind: action.kind };
@@ -92,15 +95,13 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   }
   if (plan.requiresSudo && process.getuid?.() !== 0) fail("uninstall-privilege", "the requested scope requires root privileges; no targets were changed", EXIT_BLOCKED);
 
-  const hasFileWork = plan.actions.length > 0;
-
-  if (!hasFileWork) {
+  if (plan.actions.length === 0 && !coverageIncomplete) {
     const emptyOperation = storage.operations.begin("uninstall", [record]);
     await storage.removeRecord(record.id, record.revision);
     storage.operations.checkpoint(emptyOperation, { stage: "completed", reason: "no recorded target actions; historical evidence retained" });
     await collectUnreferencedBlobs();
     if (isJsonMode()) {
-      emitJson({ ok: true, command: "uninstall", tool: name, id: record.id, removed: [], nothingToRemove: true });
+      emitJson({ ok: true, command: "uninstall", tool: name, id: record.id, ...report, trackedActionsCompleted: true, removed: [], nothingToRemove: true });
       return;
     }
     log(`removed the ${name} record; it had no tracked files`);
@@ -177,6 +178,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
           code: "uninstall-incomplete",
           message: "some paths were not removed and stay tracked; run tret uninstall again to retry",
         },
+        ...report, trackedActionsCompleted: false,
         requiresSudo: plan.requiresSudo,
         outcomes: result.outcomes,
         failedShell: [],
@@ -192,7 +194,12 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
   const remaining = reduceRecordForRetry(record, result);
   if (remaining.owned.length + remaining.mutated.length + remaining.deleted.length > 0 || retained.length > 0) await storage.saveRecord(remaining);
   else await storage.removeRecord(record.id, record.revision);
-  storage.operations.checkpoint(operation, { stage: "completed", checkpoint: remaining });
+  const coverageReason = "tracked actions completed; capture gaps leave the requested scope unresolved";
+  storage.operations.checkpoint(operation, {
+    stage: coverageIncomplete ? "partial" : "completed",
+    checkpoint: remaining,
+    ...(coverageIncomplete ? { reason: coverageReason } : {}),
+  });
   // Best-effort collection takes its own records lease and rechecks all references after removal.
   // A failed sweep never turns this successful uninstall into a failure.
   await collectUnreferencedBlobs();
@@ -200,18 +207,22 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
     const removed = result.outcomes.filter((outcome) => outcome.outcome === "removed").map((outcome) => outcome.path);
     const restored = result.outcomes.filter((outcome) => outcome.outcome === "restored").map((outcome) => outcome.path);
     emitJson({
-      ok: true,
+      ok: !coverageIncomplete,
       command: "uninstall",
       tool: name,
       id: record.id,
-      scope, retained,
+      ...report, trackedActionsCompleted: true,
+      ...(coverageIncomplete ? { error: { code: "uninstall-coverage", message: coverageReason }, receipt: operation.id } : {}),
       removed,
       restored,
       cleanedShell: [],
       outcomes: result.outcomes,
     });
+    if (coverageIncomplete) process.exit(EXIT_ERROR);
     return;
   }
+  for (const gap of coverageGaps) log(`\tcapture gap: ${gap}`);
+  if (coverageIncomplete) fail("uninstall-coverage", `${coverageReason}. Inspect the receipt with tret recover ${operation.id}`);
   log(`completed ${scope} cleanup for ${name}`);
   if (retained.length > 0) log(`\tretained ${retained.length} candidate effects outside the requested scope; inspect ${name} for details`);
 }
@@ -219,6 +230,7 @@ export async function uninstall(name: string | undefined, dryRun: boolean, yes: 
 /** Prints the same actions the real run will apply, with no side effects. */
 function printDryRun(name: string, plan: Awaited<ReturnType<VerifiedUninstallPlanner["plan"]>>): void {
   const lines = formatUninstallPlan(plan, "dry-run");
+  for (const gap of plan.coverageGaps ?? []) log(`\tcapture gap: ${gap}`);
   if (lines.length === 0) {
     log(`nothing tracked to remove for ${name}`);
     return;

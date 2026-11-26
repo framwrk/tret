@@ -4,6 +4,8 @@
 // The persistence layers depend on these so a crash can never leave a half-written records or blob
 // file in place of the last good one.
 
+import { NativeDirectory, type NodeIdentity, descriptorIdentity } from "./native-filesystem";
+import { basename, dirname } from "node:path";
 import {
   closeSync,
   constants,
@@ -14,11 +16,8 @@ import {
   mkdirSync,
   openSync,
   readSync,
-  renameSync,
-  rmSync,
   writeSync,
 } from "node:fs";
-import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
 /** Mode for a directory only its owner can read or traverse. */
@@ -134,37 +133,62 @@ export function writeFileAtomicPreservingParents(path: string, data: Uint8Array 
 }
 
 function writeAtomic(path: string, data: Uint8Array | string, mode: number): void {
-  const temp = temporaryPath(path);
-  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
-  try {
-    try {
-      writeAndFlush(fd, data, mode);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(temp, path);
-    flushDirectory(dirname(path));
-  } catch (error) {
-    rmSync(temp, { force: true });
-    throw error;
-  }
+  const name = basename(temporaryPath(path));
+  writeThroughParent(path, name, data, mode, (directory) => directory.replaceFile(name, basename(path)));
+}
+
+export function writeFileAtomicExclusive(path: string, data: Uint8Array | string, mode: number): void {
+  ensurePrivateDir(dirname(path));
+  const name = basename(temporaryPath(path));
+  writeThroughParent(path, name, data, mode, (directory) => directory.moveExclusive(name, directory, basename(path)));
 }
 
 /** Creates an original/recovery file once; an existing file or symlink is never overwritten. */
 export function writeFileExclusive(path: string, data: Uint8Array | string, mode: number): void {
   ensurePrivateDir(dirname(path));
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+  writeThroughParent(path, basename(path), data, mode);
+}
+
+function writeThroughParent(
+  path: string,
+  name: string,
+  data: Uint8Array | string,
+  mode: number,
+  publish?: (directory: NativeDirectory) => void,
+): void {
+  const parent = dirname(path);
+  const directory = new NativeDirectory(parent, "no-follow");
   try {
+    const fd = directory.openExclusive(name);
+    let identity: NodeIdentity | undefined;
     try {
-      writeAndFlush(fd, data, mode);
-    } finally {
-      closeSync(fd);
+      try {
+        identity = descriptorIdentity(fd);
+        writeAndFlush(fd, data, mode);
+      } finally {
+        closeSync(fd);
+      }
+      const named = lstatSync(parent, { bigint: true });
+      if (!named.isDirectory() || String(named.dev) !== directory.identity.dev || String(named.ino) !== directory.identity.ino)
+        throw new Error(`atomic write parent changed: ${parent}`);
+      if (!sameFile(directory.inspect(name), identity)) throw new Error("private write name changed before publication");
+      publish?.(directory);
+      directory.sync();
+    } catch (error) {
+      try {
+        if (identity && sameFile(directory.inspect(name), identity)) directory.unlink(name, "file");
+      } catch {
+        throw new AggregateError([error], `private staging could not be reconciled: ${name}`);
+      }
+      throw error;
     }
-    flushDirectory(dirname(path));
-  } catch (error) {
-    rmSync(path, { force: true });
-    throw error;
+  } finally {
+    directory.close();
   }
+}
+
+function sameFile(named: NodeIdentity | undefined, expected: NodeIdentity): boolean {
+  return named?.kind === "file" && named.dev === expected.dev && named.ino === expected.ino;
 }
 
 /** Reused recovery files must also be private and flushed before their source can be replaced. */

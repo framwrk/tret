@@ -1,8 +1,9 @@
 import type { AbsolutePath, OwnedKind } from "../../../types";
 import { CaptureBudget, CaptureBudgetError } from "../budget";
-import { EXCLUDED_PATHS, isExcludedDirName, isSensitiveBackupPath } from "../../../constants";
 import { basename, dirname, join } from "node:path";
 import { hashBoundedContent, readBoundedContent } from "../content";
+import { isExcludedDirName, isSensitiveBackupPath } from "../../../constants";
+import { linuxObservationExcluded, normalizeAbsolutePath } from "./paths";
 import { lstat, opendir, readlink } from "node:fs/promises";
 import type { BackupPolicy } from "../normalize";
 import type { BlobId } from "../../storage";
@@ -10,7 +11,6 @@ import type { CaptureBaselineEntry } from "../backend";
 import type { ContentReadOptions } from "../content";
 import { createHash } from "node:crypto";
 import { nativeRealpath } from "../../native-filesystem";
-import { normalizeAbsolutePath } from "./paths";
 import { privateStateFilter } from "../self-state";
 import { scanPresence } from "../scan-coverage";
 
@@ -163,6 +163,7 @@ export class FakeFsInspector implements FsInspector {
  */
 export interface Baseline {
   readonly diagnostics?: readonly string[];
+  paths?(): Iterable<AbsolutePath>;
   state?(path: AbsolutePath): "present" | "absent" | "unknown";
   /** Whether the path existed before the window started. */
   existed(path: AbsolutePath): boolean;
@@ -187,6 +188,10 @@ export class MemoryBaseline implements Baseline {
 
   existed(path: AbsolutePath): boolean {
     return this.entries.has(path);
+  }
+
+  paths(): Iterable<AbsolutePath> {
+    return this.entries.keys();
   }
 
   state(path: string): "present" | "absent" | "unknown" {
@@ -273,8 +278,9 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
   const baseline = new MemoryBaseline();
   const beforeImages = new Map<BlobId, Uint8Array>();
   const visited = new Set<AbsolutePath>();
-  const excluded = new Set(EXCLUDED_PATHS.map((path) => join(options.home ?? process.env.HOME ?? "", path)));
-  const privateState = privateStateFilter();
+  const outsideScope = linuxObservationExcluded(roots, options.home);
+  const privateState = privateStateFilter(options.home);
+  const excluded = (path: string) => privateState(path) || outsideScope(path);
   const backups = options.backups;
   const backup: BackupCapture | undefined =
     backups?.enabled === true
@@ -283,7 +289,7 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
 
   for (const root of [...new Set(roots)].sort((a, b) => b.length - a.length || a.localeCompare(b))) {
     if (visited.has(root)) continue;
-    if (privateState(root)) { baseline.exclude(root); continue; }
+    if (excluded(root)) { baseline.exclude(root); continue; }
     budget.inspect(root);
     const info = await inspector.inspect(root, { hash: false });
     if (info.kind === "missing") { baseline.missing(root); continue; }
@@ -291,10 +297,12 @@ export async function captureBaseline(roots: AbsolutePath[], options: BaselineOp
     if (info.kind === "file" && backup !== undefined) {
       visited.add(root);
       await recordFile(root, info, baseline, backup);
+    } else if (info.kind === "symlink") {
+      baseline.setNode(root, info);
     } else {
       baseline.set(root, kindOf(info));
     }
-    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited, excluded, privateState, budget);
+    if (info.kind === "directory") await walk(root, baseline, inspector, backup, visited, excluded, budget);
     else visited.add(root);
   }
   budget.check();
@@ -316,8 +324,7 @@ async function walk(
   inspector: FsInspector,
   backup: BackupCapture | undefined,
   visited: Set<AbsolutePath>,
-  excluded: ReadonlySet<AbsolutePath>,
-  privateState: (path: string) => boolean,
+  excluded: (path: string) => boolean,
   budget: CaptureBudget,
   depth = 0,
 ): Promise<void> {
@@ -332,13 +339,13 @@ async function walk(
     budget.check();
     const path = join(dir, entry.name);
     if (visited.has(path)) continue;
-    if (excluded.has(path) || privateState(path)) { baseline.exclude(path); continue; }
+    if (excluded(path)) { baseline.exclude(path); continue; }
     budget.inspect(path);
     if (entry.isDirectory()) {
       baseline.set(path, "directory");
       // Record excluded directories but never descend, so shared churn trees cost one entry and no
       // before-image reads. An explicit root nested below this directory can still be walked separately.
-      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited, excluded, privateState, budget, depth + 1);
+      if (!isExcludedDirName(entry.name)) await walk(path, baseline, inspector, backup, visited, excluded, budget, depth + 1);
       else visited.add(path);
     } else {
       visited.add(path);
@@ -346,8 +353,11 @@ async function walk(
         await recordFile(path, await inspector.inspect(path, { hash: false }), baseline, backup);
         continue;
       }
-      if (entry.isSymbolicLink()) baseline.set(path, "symlink");
-      else if (entry.isFile()) baseline.set(path, "file");
+      if (entry.isSymbolicLink()) {
+        const link = await inspector.inspect(path, { hash: false });
+        if (link.kind === "symlink") baseline.setNode(path, link);
+        else baseline.unknown(path, "symlink changed or could not be read");
+      } else if (entry.isFile()) baseline.set(path, "file");
       else baseline.unknown(path, "unsupported node type");
     }
     }

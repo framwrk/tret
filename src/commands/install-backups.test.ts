@@ -123,7 +123,7 @@ describe("install --backup -> uninstall restores", () => {
       expect(readFileSync(keepPath(home), "utf8")).toBe("installed-config\n");
       expect(modeOf(keepPath(home))).toBe(0o600);
 
-      expect(await runCli(["uninstall", "mytool", "--yes"], home)).toBe(0);
+      expect(await runCli(["uninstall", "mytool", "--yes", "--approved-only"], home)).toBe(0);
       expect(readFileSync(keepPath(home), "utf8")).toBe("original-config\n");
       expect(readFileSync(gonePath(home), "utf8")).toBe("original-gone\n");
       // Contents, modes, and the shared parent directory all come back as they were.

@@ -20,6 +20,7 @@ export async function prepareCapture(options: {
   primary: CaptureBackend;
   fallback: CaptureBackend;
   roots: string[];
+  omittedRoots?: string[];
   backups: BackupPolicy;
   enabled?: boolean;
   childLaunch?: boolean;
@@ -82,6 +83,7 @@ export async function prepareCapture(options: {
     log(`\tlive event checkpoints: at most ${MAX_LIVE_CHECKPOINTS} changed prefixes, every ${LIVE_CHECKPOINT_INTERVAL_MS}ms; snapshot-only observation keeps its baseline until close`);
     if (!plan.backend || plan.backend.completeness !== "complete" || plan.backend !== options.primary) log(`\t${detail}`);
     for (const root of plan.roots) log(`\tobserve ${root}`);
+    for (const root of options.omittedRoots ?? []) log(`\tomitted root entry: ${root}`);
     for (const root of options.roots.filter((root) => !plan.roots.includes(root))) log(`\texcluded from fallback: ${root}`);
     log("\tprivate Tret state and reserved staging are excluded; sensitive-name exclusions apply to backup content");
     log(

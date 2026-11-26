@@ -1,5 +1,6 @@
 import type { EffectEvidence, RecordFileV4, RecordV3, RecordV4 } from "../types";
 import { RecordMigrationError, isV3Record, migrateRecordFileV2ToV3 } from "./records";
+import type { Journal } from "./capture/events";
 import { validCleanupApproval } from "./cleanup-authority";
 
 /** The digest binds evidence to an exact candidate, not just to a mutable path or tool name. */
@@ -62,6 +63,36 @@ export function observedRecord(
   };
 }
 
+export function withTracedEvidence(record: RecordV3, journal: Journal, origin: "capture" | "trace"): RecordV3 {
+  if (journal.backend !== "linux-strace") return record;
+  const events = new Map<string, NonNullable<EffectEvidence["tracedEvent"]>>();
+  for (const event of journal.events) {
+    if (event.pid === undefined || event.type === "observation") continue;
+    const evidence = {
+      pid: event.pid,
+      at: event.at,
+      observation: event.type === "create" || event.type === "mkdir" || event.type === "symlink"
+        ? "creation" as const
+        : "change" as const,
+    };
+    const paths = event.type === "rename"
+      ? event.inScope === "from" ? [event.from] : event.inScope === "to" ? [event.to] : [event.from, event.to]
+      : [event.path];
+    for (const path of paths) {
+      if (!events.has(path)) events.set(path, evidence);
+    }
+  }
+  const prior = new Set(record.evidence?.map((entry) => entry.id));
+  const normalized = observedRecord(record, record.revision ?? 0, origin, true);
+  return {
+    ...record,
+    evidence: normalized.evidence.map((entry) => {
+      const tracedEvent = events.get(entry.path);
+      return tracedEvent && !prior.has(entry.id) ? { ...entry, tracedEvent } : entry;
+    }),
+  };
+}
+
 /** Pure read normalization. Only the writer may retain originals and commit a migration. */
 export function readRecordFile(value: unknown): RecordFileV4 {
   if (object(value) && value.version === 4) return validateRecordFileV4(value);
@@ -118,6 +149,12 @@ export function validateRecordFileV4(value: unknown): RecordFileV4 {
       if (!["legacy-v2", "legacy-v3", "capture", "trace", "find", "adoption"].includes(String(entry.origin)))
         issues.push(`${field}.origin is invalid`);
       if (entry.attribution !== "unknown" && entry.attribution !== "observed") issues.push(`${field}.attribution is invalid`);
+      if (entry.tracedEvent !== undefined) {
+        const event = entry.tracedEvent;
+        if (!object(event) || !Number.isSafeInteger(event.pid) || Number(event.pid) < 0 || !Number.isFinite(event.at)
+          || (event.observation !== "creation" && event.observation !== "change"))
+          issues.push(`${field}.tracedEvent is invalid`);
+      }
       // Future authorization kinds require an explicit validator and application implementation.
       if (
         entry.authority !== "none" &&

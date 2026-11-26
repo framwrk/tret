@@ -1,9 +1,8 @@
 import type { AbsolutePath, RecordV3 } from "../types";
+import { nativeParent, nativeRealpath } from "./native-filesystem";
 import { resolve, sep } from "node:path";
 import { canonicalCandidate } from "./cleanup-authority";
 import { managedPackageRemovalScope } from "./package-manager";
-import { nativeParent } from "./native-filesystem";
-import { realpathSync } from "node:fs";
 
 /** One record path that would be affected by a delegated removal. */
 export type DelegatedRemovalConflict = {
@@ -22,7 +21,7 @@ type RecordClaim = {
 export function cleanupClaimChecker(records: readonly RecordV3[], self: RecordV3, home = process.env.HOME): (path: string) => boolean {
   const others = records.filter((record) => record.id !== self.id);
   const resolvedScope = (path: string): string => {
-    try { return realpathSync(path); } catch { return canonicalCandidate(path); }
+    try { return nativeRealpath(path); } catch { return canonicalCandidate(path); }
   };
   const canonical = others.map((record) => ({
     ...record,

@@ -196,16 +196,14 @@ export function fileStampChanged(before: ScopedNode, after: ScopedNode): boolean
 }
 
 /**
- * Files whose content must be hashed at stop: created files and files whose stamps changed. The
- * fallback deliberately does not hash at start, so a plain edit keeps no before-hash and is recorded
- * as a non-restorable mutation (see `docs/capture/macos-capture.md`).
+ * Files to fingerprint on close, including files with a start fingerprint from an opt-in backup.
  */
 export function filesToHash(before: ScopedSnapshot, after: ScopedSnapshot): AbsolutePath[] {
   const paths: AbsolutePath[] = [];
   for (const [key, node] of after.entries) {
     if (node.kind !== "file") continue;
     const prior = before.entries.get(key);
-    if (prior === undefined || prior.kind !== "file" || fileStampChanged(prior, node)) paths.push(node.path);
+    if (prior === undefined || prior.kind !== "file" || prior.hash !== undefined || fileStampChanged(prior, node)) paths.push(node.path);
   }
   return paths.sort();
 }
@@ -246,7 +244,7 @@ export function diffScopedSnapshots(before: ScopedSnapshot, after: ScopedSnapsho
     const prior = before.entries.get(key);
     if (prior === undefined) {
       if (before.coverage ? scanPresence(key, before.entries, before.coverage) === "absent" : before.errors.length === 0) created.push(node);
-      else if (node.kind === "file") push({ type: "write", path: node.path, after: fileMetadata(node) });
+      else push({ type: "observation", path: node.path, reason: "baseline-unknown", after: observedNode(node) });
     }
     else if (replaced(prior, node)) {
       deleted.push(prior);
@@ -261,7 +259,7 @@ export function diffScopedSnapshots(before: ScopedSnapshot, after: ScopedSnapsho
   for (const pair of changed.sort((a, b) => comparePaths(a.after.path, b.after.path))) {
     if (pair.after.kind === "file") {
       if (pair.before.mode !== pair.after.mode) push(modeEvent(pair.before, pair.after));
-      if (fileStampChanged(pair.before, pair.after)) push(writeEvent(pair.before, pair.after));
+      if (fileContentChanged(pair.before, pair.after)) push(writeEvent(pair.before, pair.after));
     } else if (pair.after.kind === "directory" && pair.before.mode !== pair.after.mode) {
       push(modeEvent(pair.before, pair.after));
     }
@@ -277,9 +275,19 @@ function replaced(prior: ScopedNode, node: ScopedNode): boolean {
 
 /** A same-kind node counts as changed when its content stamp or permission bits moved. */
 function changedNode(prior: ScopedNode, node: ScopedNode): boolean {
-  if (node.kind === "file") return prior.mode !== node.mode || fileStampChanged(prior, node);
+  if (node.kind === "file") return prior.mode !== node.mode || fileContentChanged(prior, node);
   if (node.kind === "directory") return prior.mode !== node.mode;
   return false; // a symlink that still points where it did is unchanged
+}
+
+function fileContentChanged(before: ScopedNode, after: ScopedNode): boolean {
+  return fileStampChanged(before, after) || (before.hash !== undefined && after.hash !== undefined && before.hash !== after.hash);
+}
+
+function observedNode(node: ScopedNode) {
+  if (node.kind === "file") return fileMetadata(node);
+  if (node.kind === "symlink") return { kind: "symlink" as const, target: linkTargetOf(node), mode: node.mode };
+  return { kind: "directory" as const, mode: node.mode };
 }
 
 function createEvent(node: ScopedNode): JournalEventInput {

@@ -79,13 +79,16 @@ test.each(["observe", "collision"])("initial manifest publication is atomic and 
     import { mock } from 'bun:test';
     const real={...fs};
     const root=process.argv[2];
-    const paths=new Map();
     let log, observations=0, errors=0;
     mock.module('node:fs',()=>({...real,
-      openSync:(...args)=>{const fd=real.openSync(...args);paths.set(fd,args[0]);return fd;},
-      closeSync:(fd)=>{paths.delete(fd);return real.closeSync(fd);},
       writeSync:(fd,...args)=>{
-        if(log && String(paths.get(fd)).startsWith(root+'/operations/')) {
+        const dir=root+'/operations';
+        const node=real.fstatSync(fd,{bigint:true});
+        if(log && real.existsSync(dir) && real.readdirSync(dir).some(name => {
+          if(!name.endsWith('.tmp')) return false;
+          const candidate=real.lstatSync(dir+'/'+name,{bigint:true});
+          return candidate.dev===node.dev && candidate.ino===node.ino;
+        })) {
           observations++;
           try{log.list();}catch{errors++;}
         }

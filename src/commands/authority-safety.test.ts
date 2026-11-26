@@ -77,7 +77,7 @@ test("explicit adoption supplies a missing symlink target without claiming proce
   const adopted = (await storage.loadRecords())[0]!;
   expect(adopted.owned[0]?.linkTarget).toBe("fixture");
   expect(adopted.evidence[0]?.origin).toBe("adoption");
-  expect((await run(home, ["uninstall", "fixture", "--yes"])).code).toBe(0);
+  expect((await run(home, ["uninstall", "fixture", "--yes", "--approved-only"])).code).toBe(0);
   expect(existsSync(path)).toBe(false);
   expect(readFileSync(file, "utf8")).toBe("#!/bin/sh\nexit 0\n");
 });
@@ -157,7 +157,7 @@ test.each(["file", "unknown-file", "symlink"])(
     expect(approved.installedHash).toBe(original.installedHash);
     expect(approved.linkTarget).toBe(original.linkTarget);
     expect((await run(home, ["uninstall", "fixture", "--yes"])).code).toBe(5);
-    expect((await run(home, ["uninstall", "fixture", "--yes", "--force"])).code).toBe(0);
+    expect((await run(home, ["uninstall", "fixture", "--yes", "--force", "--approved-only"])).code).toBe(0);
   },
 );
 
@@ -214,7 +214,7 @@ test("explicit legacy adoption adds a current fingerprint without inventing proc
   expect(readFileSync(`${storage.recordsPath}.legacy-v2-${hash(new TextEncoder().encode(original))}.json`, "utf8")).toBe(
     original,
   );
-  expect((await run(home, ["uninstall", "fixture", "--yes"])).code).toBe(0);
+  expect((await run(home, ["uninstall", "fixture", "--yes", "--approved-only"])).code).toBe(0);
   expect(existsSync(file)).toBe(false);
 });
 

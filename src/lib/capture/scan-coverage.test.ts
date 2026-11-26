@@ -44,7 +44,7 @@ test.each(["scoped", "legacy"])("%s uncertainty applies only beneath unreadable 
     const changes = (before, after) => {
       if (${JSON.stringify(kind)} === "legacy") return diff(before, after);
       const events = diffScopedSnapshots(before, after);
-      return { added: events.filter(e => e.type === "create").map(e => e.path), edited: events.filter(e => e.type === "write").map(e => e.path), deleted: events.filter(e => e.type === "unlink").map(e => e.path) };
+      return { added: events.filter(e => e.type === "create").map(e => e.path), edited: events.filter(e => e.type === "write" || e.type === "observation").map(e => e.path), deleted: events.filter(e => e.type === "unlink").map(e => e.path) };
     };
     const before = scan();
     real.writeFileSync(scope + "/readable/new", "new");

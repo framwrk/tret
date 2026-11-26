@@ -68,8 +68,17 @@ cleanup approval. Experimental fanotify fidelity remains unverified.
 streamed name discovery and descendant fingerprinting. Nonmatching entries count
 toward the scan limit. Its segment retains effective limits, usage, search roots
 and unreadable/content omissions; exhaustion refuses before a tracking write.
-Discovery never executes the found command. A tool-name match, matching hash or
+Discovery never executes the found command. It lists the exact candidate
+inventory and exposes it as `candidates` in JSON. Run `approve` for each
+exact action you want to authorize. A tool-name match, matching hash or
 directory inventory grants no cleanup approval, including for later descendants.
+
+On heuristic backends, opt-in backups let Tret compare bounded content
+fingerprints at both ends of the window for eligible regular files. The closing
+comparison streams content within the fingerprint budget. Without a start
+fingerprint, same-size edits that preserve metadata can be missed. Both modes
+can miss paths created and deleted between scans. The result remains a
+heuristic observation, and every cleanup action requires separate approval.
 
 On Linux, requesting `O_CREAT` does not establish that a file was created: it may
 open an existing file. Only a successful exclusive-create observation can produce
@@ -126,8 +135,8 @@ program exits, and the receipt reports that coverage loss.
 
 A rename retains the destination's captured before-state. Without destination
 evidence, the destination stays a mutation, never a newly owned file. A successful
-`RENAME_NOREPLACE` supplies destination absence at that operation, without replacing
-an earlier window-start fact. A backup of the source is not a backup of an
+`RENAME_NOREPLACE` proves absence at the operation. Creation classification also
+requires known window-start absence or a prior observed creation in the window. A backup of the source is not a backup of an
 overwritten destination. `RENAME_EXCHANGE` retains both names and their separate
 window-start facts; it does not imply that the source disappeared.
 
@@ -139,8 +148,10 @@ Known descendants of an uncertain directory remain detect-only observations,
 without inventing an inventory or creation proof. Final sampling can prove absence
 at close, not the history of an unobserved interval. These losses reduce coverage
 and are retained in bounded normalization explanations. Symlink metadata without
-a captured prior target stays unknown. Full directory subtree mapping and historical
-alias reconstruction remain open.
+a captured prior target stays unknown. Case-only renames on case-insensitive capture are retained for manual
+reconciliation. Captured directory descendants and final readings stay visible as named
+observations. Complete subtree lineage and historical alias reconstruction
+remain open.
 
 Linux reconstruction resolves existing parent components through libc and checks
 that the kernel names the same object, before inspecting the final component.
@@ -195,7 +206,9 @@ private staging with no-replace rename, verifies the captured object, and only t
 removes/restores it. A substituted object is rolled back or retained for recovery;
 restoration cannot overwrite a concurrently reoccupied name. This protects object
 identity and namespace boundaries, not writes through already-open descriptors or
-hostile same-user tampering. Private-state persistence still has path-based limits.
+hostile same-user tampering. Record, blob, and operation writes use pinned directory
+descriptors and verify the named parent before publication. Directory creation,
+lease paths and some recovery bookkeeping still rely on ordinary path lookups.
 Ordinary directory removal
 is non-recursive. Tret does not invoke package managers or recursively delete
 recognized managed-install roots during cleanup. A marker, launcher, package name,
@@ -265,6 +278,16 @@ recorded effects. `--approved-only` explicitly selects an approved subset and ke
 other effects/scopes visible and tracked after the executable is gone. Protected
 roots, hard-link aliases, unsupported nodes, missing parents, missing/corrupt blobs
 and stale approvals remain blocked. Directory approval is non-recursive.
+
+Inspect shows cleanup coverage gaps and per-effect authorization. New install
+and trace segments retain the program exit code separately from capture coverage,
+along with the backend, Tret capture-engine version, effective roots, and
+omitted root entries. Omitting a root entry can leave coverage via overlapping
+roots. Linux strace effects can include the PID and time of an observed change
+or creation syscall. This observation establishes what the process did at that
+time. Cleanup still requires a current object-bound approval. Older segments and
+legacy candidates can lack these details.
+An empty result from an incomplete capture window leaves an unknown interval.
 
 Whole-command kernel leases, record revisions, durable operations and native action
 cursors retain available evidence across interruption. Resume never reruns an

@@ -2,7 +2,7 @@ import type { AbsolutePath, CaptureCompleteness, CaptureInfo, CaptureSegment, Ca
 import type { BackupPolicy, NormalizedEffects } from "../lib/capture/normalize";
 import type { CaptureBudget, CaptureResourceReport } from "../lib/capture/budget";
 import { DEFAULT_BACKUP_POLICY, FileStorage, collectUnreferencedBlobs } from "../lib/store";
-import { EXIT_BLOCKED, EXIT_ERROR, EXIT_USAGE } from "../constants";
+import { EXIT_BLOCKED, EXIT_ERROR, EXIT_USAGE, VERSION } from "../constants";
 import { applyUninstallPlan, describeOutcome, reduceRecordForRetry } from "../lib/removal";
 import { captureBackendFor, heuristicCaptureBackendFor } from "../lib/capture/current";
 import { caseSensitiveForPaths, currentPlatform, installObservationRoots, processPrivilege } from "../lib/platform";
@@ -40,6 +40,7 @@ import { runLogPhase } from "../lib/runlog";
 import { runStoreOperation } from "../lib/command-operation";
 import { snapshot } from "../lib/snapshot";
 import { unverifiedShellEdits } from "../lib/shellconfig";
+import { withTracedEvidence } from "../lib/records-v4";
 
 /** Options for `install`; the command line uses the defaults, tests inject capture seams. */
 export type InstallOptions = {
@@ -247,7 +248,7 @@ export async function install(
   const capturePlan = await prepareCapture({
     primary: options.backend ?? captureBackendFor(platform, caseSensitive),
     fallback: heuristicCaptureBackendFor(platform, caseSensitive),
-    roots, backups, childLaunch: true, enabled: options.capture, allowWeakerCapture: options.allowWeakerCapture,
+    roots, backups, omittedRoots: options.observe?.exclude, childLaunch: true, enabled: options.capture, allowWeakerCapture: options.allowWeakerCapture,
   });
   if (existing && force)
     log("replacement is non-atomic: an unexpected capture failure after approved old cleanup stops execution and retains recovery evidence");
@@ -428,7 +429,7 @@ export async function install(
   // Store the before-image bytes the window captured, then drop any restore claim storage did not
   // actually land, so the record never advertises a blob `getBlob` cannot return (D2). Runs after the
   // shared-state filter so a dropped path's before-image is never stored as an orphan blob.
-  const record: RecordV3 = {
+  let record: RecordV3 = {
     // A tracked-tool update keeps the record's stable id, so a selector a script already holds
     // still resolves after the update; a fresh install gets a new id.
     id: recordId,
@@ -446,7 +447,10 @@ export async function install(
       backups,
       ...(options.observe === undefined ? {} : { observe: options.observe }),
     },
-    capture: buildCapture(window, failed, clock, effects, failureReason),
+    capture: buildCapture(window, effects, clock, [
+      ...(options.observe?.exclude ?? []),
+      ...roots.filter((root) => !capturePlan.roots.includes(root)),
+    ]),
     privilege: processPrivilege(),
     caseSensitive,
     owned: effects.owned,
@@ -455,11 +459,13 @@ export async function install(
     ...(managedBy === undefined ? {} : { managedBy }),
     ...(managedInstall === undefined ? {} : { managedInstall }),
   };
+  if (window.journal) record = withTracedEvidence(record, window.journal, "capture");
   operation = storage.operations.checkpoint(operation, { checkpoint: record });
   await storeBeforeImages(effects, window.journal, storage, backups);
   runLogPhase("save-record");
   await storage.saveRecord(record);
-  storage.operations.checkpoint(operation, { stage: failed ? "partial" : "completed", checkpoint: record });
+  storage.operations.checkpoint(operation, { stage: failed ? "partial" : "completed", checkpoint: record,
+    ...(failed ? { reason: failureReason ?? `installer exited with code ${window.exitCode}` } : {}) });
 
   // A replacement dropped the previous record's claims, so its before-images may now be
   // unreferenced. Sweep after the new record is durable; the helper never fails this install.
@@ -704,27 +710,21 @@ async function storeBeforeImages(
   }
 }
 
-/** Builds the record's capture info; a failed install or missing executable is labeled partial (D6). */
-function buildCapture(window: InstallWindow, failed: boolean, clock: () => number, effects: NormalizedEffects, failureReason?: string): CaptureInfo {
+function buildCapture(window: InstallWindow, effects: NormalizedEffects, clock: () => number, exclusions: string[]): CaptureInfo {
   const at = new Date(clock()).toISOString();
   const segment: CaptureSegment = window.coverage
     ? { ...window.coverage.segment }
     : { kind: "install", startedAt: at, endedAt: at, partialReason: "capture disabled for this install" };
+  segment.backend = window.coverage?.backend ?? "none";
+  segment.captureEngineVersion = VERSION;
+  segment.exitCode = window.exitCode;
+  if (exclusions.length) segment.excludedRoots = [...new Set(exclusions)];
   if (window.fallbackResources) segment.resources = window.fallbackResources;
   Object.assign(segment, normalizationDetails(effects));
   if (window.fallbackRoots) segment.roots = window.fallbackRoots;
   if (window.fallbackReason) segment.partialReason = combineReasons(segment.partialReason, window.fallbackReason);
   let completeness: CaptureCompleteness = window.coverage?.completeness ?? "heuristic";
   if (window.fallbackReason) completeness = "partial";
-
-  if (failed) {
-    completeness = "partial";
-    const reasons = [
-      ...(window.exitCode === 0 ? [] : [`installer exited with code ${window.exitCode}`]),
-      ...(failureReason === undefined ? [] : [failureReason]),
-    ];
-    if (reasons.length > 0) segment.partialReason = combineReasons(segment.partialReason, reasons.join("; "));
-  }
 
   return {
     backend: window.coverage?.backend ?? "none",
